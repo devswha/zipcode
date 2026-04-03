@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"./target/release/zipcode --backend llama-cpp --model ~/.zipcode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf prompt \\\"Say hello in one word\\\" 2>/dev/null\",\"timeout\":120000,\"description\":\"Check...",
+  "tool_input_preview": "{\"command\":\"cargo test --workspace 2>&1 | grep \\\"^test result\\\" && cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tail -1\",\"timeout\":120000,\"description\":\"Final verification\"}",
   "error": "Exit code 1",
-  "timestamp": "2026-04-03T08:01:51.168Z",
+  "timestamp": "2026-04-03T08:46:56.631Z",
   "retry_count": 1
 }
