@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cargo fmt --all -- --check 2>&1\",\"timeout\":60000}",
-  "error": "Exit code 1\nDiff in /home/devswha/workspace/zipcode/crates/cli/src/commands.rs:36:\n         }\n         if !found_any {\n             println!(\"  \\u{274c} No model files found\");\n\u001b[31m-            println!(\"    Searched: {}\", default_dirs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(\", \"));\n\u001b(B\u001b[m\u001b[32m+            println!(\n\u001b(B\u001b[m\u001b[32m+                \"    Searched: {}\",\n\u001b(B\u001b[m\u001b[32m+                default_dirs\n\u001b(B\u001b[m\u001b[32m+                    .iter()\n\u001b(B\u001b[m\u001b[32m+               ...",
-  "timestamp": "2026-04-03T05:42:22.742Z",
-  "retry_count": 3
+  "tool_input_preview": "{\"command\":\"./target/release/zipcode --backend llama-cpp --model ~/.zipcode/models/qwen2.5-0.5b-instruct-q4_k_m.gguf prompt \\\"Say hello in one word\\\" 2>/dev/null\",\"timeout\":120000,\"description\":\"Check...",
+  "error": "Exit code 1",
+  "timestamp": "2026-04-03T08:01:51.168Z",
+  "retry_count": 1
 }

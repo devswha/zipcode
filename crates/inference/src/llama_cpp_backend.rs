@@ -126,9 +126,8 @@ impl LlamaCppProvider {
         ]);
 
         // Feed the prompt in one batch
-        let mut batch = match LlamaBatch::new(512, 1) {
-            b => b,
-        };
+        let batch_size = n_prompt + self.config.max_tokens + 64;
+        let mut batch = LlamaBatch::new(batch_size, 1);
 
         for (i, token) in tokens.iter().enumerate() {
             let is_last = i == n_prompt - 1;

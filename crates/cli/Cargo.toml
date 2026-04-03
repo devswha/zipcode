@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 zipcode-runtime = { path = "../runtime" }
 zipcode-tools = { path = "../tools" }
-zipcode-inference = { path = "../inference" }
+zipcode-inference = { path = "../inference", features = ["llama-cpp"] }
 clap = { version = "4", features = ["derive"] }
 rustyline = "15"
 termimad = "0.30"
