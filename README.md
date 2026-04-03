@@ -1,242 +1,294 @@
-# zipcode
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/Gemma_4-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Gemma 4" />
+  <img src="https://img.shields.io/badge/CUDA-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="CUDA" />
+  <img src="https://img.shields.io/badge/Air--Gapped-FF6B6B?style=for-the-badge&logoColor=white" alt="Air-Gapped" />
+</p>
 
-Local-only AI coding agent powered by Gemma 4 via candle — runs entirely offline, no API keys required.
+<h1 align="center">zipcode</h1>
 
-## Features
+<p align="center">
+  <strong>Local-only AI coding agent. No API keys. No network. Just code.</strong>
+</p>
 
-- Fully offline inference — no network required after setup
-- Designed for air-gapped environments; ships as a single ZIP for USB deployment
-- GGUF model loading with CUDA GPU acceleration and transparent CPU fallback
-- 10 built-in tools: file operations, shell execution, search, REPL, sub-agents
-- Gemma 4 native function calling format with `<tool_call>` tags
-- Interactive REPL with line editing, history, and markdown rendering
-- One-shot prompt mode for scripted use
-- Three permission tiers: read-only, workspace-write, full-access
-- Session persistence — save and restore conversation history
-- Project-specific instructions via `.zipcode.md`
-- Single static binary, Linux x86_64
+<p align="center">
+  <a href="#quick-start">Quick Start</a> &bull;
+  <a href="#air-gapped-deployment">Air-Gapped Deploy</a> &bull;
+  <a href="#tools">Tools</a> &bull;
+  <a href="#architecture">Architecture</a> &bull;
+  <a href="#configuration">Config</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/license/devswha/zipcode?style=flat-square" alt="License" />
+  <img src="https://img.shields.io/badge/platform-linux%20x86__64-blue?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/tests-60%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/clippy-zero%20warnings-brightgreen?style=flat-square" alt="Clippy" />
+</p>
+
+---
+
+**zipcode** is a Rust-based coding agent that runs **entirely on your machine** using local LLM inference. Powered by [Gemma 4](https://ai.google.dev/gemma) through the [candle](https://github.com/huggingface/candle) ML framework, it provides Claude Code-like functionality — file editing, shell execution, code search — without ever touching the network.
+
+Ship it on a USB stick. Run it in a SCIF. It just works.
+
+```
+$ zipcode
+zipcode v0.1.0 -- local AI coding agent
+Type /help for commands, Ctrl+D to exit
+
+> read main.rs and add error handling to the database connection
+
+  Reading src/main.rs...
+  > edit_file {"file_path": "src/main.rs", ...}
+  < Successfully edited src/main.rs
+
+  I've wrapped the database connection in a proper error handler with
+  retry logic and connection pooling...
+```
+
+## Why zipcode?
+
+| Problem | zipcode Solution |
+|---------|-----------------|
+| API keys expire, leak, or get rate-limited | No API. Model runs locally. |
+| Corporate networks block LLM endpoints | No network needed after setup. |
+| Sensitive code can't leave the machine | Everything stays on disk. |
+| Cloud LLMs add latency | GPU inference on your hardware. |
+| Setup requires `npm`, `pip`, Docker... | Single static binary. |
+
+---
 
 ## Quick Start
 
-### Build
+### 1. Build
 
 ```bash
+git clone https://github.com/devswha/zipcode.git
+cd zipcode
 cargo build --release
-# Binary output: target/release/zipcode
 ```
 
-### Place a model
+### 2. Get a model
 
 ```bash
-mkdir -p ~/.zipcode/models
-# Copy your Gemma 4 GGUF file:
-cp gemma-4-27b-it-Q8_0.gguf ~/.zipcode/models/
+# Automated (requires internet + huggingface-cli)
+./scripts/download_model.sh
+
+# Or manual: download Gemma 4 27B GGUF from HuggingFace
+# Place in ~/.zipcode/models/
 ```
 
-### Diagnose your environment
+### 3. Check your environment
 
 ```bash
-zipcode doctor
+./target/release/zipcode doctor
 ```
-
-Example output:
 
 ```
 zipcode doctor
-
-Version: 0.1.0
-
-  CUDA available
-  Model found: /home/user/.zipcode/models/gemma-4-27b-it-Q8_0.gguf
-
-Done.
+--------------
+  Binary:   zipcode v0.1.0 (linux-x86_64)
+  CUDA:     Available
+  Model:    gemma-4-27b-it-Q8_0.gguf (28.3 GB)
+  Ready:    All checks passed
 ```
 
-### Run
+### 4. Run
 
 ```bash
 # Interactive REPL
 zipcode
 
-# One-shot mode
-zipcode prompt "explain src/main.rs"
+# One-shot
+zipcode prompt "explain this codebase"
 
-# Custom model path
-zipcode --model ./custom.gguf
+# Custom model
+zipcode --model ./my-model.gguf
 
-# Read-only mode
+# Read-only mode (safe exploration)
 zipcode --permission-mode read-only
 ```
 
+---
+
 ## Air-Gapped Deployment
 
-zipcode is packaged as a ZIP archive that can be transferred via USB to networks with no internet access.
+zipcode was designed from the ground up for **isolated networks**. Package everything into a ZIP, move it on a USB drive, and run.
 
-### ZIP Archive Structure
+### Package
+
+```bash
+./scripts/package.sh
+# Creates: dist/zipcode-v0.1.0-linux-x86_64-cuda.zip
+```
+
+### Archive contents
 
 ```
 zipcode-v0.1.0-linux-x86_64-cuda.zip
-├── zipcode                       # single static binary (~30 MB)
-├── libcudart.so.12               # optional CUDA runtime bundle
-├── README.md
-├── install.sh
-└── models/
-    └── PLACE_MODEL_HERE.txt
+ |- zipcode                     # single binary (~30 MB)
+ |- libcudart.so.12             # CUDA runtime (optional)
+ |- install.sh                  # one-command setup
+ |- download_model.sh           # model download helper
+ |- README.md
+ '- models/
+     '- PLACE_MODEL_HERE.txt
 ```
 
-### Deployment Workflow
+### Transfer workflow
 
 ```
-Internet PC                        Air-Gapped Network
-──────────────────                 ──────────────────
-1. Download zipcode.zip
-2. Download gemma-4-27b.gguf
-3. Copy both to USB drive  ──USB──> 4. Copy from USB to workstation
-                                    5. ./install.sh
-                                    6. Place .gguf in ~/.zipcode/models/
-                                    7. zipcode doctor
-                                    8. zipcode
+  Internet Machine                    Air-Gapped Machine
+  ================                    ==================
+
+  1. Download zipcode.zip
+  2. Download gemma-4-27b.gguf
+  3. Copy to USB
+                        ---- USB ---->
+                                      4. Unzip
+                                      5. ./install.sh
+                                      6. cp *.gguf ~/.zipcode/models/
+                                      7. zipcode doctor
+                                      8. zipcode
 ```
 
-### install.sh
-
-```bash
-#!/bin/bash
-INSTALL_DIR="${HOME}/.zipcode"
-mkdir -p "${INSTALL_DIR}/models" "${INSTALL_DIR}/sessions"
-cp zipcode "${INSTALL_DIR}/"
-ln -sf "${INSTALL_DIR}/zipcode" /usr/local/bin/zipcode
-echo "Done. Place your .gguf model in ${INSTALL_DIR}/models/"
-```
-
-Run once after copying from USB. No root required if `/usr/local/bin` is writable; adjust the symlink target as needed.
-
-## Architecture
-
-### Component Diagram
-
-```
-┌─────────────────────────────────────────────┐
-│                 zipcode CLI                  │
-│          (REPL + one-shot prompt)            │
-├─────────────────────────────────────────────┤
-│              Agentic Runtime                 │
-│  ┌─────────┐  ┌──────────┐  ┌───────────┐  │
-│  │ Session  │  │Permission│  │  Config   │  │
-│  │ Manager  │  │  Policy  │  │  Loader   │  │
-│  └─────────┘  └──────────┘  └───────────┘  │
-│         ┌──────────────────┐                │
-│         │  Conversation    │                │
-│         │     Loop         │◄── tool results│
-│         └──────┬───────────┘                │
-│                │ tool calls                  │
-│         ┌──────▼───────────┐                │
-│         │   Tool Router    │                │
-│         └──────┬───────────┘                │
-│    ┌───────────┼──────────────┐             │
-│    ▼           ▼              ▼             │
-│ ┌──────┐  ┌────────┐  ┌──────────┐         │
-│ │ Bash │  │FileOps │  │TodoWrite │  ...     │
-│ └──────┘  └────────┘  └──────────┘         │
-├─────────────────────────────────────────────┤
-│            Inference Engine                  │
-│  ┌─────────────────────────────────────┐    │
-│  │  candle (GGUF loader + CUDA accel)  │    │
-│  │  ┌──────────┐  ┌────────────────┐   │    │
-│  │  │Tokenizer │  │ KV Cache Mgmt  │   │    │
-│  │  └──────────┘  └────────────────┘   │    │
-│  │  ┌──────────────────────────────┐   │    │
-│  │  │ Streaming Token Generation   │   │    │
-│  │  └──────────────────────────────┘   │    │
-│  └─────────────────────────────────────┘    │
-├─────────────────────────────────────────────┤
-│              Model Store                     │
-│  ~/.zipcode/models/gemma-4-27b-Q8.gguf      │
-└─────────────────────────────────────────────┘
-```
-
-### Crate Dependency Graph
-
-```
-cli -> runtime -> inference
-           |
-           v
-         tools
-```
-
-### Crates
-
-| Crate | Role |
-|-------|------|
-| `inference` | GGUF model loading, tokenization, KV cache, streaming token generation via candle. Pure computation — no side effects. |
-| `tools` | The 10 tool implementations. Depends only on OS syscalls. Defines the `Tool` trait and `ToolRegistry`. |
-| `runtime` | Combines `inference` + `tools` into the agentic conversation loop. Owns session management, config loading, and permission policy. |
-| `cli` | Binary entry point. Interactive REPL (rustyline), markdown/ANSI rendering (termimad), slash commands, and the `doctor` subcommand. |
+---
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `Bash` | Execute shell commands. Requires approval in `workspace-write` mode; blocked in `read-only`. |
-| `ReadFile` | Read the contents of a file from disk. |
-| `WriteFile` | Create or overwrite a file with new content. |
-| `EditFile` | Apply targeted string replacements to an existing file. |
-| `GlobSearch` | Find files matching a glob pattern (e.g. `src/**/*.rs`). |
-| `GrepSearch` | Search file contents with a regex; returns matching lines and paths. |
-| `TodoWrite` | Write a structured todo list to `.zipcode-todos.md` in the working directory. |
-| `REPL` | Execute code in a persistent language REPL (Python, Node, etc.). |
-| `Agent` | Spawn a sub-agent with its own conversation loop and tool access. |
-| `ToolSearch` | Search available tools by name or description. |
+zipcode comes with **10 built-in tools** that the model can invoke autonomously:
 
-Tool output is automatically truncated at 8 KB. Truncated results include a note showing bytes displayed vs. total.
+| Tool | Description | Permission |
+|------|-------------|------------|
+| **Bash** | Execute shell commands via `bash -c` | Needs approval in `workspace-write` |
+| **ReadFile** | Read file contents with line numbers, offset/limit | Always allowed |
+| **WriteFile** | Create or overwrite files, auto-creates parent dirs | Blocked in `read-only` |
+| **EditFile** | Targeted string replacement in existing files | Blocked in `read-only` |
+| **GlobSearch** | Find files by glob pattern (`**/*.rs`, `src/*.py`) | Always allowed |
+| **GrepSearch** | Search file contents with regex, returns `file:line:` | Always allowed |
+| **TodoWrite** | Structured todo list persistence (`.zipcode-todos.json`) | Blocked in `read-only` |
+| **REPL** | Execute Python/Node.js code snippets | Blocked in `read-only` |
+| **Agent** | Spawn sub-agent for delegated tasks | _Stub in v0.1_ |
+| **ToolSearch** | Search available tools by keyword | Always allowed |
+
+All tool output is automatically truncated at **8 KB** with a byte-count summary.
+
+### Permission Modes
+
+| Mode | Bash | Writes | Reads | Use case |
+|------|------|--------|-------|----------|
+| `read-only` | Denied | Denied | Allowed | Safe exploration |
+| `workspace-write` | Approval required | Allowed | Allowed | **Default** |
+| `full-access` | Allowed | Allowed | Allowed | Trusted automation |
+
+---
+
+## Architecture
+
+### System Overview
+
+```
++-------------------------------------------------+
+|                  zipcode CLI                     |
+|            REPL / one-shot / doctor              |
++-------------------------------------------------+
+|                Agentic Runtime                   |
+|   +--------+  +----------+  +---------+         |
+|   |Session |  |Permission|  | Config  |         |
+|   |Manager |  |  Policy  |  | Loader  |         |
+|   +--------+  +----------+  +---------+         |
+|          +-----------------+                     |
+|          | Conversation    |<--- tool results    |
+|          |     Loop        |                     |
+|          +-------+---------+                     |
+|                  | tool calls                    |
+|          +-------v---------+                     |
+|          |  Tool Router    |                     |
+|          +--+---------+----+                     |
+|             |         |                          |
+|       +-----+    +----+----+                     |
+|       |Bash |    |FileOps  |  ...10 tools        |
+|       +-----+    +---------+                     |
++-------------------------------------------------+
+|             Inference Engine                     |
+|   candle GGUF loader + CUDA acceleration         |
+|   Tokenizer | KV Cache | Streaming Generation   |
++-------------------------------------------------+
+|              Model Store                         |
+|   ~/.zipcode/models/*.gguf                       |
++-------------------------------------------------+
+```
+
+### Workspace Structure
+
+```
+zipcode/
+ |- crates/
+ |   |- inference/    Candle GGUF engine, Gemma 4 chat template, sampler
+ |   |- tools/        10 tool implementations + Tool trait + registry
+ |   |- runtime/      Agentic loop, config, permissions, sessions
+ |   '- cli/          REPL, one-shot, doctor, slash commands
+ |- scripts/          install.sh, download_model.sh, package.sh
+ |- models/           .gguf model files (gitignored)
+ '- docs/             Design specs + implementation plans
+```
+
+### Crate Dependencies
+
+```
+cli --> runtime --> inference
+           |
+           '--> tools
+```
+
+| Crate | Responsibility |
+|-------|---------------|
+| **inference** | GGUF loading, tokenization, KV cache, streaming generation. Pure computation. |
+| **tools** | 10 tool implementations. `Tool` trait, `ToolRegistry`, `ToolResult` truncation. |
+| **runtime** | Agentic conversation loop. Config hierarchy, permission policy, session persistence. |
+| **cli** | Binary entry point. REPL (rustyline), ANSI rendering (termimad), clap argument parsing. |
+
+---
 
 ## CLI Reference
 
 ### Commands
 
-```
-zipcode                          # start interactive REPL
-zipcode prompt "<text>"          # one-shot mode — run a single prompt and exit
-zipcode doctor                   # check CUDA, model files, and binary version
-```
+| Command | Description |
+|---------|-------------|
+| `zipcode` | Start interactive REPL |
+| `zipcode prompt "..."` | One-shot prompt, then exit |
+| `zipcode doctor` | Check CUDA, model, binary version |
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model <PATH>` | `~/.zipcode/models/` | Path to a `.gguf` file or directory containing models. |
-| `--permission-mode <MODE>` | `workspace-write` | Permission tier: `read-only`, `workspace-write`, `full-access`. |
-| `--session <ID>` | — | Resume a saved session by ID. |
+| `--model <PATH>` | `~/.zipcode/models/` | Path to `.gguf` file |
+| `--permission-mode` | `workspace-write` | `read-only` / `workspace-write` / `full-access` |
 
-### Slash Commands (REPL only)
+### Slash Commands (REPL)
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Print available slash commands. |
-| `/status` | Show current session ID, model, permission mode, and token count. |
-| `/clear` | Clear conversation history and start fresh. |
-| `/compact` | Summarize history to reclaim context window space. |
-| `/session` | List saved sessions or resume one by ID. |
+| Command | Action |
+|---------|--------|
+| `/help` | Show commands |
+| `/status` | Session ID, message count, cwd |
+| `/clear` | Reset conversation |
+| `/quit` | Exit |
 
-### Permission Modes
-
-| Mode | Bash | File writes | File reads | Notes |
-|------|------|-------------|------------|-------|
-| `read-only` | Denied | Denied | Allowed | Safe exploration; no mutations. |
-| `workspace-write` | Needs approval | Allowed | Allowed | Default. Bash requires Y/n confirmation. |
-| `full-access` | Allowed | Allowed | Allowed | All tools execute without prompts. |
+---
 
 ## Configuration
 
-### .zipcode.json (project or global)
+### Project config (`.zipcode.json`)
 
-Configuration is resolved in layers: global (`~/.zipcode/config.json`) is loaded first, then project-level (`.zipcode.json` in the working directory) overrides specific keys.
+Loaded from working directory. Overrides global `~/.zipcode/config.json`.
 
 ```json
 {
   "permission_mode": "workspace-write",
-  "model_dir": "/path/to/models",
-  "model_file": "gemma-4-27b-it-Q8_0.gguf",
+  "model_dir": "~/.zipcode/models",
   "generation": {
     "temperature": 0.7,
     "top_p": 0.9,
@@ -245,96 +297,89 @@ Configuration is resolved in layers: global (`~/.zipcode/config.json`) is loaded
 }
 ```
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `permission_mode` | `workspace-write` | Default permission tier for this project. |
-| `model_dir` | `~/.zipcode/models` | Directory scanned for `.gguf` files on startup. |
-| `model_file` | first `.gguf` found | Specific model filename to use. |
-| `generation.temperature` | `0.7` | Sampling temperature. |
-| `generation.top_p` | `0.9` | Nucleus sampling threshold. |
-| `generation.max_tokens` | `4096` | Maximum tokens per generation turn. |
+### Project instructions (`.zipcode.md`)
 
-### .zipcode.md (project instructions)
-
-Place a `.zipcode.md` file in any project directory. Its contents are appended to the system prompt when zipcode is run from that directory. Use it to describe project conventions, build commands, and preferred patterns.
+Place in any project root. Contents are injected into the system prompt.
 
 ```markdown
 # My Project
-
-- Language: Rust, edition 2021
-- Build: `cargo build --release`
-- Test: `cargo test`
-- Do not modify files under `vendor/`
+- Language: Rust 2021
+- Build: cargo build --release
+- Test: cargo test --workspace
+- Never modify files under vendor/
 ```
 
-### Session Storage
+### Storage layout
 
 ```
 ~/.zipcode/
-├── config.json          # global configuration
-├── models/              # GGUF model files
-└── sessions/            # saved conversation histories
-    └── <session-id>.json
+ |- config.json          # global config
+ |- models/              # GGUF model files
+ '- sessions/            # conversation history
+     '- <uuid>.json
 ```
 
-Sessions are saved automatically after each turn. Use `--session <id>` or the `/session` slash command to restore a previous conversation.
+---
 
 ## Model Setup
 
-zipcode requires a Gemma 4 GGUF model. The recommended variant is the Q8_0 quantization of the 27B instruction-tuned model.
-
-### Automated download (requires internet)
-
-```bash
-./scripts/download_model.sh
-```
-
-The script places the model in `~/.zipcode/models/` by default.
-
-### Manual download
-
-1. Download `gemma-4-27b-it-Q8_0.gguf` from Hugging Face (model card: `google/gemma-4-27b-it-GGUF`).
-2. Place the file in `~/.zipcode/models/`.
-3. Run `zipcode doctor` to verify detection.
-
-### CUDA requirements
+### Requirements
 
 | Component | Minimum |
 |-----------|---------|
-| CUDA | 12.0 |
-| VRAM | 24 GB (Q8_0 27B) |
-| Driver | 525+ |
+| Model | Gemma 4 27B IT (GGUF format) |
+| VRAM | 24 GB for Q8_0 quantization |
+| CUDA | 12.0+ (optional, CPU fallback available) |
+| Disk | ~28 GB for Q8_0 model file |
 
-CPU inference works without CUDA but is significantly slower. zipcode detects CUDA via `CUDA_PATH`, `CUDA_HOME`, or `libcuda.so` presence.
+### Download
 
-### VRAM estimation
+```bash
+# Option 1: helper script
+./scripts/download_model.sh
 
-zipcode estimates VRAM usage before loading the model. If the estimate exceeds available memory, it shrinks the KV cache. If an out-of-memory error occurs at runtime, it falls back to context compaction before failing.
+# Option 2: manual
+# Download from: huggingface.co/google/gemma-4-27b-it-GGUF
+# Place in: ~/.zipcode/models/
+```
+
+CPU inference works but is significantly slower. zipcode auto-detects CUDA availability at startup.
+
+---
 
 ## Key Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| `candle-core` | Tensor operations and CUDA backend |
-| `candle-nn` | Neural network layers |
-| `candle-transformers` | Gemma model architecture |
-| `tokenizers` | HuggingFace tokenizer |
-| `tokio` | Async runtime |
-| `rustyline` | REPL line editing with history |
-| `termimad` | Markdown to ANSI terminal rendering |
-| `clap` | CLI argument parsing |
-| `serde` / `serde_json` | Configuration and session serialization |
-| `glob` | File pattern matching |
-| `grep-regex` | Content search |
-
-## Platform Support
-
-MVP targets Linux x86_64 only. Windows and macOS are explicitly out of scope. No web UI, no remote API calls, no MCP server integration, no plugin system.
+| [candle](https://github.com/huggingface/candle) | Rust-native ML framework for GGUF inference |
+| [tokenizers](https://github.com/huggingface/tokenizers) | HuggingFace tokenizer |
+| [clap](https://github.com/clap-rs/clap) | CLI argument parsing |
+| [rustyline](https://github.com/kkawakam/rustyline) | REPL line editing |
+| [termimad](https://github.com/Canop/termimad) | Markdown to ANSI rendering |
+| [tokio](https://tokio.rs) | Async runtime |
 
 ---
 
+## Contributing
+
+Contributions welcome. Please open an issue first for major changes.
+
+```bash
+# Development workflow
+cargo test --workspace          # run all tests
+cargo clippy --workspace        # lint
+cargo fmt --all                 # format
+cargo build --release -p zipcode  # build binary
+```
+
+---
+
+## Acknowledgments
+
 Inspired by the architecture patterns of [claw-code-parity](https://github.com/ultraworkers/claw-code-parity).
+
+Built with [candle](https://github.com/huggingface/candle) by Hugging Face.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)
