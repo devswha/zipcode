@@ -1,0 +1,22 @@
+[package]
+name = "zipcode"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "zipcode"
+path = "src/main.rs"
+
+[dependencies]
+zipcode-runtime = { path = "../runtime" }
+zipcode-tools = { path = "../tools" }
+zipcode-inference = { path = "../inference" }
+clap = { version = "4", features = ["derive"] }
+rustyline = "15"
+termimad = "0.30"
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+dirs = "6"

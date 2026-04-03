@@ -1,0 +1,19 @@
+[package]
+name = "zipcode-inference"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+tokenizers = "0.21"
+fastrand = "2"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

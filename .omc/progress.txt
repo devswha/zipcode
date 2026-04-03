@@ -1,0 +1,38 @@
+# zipcode — Ralph Progress Log
+
+## Iteration 1 — 2026-04-03
+
+### PRD Setup
+- 13 user stories created from implementation plan
+- Organized into parallel groups for teams execution
+- Acceptance criteria are concrete and testable
+
+### Execution Results
+- US-001 Workspace Scaffolding: DONE (1 agent)
+- US-002 Tool Trait + Registry: DONE (5 tests)
+- US-003 Inference Types + Chat Template: DONE (12 tests)
+- US-004 File Operations: DONE (8 tests)
+- US-005 Search Tools: DONE (11 tests)
+- US-006 Bash Tool: DONE (4 tests)
+- US-007 Utility Tools: DONE (7 tests)
+- US-008 Inference Engine: DONE (14 tests total, candle GGUF via quantized_llama stand-in)
+- US-009 Runtime Config/Permission/Session: DONE (9→11 tests)
+- US-010 Conversation Loop: DONE (11 tests total)
+- US-011 CLI: DONE (compiles, doctor works)
+- US-012 Packaging Scripts: DONE (3 scripts, chmod +x)
+- US-013 Integration: DONE (60 tests, clippy clean, fmt clean)
+
+### Review
+- Architect: APPROVED (23/23 criteria pass)
+- Codex: 3 critical bugs found and fixed
+  1. UTF-8 truncation panic → safe char boundary walk-back
+  2. ToolContext.permission hardcoded to FullAccess → uses actual mode
+  3. Path resolution inconsistency in grep/glob → resolve_path helper added
+
+### Post-fix Regression
+- 60 tests pass, clippy clean, fmt clean
+
+### Learnings
+- candle 0.8 has no quantized_gemma2 module — used quantized_llama as stand-in (same API surface)
+- Rust orphan rules prevent impl From<&str> for PermissionMode in runtime crate → use free function
+- tool_search needs special construction order (register other tools first, then build search index)

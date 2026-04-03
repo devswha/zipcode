@@ -1,0 +1,6 @@
+/target
+*.gguf
+*.bin
+models/*.gguf
+models/*.bin
+.env

@@ -1,0 +1,174 @@
+{
+  "project": "zipcode",
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Workspace Scaffolding",
+      "priority": 1,
+      "passes": true,
+      "acceptanceCriteria": [
+        "Cargo.toml workspace exists at project root with 4 members: crates/inference, crates/tools, crates/runtime, crates/cli",
+        "cargo check --workspace compiles with zero errors",
+        "Binary crate 'zipcode' is defined in crates/cli/Cargo.toml",
+        ".gitignore excludes /target and *.gguf files",
+        "models/.gitkeep exists"
+      ]
+    },
+    {
+      "id": "US-002",
+      "title": "Tool Trait + Registry",
+      "priority": 2,
+      "passes": true,
+      "acceptanceCriteria": [
+        "Tool trait defined with name(), description(), parameters_schema(), execute() methods",
+        "ToolRegistry supports register(), get(), specs(), names()",
+        "ToolResult supports truncation at 8192 bytes with suffix message",
+        "PermissionMode enum has ReadOnly, WorkspaceWrite, FullAccess variants",
+        "cargo test -p zipcode-tools passes all registry tests (>=5 tests)"
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "Inference Types + Gemma 4 Chat Template",
+      "priority": 2,
+      "passes": true,
+      "acceptanceCriteria": [
+        "ChatMessage struct supports user(), system(), assistant(), tool_result() constructors",
+        "GenerationConfig has temperature=0.7, top_p=0.9, max_tokens=4096 defaults",
+        "format_conversation() produces Gemma 4 turn format with <start_of_turn>/<end_of_turn> tags",
+        "parse_tool_calls() extracts ToolCallParsed from <tool_call> tags in model output",
+        "parse_tool_calls() returns empty vec when no tool calls present",
+        "cargo test -p zipcode-inference passes all tests (>=8 tests)"
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "File Operation Tools (read, write, edit)",
+      "priority": 3,
+      "passes": true,
+      "acceptanceCriteria": [
+        "ReadFileTool reads file with line numbers, supports offset/limit params",
+        "WriteFileTool creates files and parent directories",
+        "EditFileTool replaces unique string match, fails on not-found or duplicates",
+        "All three tools resolve relative paths against ToolContext.cwd",
+        "cargo test -p zipcode-tools -- read_file write_file edit_file passes (>=7 tests)"
+      ]
+    },
+    {
+      "id": "US-005",
+      "title": "Search Tools (glob, grep)",
+      "priority": 3,
+      "passes": true,
+      "acceptanceCriteria": [
+        "GlobSearchTool finds files matching glob patterns like *.rs",
+        "GrepSearchTool searches file contents with regex, returns file:line: format",
+        "GrepSearchTool supports glob filter parameter for file type filtering",
+        "Both tools handle empty results gracefully",
+        "cargo test -p zipcode-tools -- glob_search grep_search passes (>=5 tests)"
+      ]
+    },
+    {
+      "id": "US-006",
+      "title": "Bash Tool",
+      "priority": 3,
+      "passes": true,
+      "acceptanceCriteria": [
+        "BashTool executes shell commands via bash -c",
+        "Captures both stdout and stderr",
+        "Reports non-zero exit codes",
+        "Uses ToolContext.cwd as working directory",
+        "cargo test -p zipcode-tools -- bash passes (>=4 tests)"
+      ]
+    },
+    {
+      "id": "US-007",
+      "title": "Utility Tools (todo, repl, agent, tool_search)",
+      "priority": 3,
+      "passes": true,
+      "acceptanceCriteria": [
+        "TodoWriteTool persists todos to .zipcode-todos.json",
+        "ToolSearchTool searches by name and description keywords",
+        "ReplTool executes python3 -c and node -e",
+        "AgentTool returns 'not yet implemented' stub message",
+        "cargo test -p zipcode-tools -- todo_write tool_search passes (>=4 tests)"
+      ]
+    },
+    {
+      "id": "US-008",
+      "title": "Inference Engine (candle GGUF + Gemma 4)",
+      "priority": 4,
+      "passes": true,
+      "acceptanceCriteria": [
+        "InferenceEngine::load() accepts model_path, tokenizer_path, device",
+        "select_device() returns Cuda or Cpu based on availability",
+        "Sampler supports greedy (temperature=0), top-k, top-p sampling",
+        "generate_stream() returns mpsc::Receiver<TokenEvent>",
+        "cargo check -p zipcode-inference compiles with zero errors"
+      ]
+    },
+    {
+      "id": "US-009",
+      "title": "Runtime Config + Permission + Session",
+      "priority": 4,
+      "passes": true,
+      "acceptanceCriteria": [
+        "ZipcodeConfig loads from ~/.zipcode/config.json with project .zipcode.json override",
+        "PermissionPolicy.check() returns Allowed/NeedsApproval/Denied based on mode",
+        "ReadOnly mode blocks bash/write_file, allows read_file/grep_search",
+        "Session saves/loads JSON to ~/.zipcode/sessions/{id}.json",
+        "cargo test -p zipcode-runtime passes all tests (>=8 tests)"
+      ]
+    },
+    {
+      "id": "US-010",
+      "title": "System Prompt + Conversation Loop",
+      "priority": 5,
+      "passes": true,
+      "acceptanceCriteria": [
+        "build_system_prompt() includes base role, permission mode, cwd, .zipcode.md content",
+        "ConversationLoop.run_turn() implements generate->parse->execute->repeat cycle",
+        "StreamCallback trait has on_token, on_tool_start, on_tool_result, on_permission_prompt",
+        "Tool results are injected back into conversation history",
+        "cargo check -p zipcode-runtime compiles with zero errors"
+      ]
+    },
+    {
+      "id": "US-011",
+      "title": "CLI (REPL + One-Shot + Doctor)",
+      "priority": 6,
+      "passes": true,
+      "acceptanceCriteria": [
+        "clap argument parser defines --model, --permission-mode flags and prompt/doctor subcommands",
+        "doctor command checks binary version, CUDA availability, model file presence",
+        "REPL uses rustyline with /help, /status, /clear, /quit slash commands",
+        "One-shot mode runs single prompt and exits",
+        "cargo check -p zipcode compiles with zero errors"
+      ]
+    },
+    {
+      "id": "US-012",
+      "title": "Packaging Scripts",
+      "priority": 6,
+      "passes": true,
+      "acceptanceCriteria": [
+        "scripts/install.sh creates ~/.zipcode/models and ~/.zipcode/sessions directories",
+        "scripts/package.sh builds release binary and creates ZIP archive",
+        "scripts/download_model.sh provides instructions for Gemma 4 GGUF download",
+        "All scripts are executable (chmod +x)"
+      ]
+    },
+    {
+      "id": "US-013",
+      "title": "Integration + Full Build",
+      "priority": 7,
+      "passes": true,
+      "acceptanceCriteria": [
+        "cargo test --workspace passes all unit tests",
+        "cargo build --release -p zipcode produces binary at target/release/zipcode",
+        "cargo clippy --workspace --all-targets -- -D warnings shows zero warnings",
+        "cargo fmt --all -- --check shows no formatting issues",
+        "./target/release/zipcode doctor runs without panic"
+      ]
+    }
+  ]
+}
