@@ -18,6 +18,10 @@ struct Cli {
     #[arg(long, value_name = "MODE")]
     permission_mode: Option<String>,
 
+    /// Inference backend: llama-cpp (default) or candle
+    #[arg(long, default_value = "llama-cpp")]
+    backend: String,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -48,17 +52,18 @@ fn main() -> Result<()> {
 
     let model_path = cli.model.as_deref();
     let permission_mode = cli.permission_mode.as_deref();
+    let backend = cli.backend.as_str();
 
     match cli.command {
         Some(Commands::Doctor) => {
             commands::doctor(model_path);
         }
         Some(Commands::Prompt { text }) => {
-            repl::run_oneshot(&text, model_path, permission_mode)?;
+            repl::run_oneshot(&text, model_path, permission_mode, backend)?;
         }
         None => {
             // Interactive REPL mode
-            repl::run_interactive(model_path, permission_mode)?;
+            repl::run_interactive(model_path, permission_mode, backend)?;
         }
     }
 

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use zipcode_inference::{select_device, GenerationConfig, InferenceEngine};
+use zipcode_inference::{create_engine, Backend, GenerationConfig};
 use zipcode_runtime::prompt::build_system_prompt;
 use zipcode_runtime::{
     permission_mode_from_str, ConversationLoop, PermissionPolicy, Session, ZipcodeConfig,
@@ -87,6 +87,7 @@ pub fn find_model(model_dir: &Path) -> Option<PathBuf> {
 pub fn create_loop(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
+    backend_str: &str,
 ) -> Result<ConversationLoop> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
 
@@ -118,8 +119,6 @@ pub fn create_loop(
         .unwrap_or(Path::new("."))
         .join("tokenizer.json");
 
-    let device = select_device();
-
     let mut gen_config = GenerationConfig::default();
     if let Some(t) = config.generation.temperature {
         gen_config.temperature = t;
@@ -131,9 +130,9 @@ pub fn create_loop(
         gen_config.max_tokens = m;
     }
 
-    let mut engine = InferenceEngine::load(&model_file, &tokenizer_path, device)
+    let backend = Backend::from_name(backend_str);
+    let engine = create_engine(backend, &model_file, &tokenizer_path, gen_config)
         .context("Failed to load inference engine")?;
-    engine.set_config(gen_config);
 
     // Build tools and system prompt
     let registry = build_registry();
@@ -146,7 +145,7 @@ pub fn create_loop(
     let permission = PermissionPolicy::new(effective_permission);
 
     Ok(ConversationLoop {
-        engine: Box::new(engine),
+        engine,
         tools: registry,
         session,
         permission,
@@ -161,8 +160,9 @@ pub fn run_oneshot(
     text: &str,
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
+    backend_str: &str,
 ) -> Result<()> {
-    let mut conv = create_loop(model_path, permission_mode)?;
+    let mut conv = create_loop(model_path, permission_mode, backend_str)?;
     let mut cb = CliCallback;
     conv.run_turn(text, &mut cb)?;
     println!(); // final newline
@@ -170,13 +170,17 @@ pub fn run_oneshot(
 }
 
 /// Run an interactive REPL loop.
-pub fn run_interactive(model_path: Option<&Path>, permission_mode: Option<&str>) -> Result<()> {
+pub fn run_interactive(
+    model_path: Option<&Path>,
+    permission_mode: Option<&str>,
+    backend_str: &str,
+) -> Result<()> {
     println!(
         "zipcode v{} — type /help for commands, Ctrl+D to exit",
         env!("CARGO_PKG_VERSION")
     );
 
-    let mut conv = create_loop(model_path, permission_mode)?;
+    let mut conv = create_loop(model_path, permission_mode, backend_str)?;
     let mut cb = CliCallback;
 
     let mut rl = DefaultEditor::new().context("Failed to initialize line editor")?;
