@@ -376,7 +376,7 @@ cargo build --release -p zipcode  # build binary
 
 ## Acknowledgments
 
-Inspired by the architecture patterns of [claw-code-parity](https://github.com/ultraworkers/claw-code-parity).
+Inspired by [claw-code](https://github.com/instructkr/claw-code) by [@instructkr](https://github.com/instructkr).
 
 Built with [candle](https://github.com/huggingface/candle) by Hugging Face.
 
