@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::info;
 
 use zipcode_inference::chat_template::ToolSpec;
-use zipcode_inference::{ChatMessage, FinishReason, InferenceEngine, TokenEvent};
+use zipcode_inference::{ChatMessage, FinishReason, InferenceProvider, TokenEvent};
 use zipcode_tools::{execute_tool, ToolContext, ToolRegistry};
 
 use crate::permission::{PermissionCheck, PermissionPolicy};
@@ -19,7 +19,7 @@ pub trait StreamCallback: Send {
 }
 
 pub struct ConversationLoop {
-    pub engine: InferenceEngine,
+    pub engine: Box<dyn InferenceProvider>,
     pub tools: ToolRegistry,
     pub session: Session,
     pub permission: PermissionPolicy,

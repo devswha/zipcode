@@ -146,7 +146,7 @@ pub fn create_loop(
     let permission = PermissionPolicy::new(effective_permission);
 
     Ok(ConversationLoop {
-        engine,
+        engine: Box::new(engine),
         tools: registry,
         session,
         permission,

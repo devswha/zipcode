@@ -14,6 +14,7 @@ use tracing::info;
 use crate::chat_template::{self, ToolSpec};
 use crate::sampler::Sampler;
 use crate::types::{ChatMessage, FinishReason, GenerationConfig, InferenceError, TokenEvent};
+use crate::InferenceProvider;
 
 pub struct InferenceEngine {
     model: gemma::ModelWeights,
@@ -196,5 +197,15 @@ impl InferenceEngine {
         }
 
         rx
+    }
+}
+
+impl InferenceProvider for InferenceEngine {
+    fn generate_stream(
+        &mut self,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> mpsc::Receiver<TokenEvent> {
+        self.generate_stream(messages, tools)
     }
 }
