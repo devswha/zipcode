@@ -46,7 +46,7 @@ impl Tool for GrepSearchTool {
         let regex = Regex::new(pattern).context("Invalid regex pattern")?;
 
         let search_path = if let Some(p) = args["path"].as_str() {
-            resolve_path(p, &ctx.cwd)
+            crate::resolve_and_validate_path(p, &ctx.cwd)?
         } else {
             ctx.cwd.clone()
         };
@@ -66,15 +66,6 @@ impl Tool for GrepSearchTool {
         }
 
         Ok(ToolResult::new(output_lines.join("\n")))
-    }
-}
-
-fn resolve_path(file_path: &str, cwd: &Path) -> PathBuf {
-    let p = Path::new(file_path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        cwd.join(p)
     }
 }
 

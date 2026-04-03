@@ -64,6 +64,12 @@ impl ZipcodeConfig {
             if let Some(perm) = project["permission_mode"].as_str() {
                 config.permission_mode = perm.to_string();
             }
+            if let Some(dir) = project["model_dir"].as_str() {
+                config.model_dir = PathBuf::from(dir);
+            }
+            if let Some(file) = project["model_file"].as_str() {
+                config.model_file = Some(file.to_string());
+            }
             if let Some(gen) = project.get("generation") {
                 if let Some(t) = gen["temperature"].as_f64() {
                     config.generation.temperature = Some(t);
@@ -110,5 +116,18 @@ mod tests {
         let config = ZipcodeConfig::load(dir.path()).unwrap();
         assert_eq!(config.permission_mode, "full-access");
         assert_eq!(config.generation.temperature, Some(0.5));
+    }
+
+    #[test]
+    fn test_load_project_override_model_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"model_dir": "/custom/models", "model_file": "my-model.gguf"}"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(config.model_dir, std::path::PathBuf::from("/custom/models"));
+        assert_eq!(config.model_file, Some("my-model.gguf".to_string()));
     }
 }

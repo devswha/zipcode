@@ -15,8 +15,8 @@ struct Cli {
     model: Option<PathBuf>,
 
     /// Permission mode: read-only, workspace-write, full-access
-    #[arg(long, default_value = "workspace-write", value_name = "MODE")]
-    permission_mode: String,
+    #[arg(long, value_name = "MODE")]
+    permission_mode: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let model_path = cli.model.as_deref();
-    let permission_mode = &cli.permission_mode;
+    let permission_mode = cli.permission_mode.as_deref();
 
     match cli.command {
         Some(Commands::Doctor) => {

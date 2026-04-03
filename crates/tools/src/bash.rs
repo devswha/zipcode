@@ -2,6 +2,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use wait_timeout::ChildExt;
 
 use crate::{Tool, ToolContext, ToolResult};
 
@@ -34,12 +35,33 @@ impl Tool for BashTool {
             .as_str()
             .context("missing 'command' argument")?;
 
-        let output = Command::new("bash")
+        let timeout_ms = args["timeout"].as_u64().unwrap_or(120_000);
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+
+        let mut child = Command::new("bash")
             .arg("-c")
             .arg(command)
             .current_dir(&ctx.cwd)
-            .output()
-            .context("failed to spawn bash")?;
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("Failed to execute: {command}"))?;
+
+        let status = match child.wait_timeout(timeout)? {
+            Some(s) => s,
+            None => {
+                // Timed out — kill the child and return an error result
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(ToolResult::new(format!(
+                    "Error: command timed out after {timeout_ms}ms"
+                )));
+            }
+        };
+
+        let output = child
+            .wait_with_output()
+            .context("failed to collect output")?;
 
         let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
 
@@ -52,8 +74,8 @@ impl Tool for BashTool {
             result.push_str(&stderr);
         }
 
-        if !output.status.success() {
-            let code = output.status.code().unwrap_or(-1);
+        if !status.success() {
+            let code = status.code().unwrap_or(-1);
             if !result.is_empty() {
                 result.push('\n');
             }

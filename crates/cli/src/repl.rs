@@ -84,11 +84,20 @@ pub fn find_model(model_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Build and return a ConversationLoop ready for use.
-pub fn create_loop(model_path: Option<&Path>, permission_mode: &str) -> Result<ConversationLoop> {
+pub fn create_loop(
+    model_path: Option<&Path>,
+    permission_mode: Option<&str>,
+) -> Result<ConversationLoop> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
 
     // Load config
-    let config = ZipcodeConfig::load(&cwd).unwrap_or_default();
+    let config = match ZipcodeConfig::load(&cwd) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[33mWarning: Failed to load config: {e}\x1b[0m");
+            ZipcodeConfig::default()
+        }
+    };
 
     // Resolve model file
     let model_file = if let Some(p) = model_path {
@@ -128,8 +137,9 @@ pub fn create_loop(model_path: Option<&Path>, permission_mode: &str) -> Result<C
 
     // Build tools and system prompt
     let registry = build_registry();
-    let effective_permission = permission_mode_from_str(permission_mode);
-    let permission_str = permission_mode.to_string();
+    let resolved_permission_mode = permission_mode.unwrap_or(&config.permission_mode);
+    let effective_permission = permission_mode_from_str(resolved_permission_mode);
+    let permission_str = resolved_permission_mode.to_string();
     let (system_prompt, tool_specs) = build_system_prompt(&cwd, &registry, &permission_str);
 
     let session = Session::new();
@@ -147,7 +157,11 @@ pub fn create_loop(model_path: Option<&Path>, permission_mode: &str) -> Result<C
 }
 
 /// Run a single turn (one-shot mode) then exit.
-pub fn run_oneshot(text: &str, model_path: Option<&Path>, permission_mode: &str) -> Result<()> {
+pub fn run_oneshot(
+    text: &str,
+    model_path: Option<&Path>,
+    permission_mode: Option<&str>,
+) -> Result<()> {
     let mut conv = create_loop(model_path, permission_mode)?;
     let mut cb = CliCallback;
     conv.run_turn(text, &mut cb)?;
@@ -156,7 +170,7 @@ pub fn run_oneshot(text: &str, model_path: Option<&Path>, permission_mode: &str)
 }
 
 /// Run an interactive REPL loop.
-pub fn run_interactive(model_path: Option<&Path>, permission_mode: &str) -> Result<()> {
+pub fn run_interactive(model_path: Option<&Path>, permission_mode: Option<&str>) -> Result<()> {
     println!(
         "zipcode v{} — type /help for commands, Ctrl+D to exit",
         env!("CARGO_PKG_VERSION")
