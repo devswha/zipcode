@@ -1,17 +1,7 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::path::Path;
 
 use crate::{Tool, ToolContext, ToolResult};
-
-fn resolve_path(file_path: &str, cwd: &Path) -> std::path::PathBuf {
-    let p = Path::new(file_path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        cwd.join(p)
-    }
-}
 
 pub struct GlobSearchTool;
 
@@ -47,7 +37,7 @@ impl Tool for GlobSearchTool {
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: pattern"))?;
 
         let base = if let Some(p) = args["path"].as_str() {
-            resolve_path(p, &ctx.cwd)
+            crate::resolve_and_validate_path(p, &ctx.cwd)?
         } else {
             ctx.cwd.clone()
         };

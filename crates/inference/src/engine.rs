@@ -111,6 +111,7 @@ impl InferenceEngine {
             .unwrap_or(eos_token);
 
         // Autoregressive generation loop
+        let mut finished = false;
         for i in 0..self.config.max_tokens {
             // Extract logits for the last position
             let next_logits = if logits.dims().len() == 3 {
@@ -154,6 +155,7 @@ impl InferenceEngine {
                 } else {
                     let _ = tx.send(TokenEvent::Done(FinishReason::Stop));
                 }
+                finished = true;
                 break;
             }
 
@@ -188,10 +190,10 @@ impl InferenceEngine {
             };
         }
 
-        // If we exhausted max_tokens without hitting a stop token
-        // the caller can detect this because the channel closes without Done(Stop).
-        // Send MaxTokens to be explicit.
-        let _ = tx.send(TokenEvent::Done(FinishReason::MaxTokens));
+        // If we exhausted max_tokens without hitting a stop token, send MaxTokens.
+        if !finished {
+            let _ = tx.send(TokenEvent::Done(FinishReason::MaxTokens));
+        }
 
         rx
     }

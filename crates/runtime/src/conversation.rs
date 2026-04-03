@@ -38,7 +38,14 @@ impl ConversationLoop {
 
         self.session.push_message(ChatMessage::user(user_input));
 
+        const MAX_TOOL_ITERATIONS: usize = 25;
+        let mut iterations = 0;
         loop {
+            if iterations >= MAX_TOOL_ITERATIONS {
+                // Force break to prevent infinite tool loops
+                break;
+            }
+            iterations += 1;
             // Generate next response
             let rx = self
                 .engine

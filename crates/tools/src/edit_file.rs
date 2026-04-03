@@ -47,11 +47,7 @@ impl Tool for EditFileTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing required parameter: new_string"))?;
 
-        let path = if std::path::Path::new(path_str).is_absolute() {
-            std::path::PathBuf::from(path_str)
-        } else {
-            ctx.cwd.join(path_str)
-        };
+        let path = crate::resolve_and_validate_path(path_str, &ctx.cwd)?;
 
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read file: {}", path.display()))?;

@@ -33,7 +33,7 @@ impl PermissionPolicy {
                 )),
             },
             PermissionMode::WorkspaceWrite => match tool_name {
-                "bash" => PermissionCheck::NeedsApproval(
+                "bash" | "repl" => PermissionCheck::NeedsApproval(
                     "Bash execution requires approval in workspace-write mode".to_string(),
                 ),
                 _ => PermissionCheck::Allowed,
@@ -102,5 +102,23 @@ mod tests {
             policy.check("write_file", &serde_json::json!({})),
             PermissionCheck::Allowed
         );
+    }
+
+    #[test]
+    fn test_workspace_write_needs_approval_for_repl() {
+        let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        match policy.check("repl", &serde_json::json!({})) {
+            PermissionCheck::NeedsApproval(_) => {}
+            other => panic!("Expected NeedsApproval, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_read_only_blocks_repl() {
+        let policy = PermissionPolicy::new(PermissionMode::ReadOnly);
+        match policy.check("repl", &serde_json::json!({})) {
+            PermissionCheck::Denied(_) => {}
+            other => panic!("Expected Denied, got {other:?}"),
+        }
     }
 }

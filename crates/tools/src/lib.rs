@@ -4,6 +4,48 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+/// Resolve a path and ensure it stays within the workspace root.
+/// Returns error if the resolved path escapes the workspace.
+pub fn resolve_and_validate_path(
+    file_path: &str,
+    cwd: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    let p = std::path::Path::new(file_path);
+    let resolved = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
+
+    // Canonicalize what exists, for new files canonicalize parent
+    let canonical = if resolved.exists() {
+        resolved.canonicalize()?
+    } else if let Some(parent) = resolved.parent() {
+        if parent.exists() {
+            parent
+                .canonicalize()?
+                .join(resolved.file_name().unwrap_or_default())
+        } else {
+            resolved.clone()
+        }
+    } else {
+        resolved.clone()
+    };
+
+    let cwd_canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+
+    if !canonical.starts_with(&cwd_canonical) {
+        anyhow::bail!(
+            "Path '{}' resolves to '{}' which is outside the workspace '{}'",
+            file_path,
+            canonical.display(),
+            cwd_canonical.display()
+        );
+    }
+
+    Ok(canonical)
+}
+
 pub mod agent;
 pub mod bash;
 pub mod edit_file;
@@ -226,5 +268,20 @@ mod tests {
         let ctx = test_ctx();
         let result = execute_tool(&registry, "unknown", serde_json::json!({}), &ctx);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_path_traversal_blocked() {
+        let cwd = std::env::temp_dir();
+        let result = resolve_and_validate_path("../../etc/passwd", &cwd);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_valid_path_allowed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "hello").unwrap();
+        let result = resolve_and_validate_path("test.txt", dir.path());
+        assert!(result.is_ok());
     }
 }
