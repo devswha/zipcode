@@ -8,7 +8,8 @@ Usage: ./scripts/package.sh [--with-llama-server[=PATH]]
 
 Options:
   --with-llama-server         Bundle llama-server from ZIPCODE_LLAMA_SERVER_BIN,
-                              LLAMA_SERVER_BIN, or PATH.
+                              LLAMA_SERVER_BIN, or PATH so Gemma 4 first-run
+                              and recovery stay offline.
   --with-llama-server=PATH    Bundle the llama-server binary at PATH.
   -h, --help                  Show this help text.
 EOF
@@ -103,6 +104,7 @@ mkdir -p "${ARCHIVE_DIR}"
 
 cp target/release/zipcode "${ARCHIVE_DIR}/"
 cp scripts/install.sh "${ARCHIVE_DIR}/"
+cp scripts/install_llama_server.sh "${ARCHIVE_DIR}/"
 cp scripts/download_model.sh "${ARCHIVE_DIR}/"
 cp README.md "${ARCHIVE_DIR}/" 2>/dev/null || true
 
@@ -115,6 +117,8 @@ fi
 
 mkdir -p "${ARCHIVE_DIR}/models"
 echo "Place your .gguf model file here." > "${ARCHIVE_DIR}/models/PLACE_MODEL_HERE.txt"
+echo "Place tokenizer.json next to the model file here." \
+    > "${ARCHIVE_DIR}/models/PLACE_TOKENIZER_HERE.txt"
 
 (
     cd dist
@@ -124,3 +128,4 @@ echo "Place your .gguf model file here." > "${ARCHIVE_DIR}/models/PLACE_MODEL_HE
 echo ""
 echo "Archive created: ${ARCHIVE_ZIP}"
 echo "Size: $(du -h "${ARCHIVE_ZIP}" | cut -f1)"
+echo "First run after install: source ~/.zipcode/setup.env && zipcode"

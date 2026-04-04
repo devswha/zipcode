@@ -30,6 +30,8 @@
 
 **zipcode** is a Rust-based coding agent that runs **entirely on your machine** using local LLM inference. It can run Gemma-family GGUF models through candle, native `llama-cpp`, or a `llama-server` fallback for newer Gemma 4 models that outpace the current Rust bindings.
 
+The intended entrypoint is plain `zipcode`: if the machine is ready, you land in the REPL; if it is fresh or broken, zipcode points you at setup or repair steps instead of dropping you into backend jargon.
+
 Ship it on a USB stick. Run it in a SCIF. It just works.
 
 ```
@@ -69,39 +71,50 @@ cd zipcode
 cargo build --release
 ```
 
-### 2. Get a model
+### 2. Get a model + tokenizer
 
 ```bash
 # Automated (requires internet + huggingface-cli)
 ./scripts/download_model.sh
 
-# Or manual: download Gemma 4 27B GGUF from HuggingFace
-# Place in ~/.zipcode/models/
+# Or manual: download a Gemma GGUF + matching tokenizer.json
+# Place both files in ~/.zipcode/models/
 ```
 
-### 3. Check your environment
+### 3. First run
 
 ```bash
+# Start here. Ready machines drop into the REPL.
+./target/release/zipcode
+
+# Scripted first-run / repair path
+./target/release/zipcode setup --skip-smoke
+
+# Detailed readiness + repair report
 ./target/release/zipcode doctor
 ```
 
-```
-zipcode doctor
---------------
-  Binary:   zipcode v0.1.0 (linux-x86_64)
-  CUDA:     Available
-  Model:    gemma-4-27b-it-Q8_0.gguf (28.3 GB)
-  Ready:    All checks passed
-```
+`zipcode` is the default entrypoint. Use `setup` when you want zipcode to discover the model,
+write or refresh the global config, and optionally run a smoke prompt. Use `doctor` when you
+want the repair summary without entering the agent.
 
-### 4. Run
+### 4. Power-user flows
 
 ```bash
-# Interactive REPL
+# Interactive entrypoint
 zipcode
 
 # One-shot
 zipcode prompt "explain this codebase"
+
+# Guided config + smoke test
+zipcode setup
+
+# Guided config only
+zipcode setup --skip-smoke
+
+# Readiness / repair report
+zipcode doctor
 
 # Custom model
 zipcode --model ./my-model.gguf
@@ -118,12 +131,19 @@ zipcode --permission-mode read-only
 
 ## Air-Gapped Deployment
 
-zipcode was designed from the ground up for **isolated networks**. Package everything into a ZIP, move it on a USB drive, and run.
+zipcode was designed from the ground up for **isolated networks**. Package everything into a ZIP,
+move it on a USB drive, and let bare `zipcode` handle first-run versus recovery on the target
+machine.
 
 ### Package
 
 ```bash
+# Smallest bundle
 ./scripts/package.sh
+
+# Or bundle llama-server so Gemma 4 stays fully offline on first run / repair
+./scripts/package.sh --with-llama-server=/path/to/llama-server
+
 # Creates: dist/zipcode-v0.1.0-linux-x86_64-cuda.zip
 ```
 
@@ -132,12 +152,14 @@ zipcode was designed from the ground up for **isolated networks**. Package every
 ```
 zipcode-v0.1.0-linux-x86_64-cuda.zip
  |- zipcode                     # single binary (~30 MB)
- |- libcudart.so.12             # CUDA runtime (optional)
  |- install.sh                  # one-command setup
+ |- install_llama_server.sh     # repair helper for adding llama-server later
  |- download_model.sh           # model download helper
  |- README.md
+ |- llama-server                # optional, when bundled during packaging
  '- models/
-     '- PLACE_MODEL_HERE.txt
+     |- PLACE_MODEL_HERE.txt
+     '- PLACE_TOKENIZER_HERE.txt
 ```
 
 ### Transfer workflow
@@ -146,15 +168,19 @@ zipcode-v0.1.0-linux-x86_64-cuda.zip
   Internet Machine                    Air-Gapped Machine
   ================                    ==================
 
-  1. Download zipcode.zip
-  2. Download gemma-4-27b.gguf
-  3. Copy to USB
+  1. Build or download zipcode.zip
+  2. Download model.gguf + tokenizer.json
+  3. Optional: bundle llama-server for Gemma 4
+  4. Copy to USB
                         ---- USB ---->
-                                      4. Unzip
-                                      5. ./install.sh
-                                      6. cp *.gguf ~/.zipcode/models/
-                                      7. zipcode doctor
-                                      8. zipcode
+                                      5. Unzip
+                                      6. ./install.sh
+                                      7. cp model.gguf tokenizer.json ~/.zipcode/models/
+                                      8. source ~/.zipcode/setup.env
+                                      9. zipcode
+                                     10. If repair is needed:
+                                         zipcode doctor
+                                         zipcode setup --skip-smoke
 ```
 
 ---
@@ -261,9 +287,10 @@ cli --> runtime --> inference
 
 | Command | Description |
 |---------|-------------|
-| `zipcode` | Start interactive REPL |
+| `zipcode` | Smart entrypoint: REPL when ready, setup/repair guidance when not |
 | `zipcode prompt "..."` | One-shot prompt, then exit |
-| `zipcode doctor` | Check CUDA, model, binary version |
+| `zipcode setup` | Discover prerequisites, write config, optionally run a smoke prompt |
+| `zipcode doctor` | Show readiness state and repair hints |
 
 ### Flags
 
@@ -345,7 +372,8 @@ Place in any project root. Contents are injected into the system prompt.
 
 # Option 2: manual
 # Download from: huggingface.co/google/gemma-4-27b-it-GGUF
-# Place in: ~/.zipcode/models/
+# Also download tokenizer.json from the matching model repo
+# Place both files in: ~/.zipcode/models/
 ```
 
 CPU inference works but is significantly slower. zipcode auto-detects CUDA availability at startup.
@@ -353,12 +381,13 @@ CPU inference works but is significantly slower. zipcode auto-detects CUDA avail
 ### Gemma 4 today
 
 - Native `llama-cpp-2` `0.1.141` still cannot open `general.architecture = gemma4`.
-- zipcode now supports a `llama-server` fallback path for Gemma 4:
-  1. build a recent `llama-server` from upstream `ggml-org/llama.cpp`
-  2. set `ZIPCODE_LLAMA_SERVER_BIN=/path/to/llama-server`
-  3. run `zipcode --backend llama-cpp ...` or `zipcode --backend llama-server ...`
+- In practice, Gemma 4 currently works best when zipcode can find a recent `llama-server`.
+- Easiest paths:
+  1. bundle it during packaging with `./scripts/package.sh --with-llama-server=/path/to/llama-server`
+  2. or install it later with `~/.zipcode/install_llama_server.sh /path/to/llama-server ~/.zipcode`
+  3. or set `ZIPCODE_LLAMA_SERVER_BIN=/path/to/llama-server`
 
-The `llama-server` path is now the practical Gemma 4 route in zipcode. In local validation it handled text generation and a `read_file` tool-use round trip; native direct Gemma 4 loading is still limited by `llama-cpp-2`.
+After that, rerun `zipcode` (default entrypoint) or `zipcode setup` if you want zipcode to refresh its saved config first.
 
 ---
 
