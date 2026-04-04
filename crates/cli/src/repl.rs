@@ -81,7 +81,7 @@ fn is_gguf_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
 }
 
-fn is_probably_gemma4_model(path: &Path) -> bool {
+pub(crate) fn is_probably_gemma4_model(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(|name| {
@@ -91,7 +91,7 @@ fn is_probably_gemma4_model(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn list_models(model_dir: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn list_models(model_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut models: Vec<_> = std::fs::read_dir(model_dir)
         .with_context(|| format!("Failed to read model directory: {}", model_dir.display()))?
         .flatten()
@@ -125,7 +125,7 @@ pub fn find_model(model_dir: &Path) -> Result<PathBuf> {
     })
 }
 
-fn resolve_model_path(
+pub(crate) fn resolve_model_path(
     explicit_model_path: Option<&Path>,
     config: &ZipcodeConfig,
     cwd: &Path,
@@ -211,6 +211,10 @@ pub fn create_loop(
     }
     if let Some(m) = config.generation.max_tokens {
         gen_config.max_tokens = m;
+    }
+
+    if let Some(path) = &config.llama_server_bin {
+        std::env::set_var("ZIPCODE_LLAMA_SERVER_BIN", path);
     }
 
     let backend = Backend::parse(backend_str)?;
@@ -418,6 +422,7 @@ mod tests {
         let config = ZipcodeConfig {
             model_dir: PathBuf::from("models"),
             model_file: None,
+            llama_server_bin: None,
             permission_mode: "workspace-write".to_string(),
             generation: GenerationOverrides::default(),
         };

@@ -8,6 +8,8 @@ pub struct ZipcodeConfig {
     pub model_dir: PathBuf,
     #[serde(default)]
     pub model_file: Option<String>,
+    #[serde(default)]
+    pub llama_server_bin: Option<PathBuf>,
     #[serde(default = "default_permission")]
     pub permission_mode: String,
     #[serde(default)]
@@ -36,6 +38,7 @@ impl Default for ZipcodeConfig {
         Self {
             model_dir: default_model_dir(),
             model_file: None,
+            llama_server_bin: None,
             permission_mode: default_permission(),
             generation: GenerationOverrides::default(),
         }
@@ -43,19 +46,21 @@ impl Default for ZipcodeConfig {
 }
 
 impl ZipcodeConfig {
+    /// Load only the global config (~/.zipcode/config.json), or defaults if it does not exist.
+    pub fn load_global() -> Result<Self> {
+        let path = global_config_path();
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            Ok(serde_json::from_str(&content)?)
+        } else {
+            Ok(Self::default())
+        }
+    }
+
     /// Load config with hierarchy: global (~/.zipcode/config.json) < project (.zipcode.json)
     pub fn load(cwd: &Path) -> Result<Self> {
-        let mut config = Self::default();
+        let mut config = Self::load_global()?;
         let project_root = find_project_root(cwd);
-
-        // Global config
-        let global_path = dirs::home_dir().map(|h| h.join(".zipcode/config.json"));
-        if let Some(path) = global_path {
-            if path.exists() {
-                let content = std::fs::read_to_string(&path)?;
-                config = serde_json::from_str(&content)?;
-            }
-        }
 
         // Project config (overrides)
         let project_path = project_root.join(".zipcode.json");
@@ -76,6 +81,14 @@ impl ZipcodeConfig {
             if let Some(file) = project["model_file"].as_str() {
                 config.model_file = Some(file.to_string());
             }
+            if let Some(bin) = project["llama_server_bin"].as_str() {
+                let path = PathBuf::from(bin);
+                config.llama_server_bin = Some(if path.is_absolute() {
+                    path
+                } else {
+                    project_root.join(path)
+                });
+            }
             if let Some(gen) = project.get("generation") {
                 if let Some(t) = gen["temperature"].as_f64() {
                     config.generation.temperature = Some(t);
@@ -90,6 +103,17 @@ impl ZipcodeConfig {
         }
 
         Ok(config)
+    }
+
+    /// Save the config to ~/.zipcode/config.json, creating parent directories if needed.
+    pub fn save_global(&self) -> Result<PathBuf> {
+        let path = global_config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, content)?;
+        Ok(path)
     }
 }
 
@@ -107,6 +131,13 @@ pub fn find_project_root(start: &Path) -> PathBuf {
     start.to_path_buf()
 }
 
+#[must_use]
+pub fn global_config_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".zipcode/config.json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +147,7 @@ mod tests {
         let config = ZipcodeConfig::default();
         assert_eq!(config.permission_mode, "workspace-write");
         assert!(config.model_dir.to_str().unwrap().contains(".zipcode"));
+        assert_eq!(config.llama_server_bin, None);
     }
 
     #[test]
@@ -188,5 +220,21 @@ mod tests {
         std::fs::write(dir.path().join(".zipcode.json"), "{}").unwrap();
 
         assert_eq!(find_project_root(&nested), dir.path());
+    }
+
+    #[test]
+    fn test_load_project_override_relative_llama_server_bin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"llama_server_bin": "bin/llama-server"}"#,
+        )
+        .unwrap();
+
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(
+            config.llama_server_bin,
+            Some(dir.path().join("bin/llama-server"))
+        );
     }
 }

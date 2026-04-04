@@ -35,6 +35,12 @@ enum Commands {
     },
     /// Check system health: model files, CUDA, version
     Doctor,
+    /// Discover local prerequisites, write config, and optionally run a smoke prompt
+    Setup {
+        /// Write config/wrapper only and skip the live smoke prompt
+        #[arg(long)]
+        skip_smoke: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -58,6 +64,9 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Doctor) => {
             commands::doctor(model_path, backend)?;
+        }
+        Some(Commands::Setup { skip_smoke }) => {
+            commands::setup(model_path, backend, skip_smoke)?;
         }
         Some(Commands::Prompt { text }) => {
             repl::run_oneshot(&text, model_path, permission_mode, backend)?;

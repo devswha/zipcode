@@ -19,6 +19,19 @@ fn make_temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn write_executable(path: &std::path::Path, body: &str) {
+    std::fs::write(path, body).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("stat executable")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod executable");
+    }
+}
+
 #[test]
 fn doctor_runs() {
     let output = zipcode_bin()
@@ -49,7 +62,7 @@ fn doctor_accepts_global_model_flag_after_subcommand() {
     assert!(output.status.success(), "doctor should exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Model found:") && stdout.contains("test.gguf"),
+        stdout.contains("test.gguf") && stdout.contains("Status:"),
         "doctor should report models from explicit directory, got: {stdout}"
     );
 
@@ -123,4 +136,83 @@ fn invalid_backend_is_rejected() {
         combined.contains("unsupported backend"),
         "invalid backend should produce a clear error, got: {combined}"
     );
+}
+
+#[test]
+fn doctor_reports_missing_server_for_gemma4_without_llama_server() {
+    let home = make_temp_dir("doctor-missing-server");
+    let model_dir = home.join(".zipcode/models");
+    let isolated_bin = home.join("bin");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&isolated_bin).expect("create isolated bin dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+
+    let output = zipcode_bin()
+        .arg("doctor")
+        .env("HOME", &home)
+        .env("PATH", &isolated_bin)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+
+    assert!(output.status.success(), "doctor should still exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Status:   missing-server"),
+        "doctor should report missing-server, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn setup_writes_config_and_wrapper_when_smoke_skipped() {
+    let home = make_temp_dir("setup-skip-smoke");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create zipcode bin dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_executable(
+        &zipcode_bin_dir.join("llama-server"),
+        "#!/bin/sh\necho fake llama-server\n",
+    );
+
+    let output = zipcode_bin()
+        .args(["setup", "--skip-smoke"])
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode setup --skip-smoke");
+
+    assert!(
+        output.status.success(),
+        "setup should succeed, got: {output:?}"
+    );
+
+    let config_path = home.join(".zipcode/config.json");
+    let wrapper_path = home.join(".zipcode/bin/zipcode-local");
+    let config = std::fs::read_to_string(&config_path).expect("read written config");
+    assert!(
+        config.contains("gemma-4-test.gguf"),
+        "setup should persist the discovered model file, got: {config}"
+    );
+    assert!(
+        config.contains("llama-server"),
+        "setup should persist the discovered llama-server path, got: {config}"
+    );
+    assert!(wrapper_path.is_file(), "setup should create wrapper shim");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Smoke: skipped (--skip-smoke)"),
+        "setup should report skipped smoke, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
 }
