@@ -92,6 +92,23 @@ fn help_flag() {
 }
 
 #[test]
+fn help_lists_explicit_power_user_flows() {
+    let output = zipcode_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to run zipcode --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for command in ["repl", "prompt", "doctor", "setup"] {
+        assert!(
+            stdout.contains(command),
+            "root help should list `{command}`, got: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn version_flag() {
     let output = zipcode_bin()
         .arg("--version")
@@ -180,6 +197,22 @@ fn bare_zipcode_routes_to_repair_guidance_when_saved_model_path_is_broken() {
 }
 
 #[test]
+fn repl_no_model_graceful_error() {
+    let output = zipcode_bin()
+        .arg("repl")
+        .env("HOME", "/tmp/zipcode-test-nonexistent")
+        .output()
+        .expect("failed to run zipcode repl");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !combined.contains("panicked at") && !combined.contains("RUST_BACKTRACE"),
+        "repl should not panic, got: {combined}"
+    );
+}
 fn invalid_backend_is_rejected() {
     let output = zipcode_bin()
         .args(["--backend", "bad-backend", "doctor"])

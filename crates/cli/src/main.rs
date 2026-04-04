@@ -28,6 +28,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Open the interactive REPL directly
+    Repl,
     /// Run a single prompt and exit
     Prompt {
         /// The text to send to the model
@@ -62,6 +64,9 @@ fn main() -> Result<()> {
     let backend = cli.backend.as_str();
 
     match cli.command {
+        Some(Commands::Repl) => {
+            repl::run_interactive(model_path, permission_mode, backend)?;
+        }
         Some(Commands::Doctor) => {
             commands::doctor(model_path, backend)?;
         }
