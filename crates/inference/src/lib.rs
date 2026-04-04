@@ -5,6 +5,7 @@ pub mod device;
 pub mod engine;
 #[cfg(feature = "llama-cpp")]
 pub mod llama_cpp_backend;
+pub mod llama_server_backend;
 pub mod mock;
 #[cfg(feature = "candle")]
 pub mod sampler;
@@ -19,6 +20,7 @@ pub use device::select_device;
 pub use engine::InferenceEngine;
 #[cfg(feature = "llama-cpp")]
 pub use llama_cpp_backend::LlamaCppProvider;
+pub use llama_server_backend::LlamaServerProvider;
 pub use mock::{MockInferenceProvider, MockResponse};
 pub use types::*;
 
@@ -36,17 +38,26 @@ pub trait InferenceProvider: Send {
 pub enum Backend {
     /// llama.cpp via llama-cpp-2 bindings — supports GGUF including Gemma 4.
     LlamaCpp,
+    /// llama.cpp server subprocess using the OpenAI-compatible HTTP API.
+    LlamaServer,
     /// Candle (pure-Rust) backend.
     Candle,
 }
 
 impl Backend {
-    /// Parse a backend name string. Defaults to `LlamaCpp` for unknown values.
-    #[must_use]
-    pub fn from_name(s: &str) -> Self {
+    /// Parse a backend name string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend name is unsupported.
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s {
-            "candle" => Backend::Candle,
-            _ => Backend::LlamaCpp,
+            "llama-cpp" => Ok(Backend::LlamaCpp),
+            "llama-server" => Ok(Backend::LlamaServer),
+            "candle" => Ok(Backend::Candle),
+            other => anyhow::bail!(
+                "unsupported backend '{other}'. Expected one of: llama-cpp, llama-server, candle"
+            ),
         }
     }
 }
@@ -79,6 +90,11 @@ fn create_engine_inner(
             provider.set_config(config);
             Ok(Box::new(provider))
         }
+        Backend::LlamaServer => {
+            let mut provider = LlamaServerProvider::load(model_path)?;
+            provider.set_config(config);
+            Ok(Box::new(provider))
+        }
         Backend::Candle => {
             let device = select_device();
             let mut engine = InferenceEngine::load(model_path, tokenizer_path, device)?;
@@ -101,6 +117,11 @@ fn create_engine_inner(
             provider.set_config(config);
             Ok(Box::new(provider))
         }
+        Backend::LlamaServer => {
+            let mut provider = LlamaServerProvider::load(model_path)?;
+            provider.set_config(config);
+            Ok(Box::new(provider))
+        }
         Backend::Candle => {
             let _ = config;
             anyhow::bail!(
@@ -119,6 +140,11 @@ fn create_engine_inner(
     config: GenerationConfig,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
     match backend {
+        Backend::LlamaServer => {
+            let mut provider = LlamaServerProvider::load(model_path)?;
+            provider.set_config(config);
+            Ok(Box::new(provider))
+        }
         Backend::Candle => {
             let device = select_device();
             let mut engine = InferenceEngine::load(model_path, tokenizer_path, device)?;
@@ -137,12 +163,67 @@ fn create_engine_inner(
 
 #[cfg(all(not(feature = "llama-cpp"), not(feature = "candle")))]
 fn create_engine_inner(
-    _backend: Backend,
-    _model_path: &std::path::Path,
+    backend: Backend,
+    model_path: &std::path::Path,
     _tokenizer_path: &std::path::Path,
-    _config: GenerationConfig,
+    config: GenerationConfig,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
-    anyhow::bail!(
-        "No inference backend enabled. Enable at least one of the `candle` or `llama-cpp` features."
-    )
+    match backend {
+        Backend::LlamaServer => {
+            let mut provider = LlamaServerProvider::load(model_path)?;
+            provider.set_config(config);
+            Ok(Box::new(provider))
+        }
+        Backend::LlamaCpp | Backend::Candle => anyhow::bail!(
+            "No native inference backend enabled. Enable at least one of the `candle` or `llama-cpp` features, or use `llama-server`."
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Backend;
+    #[cfg(feature = "llama-cpp")]
+    use super::{create_engine, GenerationConfig};
+    #[cfg(feature = "llama-cpp")]
+    use std::path::Path;
+
+    #[test]
+    fn parse_accepts_known_backends() {
+        assert!(matches!(
+            Backend::parse("llama-cpp").unwrap(),
+            Backend::LlamaCpp
+        ));
+        assert!(matches!(
+            Backend::parse("llama-server").unwrap(),
+            Backend::LlamaServer
+        ));
+        assert!(matches!(Backend::parse("candle").unwrap(), Backend::Candle));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_backend() {
+        let error = Backend::parse("llama").unwrap_err().to_string();
+        assert!(error.contains("unsupported backend"));
+    }
+
+    #[cfg(feature = "llama-cpp")]
+    #[test]
+    #[ignore = "requires ZIPCODE_TEST_MODEL_PATH and ZIPCODE_LLAMA_SERVER_BIN for a local Gemma 4 GGUF"]
+    fn local_gemma4_model_loads_via_llama_server() {
+        let model_path = std::env::var("ZIPCODE_TEST_MODEL_PATH")
+            .expect("ZIPCODE_TEST_MODEL_PATH must point to a local Gemma 4 GGUF");
+        let model_path = Path::new(&model_path);
+
+        let engine = create_engine(
+            Backend::LlamaServer,
+            model_path,
+            Path::new("unused-tokenizer.json"),
+            GenerationConfig::default(),
+        );
+
+        if let Err(error) = engine {
+            panic!("expected Gemma 4 GGUF to load via llama-server, got: {error}");
+        }
+    }
 }

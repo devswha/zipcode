@@ -53,11 +53,18 @@ impl PermissionPolicy {
 }
 
 /// Convert a permission mode string to a `PermissionMode`.
-pub fn permission_mode_from_str(s: &str) -> PermissionMode {
+///
+/// # Errors
+///
+/// Returns an error when the permission mode is unsupported.
+pub fn parse_permission_mode(s: &str) -> anyhow::Result<PermissionMode> {
     match s {
-        "read-only" => PermissionMode::ReadOnly,
-        "full-access" | "danger-full-access" => PermissionMode::FullAccess,
-        _ => PermissionMode::WorkspaceWrite,
+        "read-only" => Ok(PermissionMode::ReadOnly),
+        "workspace-write" => Ok(PermissionMode::WorkspaceWrite),
+        "full-access" | "danger-full-access" => Ok(PermissionMode::FullAccess),
+        other => anyhow::bail!(
+            "unsupported permission mode '{other}'. Expected one of: read-only, workspace-write, full-access"
+        ),
     }
 }
 
@@ -120,5 +127,27 @@ mod tests {
             PermissionCheck::Denied(_) => {}
             other => panic!("Expected Denied, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parse_permission_mode_accepts_known_values() {
+        assert!(matches!(
+            parse_permission_mode("read-only").unwrap(),
+            PermissionMode::ReadOnly
+        ));
+        assert!(matches!(
+            parse_permission_mode("workspace-write").unwrap(),
+            PermissionMode::WorkspaceWrite
+        ));
+        assert!(matches!(
+            parse_permission_mode("full-access").unwrap(),
+            PermissionMode::FullAccess
+        ));
+    }
+
+    #[test]
+    fn test_parse_permission_mode_rejects_unknown_values() {
+        let error = parse_permission_mode("workspace").unwrap_err().to_string();
+        assert!(error.contains("unsupported permission mode"));
     }
 }

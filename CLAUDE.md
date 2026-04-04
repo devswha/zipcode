@@ -59,7 +59,7 @@ cli → runtime → inference
 
 ## Current Limitations (known issues to address)
 
-1. **Gemma 4 GGUF not loadable yet** — `llama-cpp-rs` 0.1.141 bundles old llama.cpp that lacks `gemma4` architecture. Upstream llama.cpp main already supports it. Fix: bump `llama-cpp-2` when 0.1.142+ releases, or add `llama-server` subprocess backend.
+1. **Gemma 4 on native bindings is still blocked** — `llama-cpp-rs` 0.1.141 still lacks `gemma4` architecture support, so zipcode now falls back to a recent external `llama-server` binary when `ZIPCODE_LLAMA_SERVER_BIN` is set or `llama-server` is on PATH.
 2. **candle backend has no quantized Gemma** — candle 0.8 has no `quantized_gemma` module. Uses `quantized_llama` as stand-in. Only compiles, does not actually load Gemma GGUF.
 3. **Chat template is Gemma-only** — Other models (Qwen, Llama) use different tool-calling formats. Models that don't understand `<tool_call>` tags won't trigger tool execution.
 4. **No streaming to terminal** — `generate_stream()` runs synchronously, queues all events, then returns receiver. No true first-token streaming.

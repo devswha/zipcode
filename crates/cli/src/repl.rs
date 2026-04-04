@@ -5,9 +5,10 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
 use zipcode_inference::{create_engine, Backend, GenerationConfig};
+use zipcode_runtime::config::find_project_root;
 use zipcode_runtime::prompt::build_system_prompt;
 use zipcode_runtime::{
-    permission_mode_from_str, ConversationLoop, PermissionPolicy, Session, ZipcodeConfig,
+    parse_permission_mode, ConversationLoop, PermissionPolicy, Session, ZipcodeConfig,
 };
 use zipcode_tools::{
     agent::AgentTool, bash::BashTool, edit_file::EditFileTool, glob_search::GlobSearchTool,
@@ -74,13 +75,104 @@ pub fn build_registry() -> ToolRegistry {
     registry
 }
 
-/// Find a .gguf file in the given directory.
-pub fn find_model(model_dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(model_dir).ok()?;
-    entries
+fn is_gguf_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+}
+
+fn is_probably_gemma4_model(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.contains("gemma-4") || lower.contains("gemma4")
+        })
+        .unwrap_or(false)
+}
+
+fn list_models(model_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut models: Vec<_> = std::fs::read_dir(model_dir)
+        .with_context(|| format!("Failed to read model directory: {}", model_dir.display()))?
         .flatten()
         .map(|e| e.path())
-        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("gguf"))
+        .filter(|path| path.is_file() && is_gguf_path(path))
+        .collect();
+
+    models.sort_by_cached_key(|path| {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let priority = if file_name.contains("gemma-4") || file_name.contains("gemma4") {
+            0
+        } else {
+            1
+        };
+        (priority, file_name)
+    });
+    Ok(models)
+}
+
+/// Find a single .gguf file in the given directory.
+pub fn find_model(model_dir: &Path) -> Result<PathBuf> {
+    list_models(model_dir)?.into_iter().next().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No .gguf model file found in directory: {}",
+            model_dir.display()
+        )
+    })
+}
+
+fn resolve_model_path(
+    explicit_model_path: Option<&Path>,
+    config: &ZipcodeConfig,
+    cwd: &Path,
+    project_root: &Path,
+) -> Result<PathBuf> {
+    if let Some(path) = explicit_model_path {
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+
+        return if resolved.is_dir() {
+            find_model(&resolved)
+        } else if resolved.exists() {
+            Ok(resolved)
+        } else {
+            anyhow::bail!("Model path not found: {}", resolved.display())
+        };
+    }
+
+    let model_dir = if config.model_dir.is_absolute() {
+        config.model_dir.clone()
+    } else {
+        project_root.join(&config.model_dir)
+    };
+
+    if let Some(ref model_file) = config.model_file {
+        let configured = PathBuf::from(model_file);
+        let resolved = if configured.is_absolute() {
+            configured
+        } else if configured.parent().is_some() {
+            project_root.join(configured)
+        } else {
+            model_dir.join(configured)
+        };
+
+        return if resolved.is_dir() {
+            find_model(&resolved)
+        } else if resolved.exists() {
+            Ok(resolved)
+        } else {
+            anyhow::bail!("Configured model path not found: {}", resolved.display())
+        };
+    }
+
+    find_model(&model_dir)
 }
 
 /// Build and return a ConversationLoop ready for use.
@@ -90,6 +182,7 @@ pub fn create_loop(
     backend_str: &str,
 ) -> Result<ConversationLoop> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let project_root = find_project_root(&cwd);
 
     // Load config
     let config = match ZipcodeConfig::load(&cwd) {
@@ -101,17 +194,7 @@ pub fn create_loop(
     };
 
     // Resolve model file
-    let model_file = if let Some(p) = model_path {
-        p.to_path_buf()
-    } else {
-        // Try config model_file, then scan model_dir
-        if let Some(ref mf) = config.model_file {
-            config.model_dir.join(mf)
-        } else {
-            find_model(&config.model_dir)
-                .context("No .gguf model file found. Use --model to specify one.")?
-        }
-    };
+    let model_file = resolve_model_path(model_path, &config, &cwd, &project_root)?;
 
     // Tokenizer lives next to the model or in the same dir
     let tokenizer_path = model_file
@@ -130,14 +213,34 @@ pub fn create_loop(
         gen_config.max_tokens = m;
     }
 
-    let backend = Backend::from_name(backend_str);
-    let engine = create_engine(backend, &model_file, &tokenizer_path, gen_config)
-        .context("Failed to load inference engine")?;
+    let backend = Backend::parse(backend_str)?;
+    let engine = match create_engine(backend, &model_file, &tokenizer_path, gen_config.clone()) {
+        Ok(engine) => engine,
+        Err(native_error)
+            if matches!(backend, Backend::LlamaCpp) && is_probably_gemma4_model(&model_file) =>
+        {
+            eprintln!(
+                "\x1b[33mWarning: native llama-cpp backend could not load Gemma 4; trying llama-server fallback.\x1b[0m"
+            );
+            create_engine(
+                Backend::LlamaServer,
+                &model_file,
+                &tokenizer_path,
+                gen_config,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to load inference engine via native llama-cpp ({native_error}) or llama-server fallback"
+                )
+            })?
+        }
+        Err(error) => return Err(error).context("Failed to load inference engine"),
+    };
 
     // Build tools and system prompt
     let registry = build_registry();
     let resolved_permission_mode = permission_mode.unwrap_or(&config.permission_mode);
-    let effective_permission = permission_mode_from_str(resolved_permission_mode);
+    let effective_permission = parse_permission_mode(resolved_permission_mode)?;
     let permission_str = resolved_permission_mode.to_string();
     let (system_prompt, tool_specs) = build_system_prompt(&cwd, &registry, &permission_str);
 
@@ -257,4 +360,70 @@ fn print_status(conv: &ConversationLoop) {
     println!("Messages:    {}", conv.session.messages.len());
     println!("Tools:       {}", conv.tools.names().len());
     println!("Working dir: {}", conv.cwd.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use zipcode_runtime::config::GenerationOverrides;
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("zipcode-{prefix}-{unique}"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn list_models_sorts_gemma4_first() {
+        let dir = temp_dir("find-model");
+        std::fs::write(dir.join("z-last.gguf"), "").unwrap();
+        std::fs::write(dir.join("gemma-4-e2b-it-q8_0.gguf"), "").unwrap();
+        std::fs::write(dir.join("a-first.gguf"), "").unwrap();
+
+        let models = list_models(&dir).unwrap();
+        assert_eq!(models[0], dir.join("gemma-4-e2b-it-q8_0.gguf"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_model_path_accepts_directory_argument() {
+        let dir = temp_dir("dir-arg");
+        let model_dir = dir.join("models");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let model_file = model_dir.join("gemma-4-e2b-it-q8_0.gguf");
+        std::fs::write(&model_file, "").unwrap();
+
+        let config = ZipcodeConfig::default();
+        let resolved = resolve_model_path(Some(&model_dir), &config, &dir, &dir).unwrap();
+        assert_eq!(resolved, model_file);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_model_path_uses_project_root_for_relative_config_paths() {
+        let dir = temp_dir("project-root");
+        let nested = dir.join("src/bin");
+        let model_dir = dir.join("models");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let model_file = model_dir.join("gemma-4-e2b-it-q8_0.gguf");
+        std::fs::write(&model_file, "").unwrap();
+
+        let config = ZipcodeConfig {
+            model_dir: PathBuf::from("models"),
+            model_file: None,
+            permission_mode: "workspace-write".to_string(),
+            generation: GenerationOverrides::default(),
+        };
+
+        let resolved = resolve_model_path(None, &config, &nested, &dir).unwrap();
+        assert_eq!(resolved, model_file);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

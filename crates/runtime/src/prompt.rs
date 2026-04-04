@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::config::find_project_root;
 use zipcode_inference::chat_template::ToolSpec;
 use zipcode_tools::ToolRegistry;
 
@@ -20,13 +21,14 @@ pub fn build_system_prompt(
     permission_mode: &str,
 ) -> (String, Vec<ToolSpec>) {
     let mut prompt = BASE_SYSTEM_PROMPT.to_string();
+    let project_root = find_project_root(cwd);
 
     // Add permission context
     prompt.push_str(&format!("\n\nPermission mode: {permission_mode}"));
     prompt.push_str(&format!("\nWorking directory: {}", cwd.display()));
 
     // Load .zipcode.md if present
-    let memory_path = cwd.join(".zipcode.md");
+    let memory_path = project_root.join(".zipcode.md");
     if memory_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&memory_path) {
             prompt.push_str("\n\n# Project Instructions\n");
@@ -37,7 +39,7 @@ pub fn build_system_prompt(
     // Git status
     if let Ok(output) = std::process::Command::new("git")
         .args(["status", "--short"])
-        .current_dir(cwd)
+        .current_dir(&project_root)
         .output()
     {
         if output.status.success() {
@@ -83,5 +85,17 @@ mod tests {
         let registry = ToolRegistry::new();
         let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access");
         assert!(prompt.contains("Use Rust for everything"));
+    }
+
+    #[test]
+    fn test_prompt_includes_project_root_zipcode_md_from_subdir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("src/bin");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.path().join(".zipcode.md"), "Root instructions").unwrap();
+        let registry = ToolRegistry::new();
+        let (prompt, _) = build_system_prompt(&nested, &registry, "workspace-write");
+        assert!(prompt.contains("Root instructions"));
+        assert!(prompt.contains(&nested.display().to_string()));
     }
 }

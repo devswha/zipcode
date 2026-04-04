@@ -11,15 +11,15 @@ mod repl;
 #[command(name = "zipcode", version, about = "Local AI coding assistant")]
 struct Cli {
     /// Path to the model directory or .gguf file
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", global = true)]
     model: Option<PathBuf>,
 
     /// Permission mode: read-only, workspace-write, full-access
-    #[arg(long, value_name = "MODE")]
+    #[arg(long, value_name = "MODE", global = true)]
     permission_mode: Option<String>,
 
-    /// Inference backend: llama-cpp (default) or candle
-    #[arg(long, default_value = "llama-cpp")]
+    /// Inference backend: llama-cpp (default), llama-server, or candle
+    #[arg(long, default_value = "llama-cpp", global = true)]
     backend: String,
 
     #[command(subcommand)]
@@ -40,6 +40,7 @@ enum Commands {
 fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
@@ -56,7 +57,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Doctor) => {
-            commands::doctor(model_path);
+            commands::doctor(model_path, backend)?;
         }
         Some(Commands::Prompt { text }) => {
             repl::run_oneshot(&text, model_path, permission_mode, backend)?;

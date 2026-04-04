@@ -37,30 +37,13 @@ impl LlamaCppProvider {
     pub fn load(model_path: &Path) -> Result<Self> {
         info!("Loading llama-cpp model from {}", model_path.display());
 
-        let backend = LlamaBackend::init()
-            .or_else(|e| {
-                // BackendAlreadyInitialized is fine — treat as success
-                if matches!(e, llama_cpp::LlamaCppError::BackendAlreadyInitialized) {
-                    // Re-initialize is not possible, but we can proceed without it
-                    // The backend is already running; create a dummy that won't drop
-                    Err(e)
-                } else {
-                    Err(e)
-                }
-            })
-            .or_else(|e| {
-                if matches!(e, llama_cpp::LlamaCppError::BackendAlreadyInitialized) {
-                    // Already initialized elsewhere — we need a new LlamaBackend value.
-                    // llama-cpp-2 does not allow re-init, so we use a workaround:
-                    // create a backend via unsafe reimplementation is not possible.
-                    // Fall back: return error indicating backend conflict.
-                    Err(anyhow::anyhow!(
-                        "llama backend already initialized in this process"
-                    ))
-                } else {
-                    Err(anyhow::anyhow!("Failed to init llama backend: {e}"))
-                }
-            })?;
+        let backend = LlamaBackend::init().map_err(|e| {
+            if matches!(e, llama_cpp::LlamaCppError::BackendAlreadyInitialized) {
+                anyhow::anyhow!("llama backend already initialized in this process")
+            } else {
+                anyhow::anyhow!("Failed to init llama backend: {e}")
+            }
+        })?;
 
         let model_params = LlamaModelParams::default();
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)

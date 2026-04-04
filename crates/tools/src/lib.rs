@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Component;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -17,22 +18,8 @@ pub fn resolve_and_validate_path(
         cwd.join(p)
     };
 
-    // Canonicalize what exists, for new files canonicalize parent
-    let canonical = if resolved.exists() {
-        resolved.canonicalize()?
-    } else if let Some(parent) = resolved.parent() {
-        if parent.exists() {
-            parent
-                .canonicalize()?
-                .join(resolved.file_name().unwrap_or_default())
-        } else {
-            resolved.clone()
-        }
-    } else {
-        resolved.clone()
-    };
-
     let cwd_canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let canonical = canonicalize_even_if_missing(&resolved)?;
 
     if !canonical.starts_with(&cwd_canonical) {
         anyhow::bail!(
@@ -44,6 +31,50 @@ pub fn resolve_and_validate_path(
     }
 
     Ok(canonical)
+}
+
+fn canonicalize_even_if_missing(path: &std::path::Path) -> anyhow::Result<PathBuf> {
+    if path.exists() {
+        return path.canonicalize().map_err(Into::into);
+    }
+
+    let mut suffix = Vec::new();
+    let mut ancestor = path;
+
+    while !ancestor.exists() {
+        let Some(name) = ancestor.file_name() else {
+            break;
+        };
+        suffix.push(name.to_os_string());
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("failed to resolve path '{}'", path.display()))?;
+    }
+
+    let mut canonical = ancestor.canonicalize()?;
+    for segment in suffix.iter().rev() {
+        canonical.push(segment);
+    }
+
+    Ok(normalize_path(&canonical))
+}
+
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+        }
+    }
+
+    normalized
 }
 
 pub mod agent;
@@ -283,5 +314,19 @@ mod tests {
         std::fs::write(dir.path().join("test.txt"), "hello").unwrap();
         let result = resolve_and_validate_path("test.txt", dir.path());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_path_traversal_blocked_for_missing_parent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let result = resolve_and_validate_path("../escape/new.txt", dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nested_new_file_allowed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let result = resolve_and_validate_path("nested/dir/new.txt", dir.path()).unwrap();
+        assert_eq!(result, dir.path().join("nested/dir/new.txt"));
     }
 }

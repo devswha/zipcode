@@ -6,5 +6,5 @@ pub mod session;
 
 pub use config::ZipcodeConfig;
 pub use conversation::{ConversationLoop, StreamCallback};
-pub use permission::{permission_mode_from_str, PermissionCheck, PermissionPolicy};
+pub use permission::{parse_permission_mode, PermissionCheck, PermissionPolicy};
 pub use session::Session;

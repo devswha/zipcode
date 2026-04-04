@@ -46,6 +46,7 @@ impl ZipcodeConfig {
     /// Load config with hierarchy: global (~/.zipcode/config.json) < project (.zipcode.json)
     pub fn load(cwd: &Path) -> Result<Self> {
         let mut config = Self::default();
+        let project_root = find_project_root(cwd);
 
         // Global config
         let global_path = dirs::home_dir().map(|h| h.join(".zipcode/config.json"));
@@ -57,7 +58,7 @@ impl ZipcodeConfig {
         }
 
         // Project config (overrides)
-        let project_path = cwd.join(".zipcode.json");
+        let project_path = project_root.join(".zipcode.json");
         if project_path.exists() {
             let content = std::fs::read_to_string(&project_path)?;
             let project: serde_json::Value = serde_json::from_str(&content)?;
@@ -65,7 +66,12 @@ impl ZipcodeConfig {
                 config.permission_mode = perm.to_string();
             }
             if let Some(dir) = project["model_dir"].as_str() {
-                config.model_dir = PathBuf::from(dir);
+                let path = PathBuf::from(dir);
+                config.model_dir = if path.is_absolute() {
+                    path
+                } else {
+                    project_root.join(path)
+                };
             }
             if let Some(file) = project["model_file"].as_str() {
                 config.model_file = Some(file.to_string());
@@ -85,6 +91,20 @@ impl ZipcodeConfig {
 
         Ok(config)
     }
+}
+
+#[must_use]
+pub fn find_project_root(start: &Path) -> PathBuf {
+    for ancestor in start.ancestors() {
+        if ancestor.join(".zipcode.json").exists()
+            || ancestor.join(".zipcode.md").exists()
+            || ancestor.join(".git").exists()
+        {
+            return ancestor.to_path_buf();
+        }
+    }
+
+    start.to_path_buf()
 }
 
 #[cfg(test)]
@@ -129,5 +149,44 @@ mod tests {
         let config = ZipcodeConfig::load(dir.path()).unwrap();
         assert_eq!(config.model_dir, std::path::PathBuf::from("/custom/models"));
         assert_eq!(config.model_file, Some("my-model.gguf".to_string()));
+    }
+
+    #[test]
+    fn test_load_project_override_relative_model_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"model_dir": "models"}"#,
+        )
+        .unwrap();
+
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(config.model_dir, dir.path().join("models"));
+    }
+
+    #[test]
+    fn test_load_project_override_from_subdirectory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("src/bin");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"permission_mode": "read-only", "model_dir": "models"}"#,
+        )
+        .unwrap();
+
+        let config = ZipcodeConfig::load(&nested).unwrap();
+        assert_eq!(config.permission_mode, "read-only");
+        assert_eq!(config.model_dir, dir.path().join("models"));
+    }
+
+    #[test]
+    fn test_find_project_root_uses_ancestor_marker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("src/bin");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.path().join(".zipcode.json"), "{}").unwrap();
+
+        assert_eq!(find_project_root(&nested), dir.path());
     }
 }

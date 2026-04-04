@@ -266,13 +266,17 @@ fn tool_call_loop_cap() {
     let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
     let mut cb = TestCallback::new();
 
-    conv.run_turn("loop forever", &mut cb).unwrap();
+    let error = conv
+        .run_turn("loop forever", &mut cb)
+        .unwrap_err()
+        .to_string();
 
     assert!(
         cb.tool_calls.len() <= 25,
         "expected at most 25 tool calls due to MAX_TOOL_ITERATIONS, got {}",
         cb.tool_calls.len()
     );
+    assert!(error.contains("Stopped after 25 tool iterations"));
 }
 
 // ---------------------------------------------------------------------------

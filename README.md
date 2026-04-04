@@ -28,7 +28,7 @@
 
 ---
 
-**zipcode** is a Rust-based coding agent that runs **entirely on your machine** using local LLM inference. Powered by [Gemma 4](https://ai.google.dev/gemma) through the [candle](https://github.com/huggingface/candle) ML framework, it provides Claude Code-like functionality — file editing, shell execution, code search — without ever touching the network.
+**zipcode** is a Rust-based coding agent that runs **entirely on your machine** using local LLM inference. It can run Gemma-family GGUF models through candle, native `llama-cpp`, or a `llama-server` fallback for newer Gemma 4 models that outpace the current Rust bindings.
 
 Ship it on a USB stick. Run it in a SCIF. It just works.
 
@@ -105,6 +105,10 @@ zipcode prompt "explain this codebase"
 
 # Custom model
 zipcode --model ./my-model.gguf
+
+# Gemma 4 fallback via llama.cpp server
+ZIPCODE_LLAMA_SERVER_BIN=/path/to/llama-server \
+zipcode --backend llama-cpp --model ~/.zipcode/models/gemma-4-e2b-it-Q8_0.gguf prompt "hello"
 
 # Read-only mode (safe exploration)
 zipcode --permission-mode read-only
@@ -266,6 +270,7 @@ cli --> runtime --> inference
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--model <PATH>` | `~/.zipcode/models/` | Path to `.gguf` file |
+| `--backend <BACKEND>` | `llama-cpp` | `llama-cpp` / `llama-server` / `candle` |
 | `--permission-mode` | `workspace-write` | `read-only` / `workspace-write` / `full-access` |
 
 ### Slash Commands (REPL)
@@ -283,7 +288,7 @@ cli --> runtime --> inference
 
 ### Project config (`.zipcode.json`)
 
-Loaded from working directory. Overrides global `~/.zipcode/config.json`.
+Loaded from the nearest ancestor project root. Overrides global `~/.zipcode/config.json`.
 
 ```json
 {
@@ -344,6 +349,16 @@ Place in any project root. Contents are injected into the system prompt.
 ```
 
 CPU inference works but is significantly slower. zipcode auto-detects CUDA availability at startup.
+
+### Gemma 4 today
+
+- Native `llama-cpp-2` `0.1.141` still cannot open `general.architecture = gemma4`.
+- zipcode now supports a `llama-server` fallback path for Gemma 4:
+  1. build a recent `llama-server` from upstream `ggml-org/llama.cpp`
+  2. set `ZIPCODE_LLAMA_SERVER_BIN=/path/to/llama-server`
+  3. run `zipcode --backend llama-cpp ...` or `zipcode --backend llama-server ...`
+
+The `llama-server` path is now the practical Gemma 4 route in zipcode. In local validation it handled text generation and a `read_file` tool-use round trip; native direct Gemma 4 loading is still limited by `llama-cpp-2`.
 
 ---
 

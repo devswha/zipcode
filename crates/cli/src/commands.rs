@@ -1,11 +1,17 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Result;
+use zipcode_inference::Backend;
+
 /// Run the doctor command: check binary version, CUDA availability, and model files.
-pub fn doctor(model_path: Option<&Path>) {
+pub fn doctor(model_path: Option<&Path>, backend_str: &str) -> Result<()> {
+    Backend::parse(backend_str)?;
+
     println!("zipcode doctor\n");
 
     // Version check
     println!("Version: {}", env!("CARGO_PKG_VERSION"));
+    println!("Backend: {backend_str}");
     println!();
 
     // CUDA check
@@ -50,6 +56,7 @@ pub fn doctor(model_path: Option<&Path>) {
 
     println!();
     println!("Done.");
+    Ok(())
 }
 
 /// Check if CUDA is available by looking for libcuda.so or CUDA_PATH env var.
@@ -88,6 +95,26 @@ pub fn check_cuda() -> bool {
 }
 
 fn check_model_path(path: &Path) {
+    if path.is_dir() {
+        let models = find_gguf_files(path);
+        if models.is_empty() {
+            println!(
+                "  \u{274c} No model files found in directory: {}",
+                path.display()
+            );
+        } else {
+            for model in &models {
+                let size = std::fs::metadata(model).map(|m| m.len()).unwrap_or(0);
+                let size_gb = size as f64 / (1024.0 * 1024.0 * 1024.0);
+                println!(
+                    "  \u{2705} Model found: {} ({size_gb:.1} GB)",
+                    model.display()
+                );
+            }
+        }
+        return;
+    }
+
     if path.exists() {
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let size_gb = size as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -121,15 +148,28 @@ fn find_gguf_files(dir: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
 
-    entries
+    let mut models: Vec<_> = entries
         .flatten()
         .filter_map(|e| {
             let path = e.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("gguf") {
+            if path.is_file()
+                && path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+            {
                 Some(path)
             } else {
                 None
             }
         })
-        .collect()
+        .collect();
+
+    models.sort_by_cached_key(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    });
+    models
 }

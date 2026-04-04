@@ -42,8 +42,13 @@ impl ConversationLoop {
         let mut iterations = 0;
         loop {
             if iterations >= MAX_TOOL_ITERATIONS {
-                // Force break to prevent infinite tool loops
-                break;
+                let message = format!(
+                    "Stopped after {MAX_TOOL_ITERATIONS} tool iterations to avoid an infinite loop"
+                );
+                callback.on_error(&message);
+                self.session.push_message(ChatMessage::assistant(&message));
+                self.session.save()?;
+                return Err(anyhow::anyhow!(message));
             }
             iterations += 1;
             // Generate next response
