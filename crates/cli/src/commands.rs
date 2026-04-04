@@ -6,7 +6,9 @@ use zipcode_inference::Backend;
 use zipcode_runtime::config::{find_project_root, global_config_path};
 use zipcode_runtime::ZipcodeConfig;
 
-use crate::repl::{is_probably_gemma4_model, resolve_model_path, run_interactive, run_oneshot};
+use crate::repl::{
+    has_nonempty_parent, is_probably_gemma4_model, resolve_model_path, run_interactive, run_oneshot,
+};
 
 const SETUP_WRAPPER_NAME: &str = "zipcode-local";
 const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
@@ -651,7 +653,7 @@ fn model_search_locations(
         let configured = PathBuf::from(model_file);
         let resolved = if configured.is_absolute() {
             configured
-        } else if configured.parent().is_some() {
+        } else if has_nonempty_parent(&configured) {
             project_root.join(configured)
         } else {
             model_dir.join(configured)
@@ -719,6 +721,9 @@ fn discover_llama_server_bin(config: &ZipcodeConfig) -> LlamaServerDiscovery {
 
     for key in ["ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"] {
         if let Ok(value) = std::env::var(key) {
+            if value.trim().is_empty() {
+                continue;
+            }
             let path = PathBuf::from(&value);
             if path.is_file() {
                 return LlamaServerDiscovery {

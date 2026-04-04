@@ -313,3 +313,87 @@ fn setup_writes_config_and_wrapper_when_smoke_skipped() {
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
 }
+
+#[test]
+fn doctor_stays_ready_after_setup_skip_smoke() {
+    let home = make_temp_dir("setup-then-doctor");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create zipcode bin dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write fake tokenizer");
+    write_executable(
+        &zipcode_bin_dir.join("llama-server"),
+        "#!/bin/sh\necho fake llama-server\n",
+    );
+
+    let setup = zipcode_bin()
+        .args(["setup", "--skip-smoke"])
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode setup --skip-smoke");
+    assert!(
+        setup.status.success(),
+        "setup should succeed, got: {setup:?}"
+    );
+
+    let doctor = zipcode_bin()
+        .arg("doctor")
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor after setup");
+    assert!(
+        doctor.status.success(),
+        "doctor should succeed, got: {doctor:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        stdout.contains("Status: Ready"),
+        "doctor should stay Ready after setup, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(&model_dir.join("gemma-4-test.gguf").display().to_string()),
+        "doctor should resolve the configured model path, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(&zipcode_bin_dir.join("llama-server").display().to_string()),
+        "doctor should resolve the configured helper path, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn empty_helper_env_vars_do_not_force_repair_mode() {
+    let home = make_temp_dir("empty-helper-env");
+
+    let output = zipcode_bin()
+        .env("HOME", &home)
+        .env("ZIPCODE_LLAMA_SERVER_BIN", "")
+        .env("LLAMA_SERVER_BIN", "")
+        .output()
+        .expect("failed to run bare zipcode with empty helper env vars");
+
+    assert!(output.status.success(), "bare zipcode should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Setup needed before zipcode can start."),
+        "empty helper env vars should still route to setup, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Repair needed before zipcode can start."),
+        "empty helper env vars should not force repair mode, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}

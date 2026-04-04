@@ -157,7 +157,7 @@ pub(crate) fn resolve_model_path(
         let configured = PathBuf::from(model_file);
         let resolved = if configured.is_absolute() {
             configured
-        } else if configured.parent().is_some() {
+        } else if has_nonempty_parent(&configured) {
             project_root.join(configured)
         } else {
             model_dir.join(configured)
@@ -173,6 +173,11 @@ pub(crate) fn resolve_model_path(
     }
 
     find_model(&model_dir)
+}
+
+pub(crate) fn has_nonempty_parent(path: &Path) -> bool {
+    path.parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty())
 }
 
 /// Build and return a ConversationLoop ready for use.
