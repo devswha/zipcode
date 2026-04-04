@@ -32,6 +32,13 @@ fn write_executable(path: &std::path::Path, body: &str) {
     }
 }
 
+fn write_file(path: &std::path::Path, body: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create parent dir");
+    }
+    std::fs::write(path, body).expect("write file");
+}
+
 #[test]
 fn doctor_runs() {
     let output = zipcode_bin()
@@ -121,6 +128,58 @@ fn prompt_no_model_graceful_error() {
 }
 
 #[test]
+fn bare_zipcode_routes_to_setup_guidance_when_not_ready() {
+    let home = make_temp_dir("startup-setup");
+
+    let output = zipcode_bin()
+        .env("HOME", &home)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run bare zipcode");
+
+    assert!(output.status.success(), "bare zipcode should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Setup needed before zipcode can start.")
+            && stdout.contains("Copy a .gguf AI model"),
+        "bare zipcode should guide setup when not ready, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn bare_zipcode_routes_to_repair_guidance_when_saved_model_path_is_broken() {
+    let home = make_temp_dir("startup-repair");
+    write_file(
+        &home.join(".zipcode/config.json"),
+        r#"{
+  "model_dir": "/tmp/zipcode-missing-model-dir",
+  "model_file": "missing.gguf",
+  "permission_mode": "workspace-write"
+}"#,
+    );
+
+    let output = zipcode_bin()
+        .env("HOME", &home)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run bare zipcode");
+
+    assert!(output.status.success(), "bare zipcode should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Repair needed before zipcode can start.")
+            && stdout.contains("Update the saved AI model path"),
+        "bare zipcode should guide repair for broken saved paths, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
 fn invalid_backend_is_rejected() {
     let output = zipcode_bin()
         .args(["--backend", "bad-backend", "doctor"])
@@ -146,6 +205,7 @@ fn doctor_reports_missing_server_for_gemma4_without_llama_server() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&isolated_bin).expect("create isolated bin dir");
     std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write fake tokenizer");
 
     let output = zipcode_bin()
         .arg("doctor")
@@ -159,8 +219,9 @@ fn doctor_reports_missing_server_for_gemma4_without_llama_server() {
     assert!(output.status.success(), "doctor should still exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Status:   missing-server"),
-        "doctor should report missing-server, got: {stdout}"
+        stdout.contains("Status: Setup needed")
+            && stdout.contains("Compatibility helper: not found"),
+        "doctor should use setup-friendly helper wording, got: {stdout}"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
@@ -176,6 +237,7 @@ fn setup_writes_config_and_wrapper_when_smoke_skipped() {
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create zipcode bin dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
     std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write fake tokenizer");
     write_executable(
         &zipcode_bin_dir.join("llama-server"),
         "#!/bin/sh\necho fake llama-server\n",
