@@ -213,6 +213,8 @@ fn repl_no_model_graceful_error() {
         "repl should not panic, got: {combined}"
     );
 }
+
+#[test]
 fn invalid_backend_is_rejected() {
     let output = zipcode_bin()
         .args(["--backend", "bad-backend", "doctor"])
