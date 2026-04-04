@@ -72,8 +72,7 @@ fn main() -> Result<()> {
             repl::run_oneshot(&text, model_path, permission_mode, backend)?;
         }
         None => {
-            // Interactive REPL mode
-            repl::run_interactive(model_path, permission_mode, backend)?;
+            commands::run_default(model_path, permission_mode, backend)?;
         }
     }
 
