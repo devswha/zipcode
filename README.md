@@ -84,6 +84,9 @@ Common flags:
 ./scripts/download_model.sh --yes --dir ~/.zipcode/models
 ```
 
+The online download path may require Hugging Face login / access approval for the
+Gemma GGUF repository.
+
 ### 2. Get a model + tokenizer
 
 ```bash

@@ -53,6 +53,8 @@ echo ""
 echo "  1. Model:     https://huggingface.co/google/gemma-4-27b-it-GGUF"
 echo "  2. Tokenizer: https://huggingface.co/google/gemma-4-27b-it/raw/main/tokenizer.json"
 echo ""
+echo "Note: the model repository may require Hugging Face login / access approval."
+echo ""
 echo "Then copy both files to: ${MODEL_DIR}/"
 echo "After that, run ./install.sh (from a git clone) or zipcode setup --skip-smoke."
 echo ""
@@ -91,13 +93,47 @@ PY
 }
 
 download_model_repo() {
-    if command -v huggingface-cli >/dev/null 2>&1; then
-        huggingface-cli download "${HF_REPO}" --local-dir "${MODEL_DIR}"
-        return 0
+    local output_file
+    output_file="$(mktemp)"
+
+    if command -v hf >/dev/null 2>&1; then
+        if hf download "${HF_REPO}" --local-dir "${MODEL_DIR}" >"${output_file}" 2>&1; then
+            cat "${output_file}"
+            rm -f "${output_file}"
+            return 0
+        fi
+    elif command -v huggingface-cli >/dev/null 2>&1; then
+        if huggingface-cli download "${HF_REPO}" --local-dir "${MODEL_DIR}" >"${output_file}" 2>&1; then
+            cat "${output_file}"
+            rm -f "${output_file}"
+            return 0
+        fi
+    else
+        rm -f "${output_file}"
+        echo "Neither hf nor huggingface-cli was found. Install one with: pip install huggingface_hub" >&2
+        return 1
     fi
 
-    echo "huggingface-cli not found. Install with: pip install huggingface-hub" >&2
+    cat "${output_file}" >&2
+    rm -f "${output_file}"
+
+    cat >&2 <<EOF
+
+Download failed. This model repository often requires Hugging Face login or access approval.
+Try:
+  hf auth login
+  hf download ${HF_REPO} --local-dir "${MODEL_DIR}"
+
+If you are air-gapped, download the model + tokenizer on another machine and copy them into ${MODEL_DIR}.
+EOF
     return 1
+}
+
+cleanup_partial_download() {
+    local incomplete_snapshot="${MODEL_DIR}/.cache"
+    if [ -d "${incomplete_snapshot}" ]; then
+        echo "Keeping partial Hugging Face cache in ${incomplete_snapshot} for resume support."
+    fi
 }
 
 if [ "${AUTO_YES}" -ne 1 ]; then
@@ -108,7 +144,10 @@ if [ "${AUTO_YES}" -ne 1 ]; then
 fi
 
 echo "Downloading model snapshot from ${HF_REPO}..."
-download_model_repo
+download_model_repo || {
+    cleanup_partial_download
+    exit 1
+}
 echo "Downloading tokenizer.json..."
 download_tokenizer
 echo "Done! Model assets saved to ${MODEL_DIR}"
