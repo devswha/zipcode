@@ -72,8 +72,9 @@ cd zipcode
 ```
 
 The clone installer builds zipcode, installs a `zipcode` launcher into `~/.local/bin`,
-copies any model artifacts you point it at, and when nothing is ready it can launch
-the online downloader for you instead of asking for file paths.
+copies any model artifacts you point it at, and when nothing is ready it walks you
+through a setup interview: show the download links, paste the local paths after
+you fetch the files, or skip for now.
 
 Common flags:
 

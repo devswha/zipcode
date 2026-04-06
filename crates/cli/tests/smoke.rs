@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 fn zipcode_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_zipcode"))
@@ -46,6 +47,33 @@ fn write_file(path: &std::path::Path, body: &str) {
         std::fs::create_dir_all(parent).expect("create parent dir");
     }
     std::fs::write(path, body).expect("write file");
+}
+
+fn run_bash_script_with_input(
+    script: &std::path::Path,
+    args: &[&str],
+    input: &str,
+    home: &std::path::Path,
+) -> Output {
+    let mut child = Command::new("bash")
+        .arg(script)
+        .args(args)
+        .env("HOME", home)
+        .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bash script");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("script stdin should exist")
+        .write_all(input.as_bytes())
+        .expect("write script input");
+
+    child.wait_with_output().expect("wait for bash script")
 }
 
 #[test]
@@ -472,6 +500,78 @@ fn root_install_script_bootstraps_clone_users_into_ready_state() {
     assert!(
         stdout.contains(&home.join(".zipcode/bin/llama-server").display().to_string()),
         "doctor should report installed helper path, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+    std::fs::remove_dir_all(asset_dir).expect("cleanup asset dir");
+}
+
+#[test]
+fn root_install_script_interviews_users_with_links_then_paths() {
+    let home = make_temp_dir("root-install-interview");
+    let asset_dir = make_temp_dir("root-install-interview-assets");
+    let model = asset_dir.join("gemma-4-test.gguf");
+    let tokenizer = asset_dir.join("tokenizer.json");
+    let helper = asset_dir.join("llama-server");
+    let install_script = repo_root().join("install.sh");
+
+    std::fs::write(&model, b"gguf").expect("write fake gguf");
+    std::fs::write(&tokenizer, b"{}").expect("write fake tokenizer");
+    write_executable(&helper, "#!/bin/sh\necho fake llama-server\n");
+
+    let scripted_input = format!(
+        "1\n\n{}\n{}\n1\n{}\n",
+        model.display(),
+        tokenizer.display(),
+        helper.display()
+    );
+    let output = run_bash_script_with_input(
+        &install_script,
+        &["--binary", env!("CARGO_BIN_EXE_zipcode")],
+        &scripted_input,
+        &home,
+    );
+
+    assert!(
+        output.status.success(),
+        "interactive install should succeed, got: {output:?}"
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("https://huggingface.co/google/gemma-4-27b-it-GGUF"),
+        "interactive install should show the model download link, got: {combined}"
+    );
+    assert!(
+        combined.contains("Local path to the .gguf model:"),
+        "interactive install should ask for the model path, got: {combined}"
+    );
+    assert!(
+        combined.contains("Local path to tokenizer.json:"),
+        "interactive install should ask for the tokenizer path, got: {combined}"
+    );
+    assert!(
+        combined.contains("Local path to llama-server:"),
+        "interactive install should ask for the helper path, got: {combined}"
+    );
+
+    let doctor = Command::new(home.join(".local/bin/zipcode"))
+        .arg("doctor")
+        .env("HOME", &home)
+        .output()
+        .expect("run installed zipcode doctor");
+    assert!(
+        doctor.status.success(),
+        "doctor should succeed, got: {doctor:?}"
+    );
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        stdout.contains("Status: Ready"),
+        "interactive install should still produce a Ready doctor state, got: {stdout}"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");

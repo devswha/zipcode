@@ -10,8 +10,9 @@ usage() {
 Usage: ./install.sh [options]
 
 Install zipcode from this source checkout into ~/.zipcode and ~/.local/bin.
-If model assets are missing, the installer can launch the online downloader
-instead of asking you for file paths.
+If model assets are missing, the installer walks you through the next step:
+show the download links, ask for local paths after you fetch the files, or
+skip setup for now.
 
 Options:
   --binary PATH         Use an existing zipcode binary instead of building one.
@@ -95,30 +96,191 @@ copy_if_needed() {
     echo "Installed $(basename -- "${target_path}") to ${target_path}"
 }
 
-confirm_yes() {
+prompt_value() {
     local prompt="$1"
-    local answer
+    local default_value="${2:-}"
+    local answer=""
 
-    if [ ! -t 0 ]; then
-        return 1
+    if [ -n "${default_value}" ]; then
+        printf '%s [%s] ' "${prompt}" "${default_value}" >&2
+    else
+        printf '%s ' "${prompt}" >&2
     fi
 
-    read -r -p "${prompt} [Y/n] " answer || true
-    case "${answer:-Y}" in
-        y|Y|yes|YES|"") return 0 ;;
-        *) return 1 ;;
+    IFS= read -r answer || true
+    if [ -n "${answer}" ]; then
+        printf '%s' "${answer}"
+    else
+        printf '%s' "${default_value}"
+    fi
+}
+
+prompt_choice() {
+    local prompt="$1"
+    local default_choice="$2"
+    local answer=""
+
+    printf '%s [%s] ' "${prompt}" "${default_choice}" >&2
+    IFS= read -r answer || true
+    printf '%s' "${answer:-${default_choice}}"
+}
+
+default_choice_for_stdin() {
+    local interactive_default="$1"
+    local noninteractive_default="$2"
+
+    if [ -t 0 ] || [ -p /dev/stdin ]; then
+        printf '%s' "${interactive_default}"
+    else
+        printf '%s' "${noninteractive_default}"
+    fi
+}
+
+prompt_press_enter() {
+    local prompt="$1"
+
+    printf '%s' "${prompt}" >&2
+    IFS= read -r _ || true
+}
+
+collect_model_assets_from_prompt() {
+    local mode="$1"
+    local discovered_model="$2"
+    local discovered_tokenizer="$3"
+    local model_input=""
+    local tokenizer_input=""
+
+    echo
+    if [ "${mode}" = "links" ]; then
+        cat <<EOF
+Model setup:
+  1. Download a GGUF model from:
+     https://huggingface.co/google/gemma-4-27b-it-GGUF
+  2. Download tokenizer.json from:
+     https://huggingface.co/google/gemma-4-27b-it/raw/main/tokenizer.json
+
+After the files are on this machine, paste their local paths below.
+If you already copied them into ${MODEL_DIR}, you can just press Enter.
+EOF
+        echo
+        prompt_press_enter "Press Enter once the files are ready on this machine. "
+    else
+        cat <<EOF
+Model setup:
+  Paste the local paths to the model files you already downloaded.
+  If you already copied them into ${MODEL_DIR}, you can just press Enter.
+EOF
+    fi
+
+    model_input="$(prompt_value "Local path to the .gguf model:" "${discovered_model}")"
+    tokenizer_input="$(prompt_value "Local path to tokenizer.json:" "${discovered_tokenizer}")"
+
+    MODEL_SOURCE="${model_input}"
+    TOKENIZER_SOURCE="${tokenizer_input}"
+}
+
+discover_model_assets() {
+    local model_in_install=""
+    local model_in_repo=""
+
+    model_in_install="$(discover_single_model "${MODEL_DIR}" || true)"
+    if [ -n "${model_in_install}" ]; then
+        MODEL_SOURCE="${MODEL_SOURCE:-${model_in_install}}"
+    fi
+
+    model_in_repo="$(discover_single_model "${SCRIPT_DIR}/models" || true)"
+    if [ -n "${model_in_repo}" ] && [ -z "${MODEL_SOURCE}" ]; then
+        MODEL_SOURCE="${model_in_repo}"
+    fi
+
+    if [ -z "${TOKENIZER_SOURCE}" ] && [ -f "${MODEL_DIR}/tokenizer.json" ]; then
+        TOKENIZER_SOURCE="${MODEL_DIR}/tokenizer.json"
+    elif [ -z "${TOKENIZER_SOURCE}" ] && [ -f "${SCRIPT_DIR}/models/tokenizer.json" ]; then
+        TOKENIZER_SOURCE="${SCRIPT_DIR}/models/tokenizer.json"
+    fi
+}
+
+guided_model_setup() {
+    local choice=""
+
+    discover_model_assets
+    if [ -n "${MODEL_SOURCE}" ] && [ -n "${TOKENIZER_SOURCE}" ]; then
+        return 0
+    fi
+
+    echo
+    cat <<EOF
+Model assets are still needed before zipcode can run the full setup.
+
+Choose one:
+  1. Show the download links, then I will paste the file paths
+  2. I already downloaded the files; ask me for the paths now
+  3. Skip model setup for now
+EOF
+
+    choice="$(prompt_choice "Selection:" "$(default_choice_for_stdin "1" "3")")"
+    case "${choice}" in
+        1)
+            collect_model_assets_from_prompt "links" "${MODEL_SOURCE}" "${TOKENIZER_SOURCE}"
+            ;;
+        2)
+            collect_model_assets_from_prompt "paths" "${MODEL_SOURCE}" "${TOKENIZER_SOURCE}"
+            ;;
+        3)
+            echo "Skipping model setup for now."
+            ;;
+        *)
+            echo "Unknown selection '${choice}'. Skipping model setup for now."
+            ;;
     esac
 }
 
-maybe_run_online_downloader() {
-    local reason="$1"
-    local downloader="${SCRIPT_DIR}/scripts/download_model.sh"
+guided_helper_setup() {
+    local helper_choice=""
+    local helper_input=""
+    local model_name=""
 
-    [ -x "${downloader}" ] || return 1
-    confirm_yes "${reason} Download a recommended model + tokenizer online now?" || return 1
+    LLAMA_SERVER_SOURCE="$(resolve_helper_source "${LLAMA_SERVER_SOURCE}" || true)"
+    if [ -n "${LLAMA_SERVER_SOURCE}" ]; then
+        return 0
+    fi
 
-    echo "Running ${downloader} --yes --dir ${MODEL_DIR}"
-    "${downloader}" --yes --dir "${MODEL_DIR}"
+    if [ -n "${MODEL_SOURCE}" ]; then
+        model_name="$(basename -- "${MODEL_SOURCE}")"
+    elif discover_single_model "${MODEL_DIR}" >/dev/null 2>&1; then
+        model_name="$(basename -- "$(discover_single_model "${MODEL_DIR}")")"
+    fi
+
+    case "${model_name}" in
+        *gemma-4*) ;;
+        *) return 0 ;;
+    esac
+
+    echo
+    cat <<EOF
+Optional Gemma 4 compatibility helper:
+  1. I have a llama-server binary; ask me for the path
+  2. Skip helper setup for now
+EOF
+
+    helper_choice="$(prompt_choice "Selection:" "$(default_choice_for_stdin "2" "2")")"
+    case "${helper_choice}" in
+        1)
+            helper_input="$(prompt_value "Local path to llama-server:" "")"
+            if [ -n "${helper_input}" ]; then
+                require_file "${helper_input}" "llama-server binary"
+                LLAMA_SERVER_SOURCE="${helper_input}"
+            else
+                echo "No llama-server path provided; skipping helper setup."
+            fi
+            ;;
+        2)
+            echo "Skipping helper setup for now."
+            ;;
+        *)
+            echo "Unknown selection '${helper_choice}'. Skipping helper setup for now."
+            ;;
+    esac
 }
 
 BINARY_SOURCE=""
@@ -196,13 +358,14 @@ fi
 if [ ! -f "${TOKENIZER_SOURCE:-}" ]; then
     TOKENIZER_SOURCE=""
 fi
-LLAMA_SERVER_SOURCE="$(resolve_helper_source "${LLAMA_SERVER_SOURCE}" || true)"
 
 echo "Installing zipcode into ${INSTALL_DIR}..."
 ensure_install_dirs
 copy_executable "${BINARY_SOURCE}" "${INSTALL_DIR}/zipcode"
 ln -sf "../zipcode" "${INSTALL_BIN_DIR}/zipcode"
 copy_executable "${SCRIPT_DIR}/scripts/install_llama_server.sh" "${INSTALL_HELPER}"
+
+guided_model_setup
 
 if [ -n "${MODEL_SOURCE}" ]; then
     copy_if_needed "${MODEL_SOURCE}" "${MODEL_DIR}/$(basename -- "${MODEL_SOURCE}")"
@@ -212,9 +375,7 @@ if [ -n "${TOKENIZER_SOURCE}" ]; then
     copy_if_needed "${TOKENIZER_SOURCE}" "${MODEL_DIR}/tokenizer.json"
 fi
 
-if ! discover_single_model "${MODEL_DIR}" >/dev/null 2>&1 || [ ! -f "${MODEL_DIR}/tokenizer.json" ]; then
-    maybe_run_online_downloader "No ready model bundle was found." || true
-fi
+guided_helper_setup
 
 if [ -n "${LLAMA_SERVER_SOURCE}" ]; then
     "${INSTALL_HELPER}" "${LLAMA_SERVER_SOURCE}" "${INSTALL_DIR}" >/dev/null

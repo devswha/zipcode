@@ -155,6 +155,37 @@ run_empty_env_case() {
     env HOME="$home_dir" ZIPCODE_LLAMA_SERVER_BIN= LLAMA_SERVER_BIN= "$BIN"
 }
 
+run_install_interview_case() {
+  local home_dir asset_dir output
+  home_dir="$(make_temp_home)"
+  asset_dir="$(mktemp -d)"
+  TMP_DIRS+=("$asset_dir")
+
+  printf 'gguf' > "$asset_dir/gemma-4-test.gguf"
+  printf '{}' > "$asset_dir/tokenizer.json"
+  cat > "$asset_dir/llama-server" <<'SCRIPT'
+#!/bin/sh
+echo fake llama-server
+SCRIPT
+  chmod +x "$asset_dir/llama-server"
+
+  echo
+  echo "===== install.sh interview flow ====="
+  output="$(
+    printf '1\n\n%s\n%s\n1\n%s\n' \
+      "$asset_dir/gemma-4-test.gguf" \
+      "$asset_dir/tokenizer.json" \
+      "$asset_dir/llama-server" |
+      env HOME="$home_dir" ZIPCODE_INSTALL_SKIP_SYSTEM_BIN=1 \
+        bash "$ROOT_DIR/install.sh" --binary "$BIN" 2>&1
+  )"
+  printf '%s\n' "$output"
+  expect_contains "$output" "https://huggingface.co/google/gemma-4-27b-it-GGUF" "install interview model link" || return 1
+  expect_contains "$output" "Local path to the .gguf model:" "install interview model prompt" || return 1
+  expect_contains "$output" "Status:         Ready" "install interview ready status" || return 1
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+
 run_real_gemma4_case() {
   if [ "$RUN_REAL_GEMMA4" != "1" ]; then
     echo
@@ -199,6 +230,7 @@ main() {
   run_broken_config_case
   run_setup_then_doctor_case
   run_empty_env_case
+  run_install_interview_case
   run_real_gemma4_case
 
   echo
