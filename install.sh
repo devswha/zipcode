@@ -10,8 +10,8 @@ usage() {
 Usage: ./install.sh [options]
 
 Install zipcode from this source checkout into ~/.zipcode and ~/.local/bin.
-If a model, tokenizer, or llama-server binary is already available, pass
-their paths here or place them in ./models before running the installer.
+If model assets are missing, the installer can launch the online downloader
+instead of asking you for file paths.
 
 Options:
   --binary PATH         Use an existing zipcode binary instead of building one.
@@ -33,20 +33,6 @@ require_file() {
     local path="$1"
     local label="$2"
     [ -f "${path}" ] || fail "${label} not found: ${path}"
-}
-
-prompt_for_path() {
-    local prompt="$1"
-    local current="${2:-}"
-    local answer=""
-
-    if [ -n "${current}" ] || [ ! -t 0 ]; then
-        printf '%s' "${current}"
-        return 0
-    fi
-
-    read -r -p "${prompt}" answer || true
-    printf '%s' "${answer}"
 }
 
 discover_single_model() {
@@ -107,6 +93,32 @@ copy_if_needed() {
     mkdir -p "$(dirname -- "${target_path}")"
     cp "${source_path}" "${target_path}"
     echo "Installed $(basename -- "${target_path}") to ${target_path}"
+}
+
+confirm_yes() {
+    local prompt="$1"
+    local answer
+
+    if [ ! -t 0 ]; then
+        return 1
+    fi
+
+    read -r -p "${prompt} [Y/n] " answer || true
+    case "${answer:-Y}" in
+        y|Y|yes|YES|"") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+maybe_run_online_downloader() {
+    local reason="$1"
+    local downloader="${SCRIPT_DIR}/scripts/download_model.sh"
+
+    [ -x "${downloader}" ] || return 1
+    confirm_yes "${reason} Download a recommended model + tokenizer online now?" || return 1
+
+    echo "Running ${downloader} --yes --dir ${MODEL_DIR}"
+    "${downloader}" --yes --dir "${MODEL_DIR}"
 }
 
 BINARY_SOURCE=""
@@ -184,10 +196,7 @@ fi
 if [ ! -f "${TOKENIZER_SOURCE:-}" ]; then
     TOKENIZER_SOURCE=""
 fi
-
-MODEL_SOURCE="$(prompt_for_path "Path to a .gguf model (leave blank to skip for now): " "${MODEL_SOURCE}")"
-TOKENIZER_SOURCE="$(prompt_for_path "Path to tokenizer.json (leave blank to skip for now): " "${TOKENIZER_SOURCE}")"
-LLAMA_SERVER_SOURCE="$(prompt_for_path "Path to llama-server (leave blank to skip for now): " "$(resolve_helper_source "${LLAMA_SERVER_SOURCE}" || true)")"
+LLAMA_SERVER_SOURCE="$(resolve_helper_source "${LLAMA_SERVER_SOURCE}" || true)"
 
 echo "Installing zipcode into ${INSTALL_DIR}..."
 ensure_install_dirs
@@ -201,6 +210,10 @@ fi
 
 if [ -n "${TOKENIZER_SOURCE}" ]; then
     copy_if_needed "${TOKENIZER_SOURCE}" "${MODEL_DIR}/tokenizer.json"
+fi
+
+if ! discover_single_model "${MODEL_DIR}" >/dev/null 2>&1 || [ ! -f "${MODEL_DIR}/tokenizer.json" ]; then
+    maybe_run_online_downloader "No ready model bundle was found." || true
 fi
 
 if [ -n "${LLAMA_SERVER_SOURCE}" ]; then
@@ -226,10 +239,11 @@ USER_LAUNCHER_INSTALLED="$(ensure_user_launcher "${INSTALL_BIN_DIR}/zipcode" "${
     fi
     if [ -z "${MODEL_SOURCE}" ] && ! discover_single_model "${MODEL_DIR}" >/dev/null 2>&1; then
         echo "  • add a .gguf model with: ./install.sh --model /path/to/model.gguf"
-        echo "    or download one with: ./scripts/download_model.sh"
+        echo "    or download one with: ./scripts/download_model.sh --yes --dir ${MODEL_DIR}"
     fi
     if [ ! -f "${MODEL_DIR}/tokenizer.json" ]; then
         echo "  • add tokenizer.json with: ./install.sh --tokenizer /path/to/tokenizer.json"
+        echo "    or let ./scripts/download_model.sh fetch it into ${MODEL_DIR}"
     fi
     if [ -z "${LLAMA_SERVER_INSTALLED}" ]; then
         echo "  • optional Gemma 4 fallback helper: ./install.sh --llama-server /path/to/llama-server"

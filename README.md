@@ -72,8 +72,8 @@ cd zipcode
 ```
 
 The clone installer builds zipcode, installs a `zipcode` launcher into `~/.local/bin`,
-copies any model artifacts you point it at, and then runs `zipcode setup --skip-smoke`
-for you when it can.
+copies any model artifacts you point it at, and when nothing is ready it can launch
+the online downloader for you instead of asking for file paths.
 
 Common flags:
 
@@ -81,6 +81,7 @@ Common flags:
 ./install.sh --model /path/to/model.gguf --tokenizer /path/to/tokenizer.json
 ./install.sh --llama-server /path/to/llama-server
 ./install.sh --skip-build --binary ./target/release/zipcode
+./scripts/download_model.sh --yes --dir ~/.zipcode/models
 ```
 
 ### 2. Get a model + tokenizer
