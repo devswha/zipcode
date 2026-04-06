@@ -63,12 +63,24 @@ Type /help for commands, Ctrl+D to exit
 
 ## Quick Start
 
-### 1. Build
+### 1. Install from a clone
 
 ```bash
 git clone https://github.com/devswha/zipcode.git
 cd zipcode
-cargo build --release
+./install.sh
+```
+
+The clone installer builds zipcode, installs a `zipcode` launcher into `~/.local/bin`,
+copies any model artifacts you point it at, and then runs `zipcode setup --skip-smoke`
+for you when it can.
+
+Common flags:
+
+```bash
+./install.sh --model /path/to/model.gguf --tokenizer /path/to/tokenizer.json
+./install.sh --llama-server /path/to/llama-server
+./install.sh --skip-build --binary ./target/release/zipcode
 ```
 
 ### 2. Get a model + tokenizer
@@ -85,13 +97,13 @@ cargo build --release
 
 ```bash
 # Start here. Ready machines drop into the REPL.
-./target/release/zipcode
+zipcode
 
 # Scripted first-run / repair path
-./target/release/zipcode setup --skip-smoke
+zipcode setup --skip-smoke
 
 # Detailed readiness + repair report
-./target/release/zipcode doctor
+zipcode doctor
 ```
 
 `zipcode` is the default entrypoint. Use `setup` when you want zipcode to discover the model,
@@ -152,11 +164,12 @@ machine.
 ```
 zipcode-v0.1.0-linux-x86_64-cuda.zip
  |- zipcode                     # single binary (~30 MB)
- |- install.sh                  # one-command setup
+ |- install.sh                  # extracted-bundle installer
  |- install_llama_server.sh     # repair helper for adding llama-server later
  |- download_model.sh           # model download helper
  |- README.md
  |- llama-server                # optional, when bundled during packaging
+ |- scripts/lib/install_common.sh
  '- models/
      |- PLACE_MODEL_HERE.txt
      '- PLACE_TOKENIZER_HERE.txt
@@ -176,9 +189,8 @@ zipcode-v0.1.0-linux-x86_64-cuda.zip
                                       5. Unzip
                                       6. ./install.sh
                                       7. cp model.gguf tokenizer.json ~/.zipcode/models/
-                                      8. source ~/.zipcode/setup.env
-                                      9. zipcode
-                                     10. If repair is needed:
+                                      8. zipcode
+                                      9. If repair is needed:
                                          zipcode doctor
                                          zipcode setup --skip-smoke
 ```

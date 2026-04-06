@@ -13,6 +13,7 @@ echo "  1. Model:     https://huggingface.co/google/gemma-4-27b-it-GGUF"
 echo "  2. Tokenizer: https://huggingface.co/google/gemma-4-27b-it/raw/main/tokenizer.json"
 echo ""
 echo "Then copy both files to: ${MODEL_DIR}/"
+echo "After that, run ./install.sh (from a git clone) or zipcode setup --skip-smoke."
 echo ""
 
 read -p "Download now? (requires internet + huggingface-cli) [y/N] " -r

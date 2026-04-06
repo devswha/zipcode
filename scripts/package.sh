@@ -101,11 +101,13 @@ echo "Creating archive..."
 rm -rf "${ARCHIVE_DIR}"
 rm -f "${ARCHIVE_ZIP}"
 mkdir -p "${ARCHIVE_DIR}"
+mkdir -p "${ARCHIVE_DIR}/scripts/lib"
 
 cp target/release/zipcode "${ARCHIVE_DIR}/"
 cp scripts/install.sh "${ARCHIVE_DIR}/"
 cp scripts/install_llama_server.sh "${ARCHIVE_DIR}/"
 cp scripts/download_model.sh "${ARCHIVE_DIR}/"
+cp scripts/lib/install_common.sh "${ARCHIVE_DIR}/scripts/lib/"
 cp README.md "${ARCHIVE_DIR}/" 2>/dev/null || true
 
 if [ "${WITH_LLAMA_SERVER}" -eq 1 ]; then
@@ -128,4 +130,4 @@ echo "Place tokenizer.json next to the model file here." \
 echo ""
 echo "Archive created: ${ARCHIVE_ZIP}"
 echo "Size: $(du -h "${ARCHIVE_ZIP}" | cut -f1)"
-echo "First run after install: source ~/.zipcode/setup.env && zipcode"
+echo "First run after install: zipcode"

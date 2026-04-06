@@ -5,6 +5,15 @@ fn zipcode_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_zipcode"))
 }
 
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should have workspace parent")
+        .parent()
+        .expect("workspace root should exist")
+        .to_path_buf()
+}
+
 fn make_temp_dir(name: &str) -> PathBuf {
     let unique = format!(
         "zipcode-smoke-{name}-{}-{}",
@@ -396,4 +405,75 @@ fn empty_helper_env_vars_do_not_force_repair_mode() {
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn root_install_script_bootstraps_clone_users_into_ready_state() {
+    let home = make_temp_dir("root-install");
+    let asset_dir = make_temp_dir("root-install-assets");
+    let model = asset_dir.join("gemma-4-test.gguf");
+    let tokenizer = asset_dir.join("tokenizer.json");
+    let helper = asset_dir.join("llama-server");
+    let install_script = repo_root().join("install.sh");
+
+    std::fs::write(&model, b"gguf").expect("write fake gguf");
+    std::fs::write(&tokenizer, b"{}").expect("write fake tokenizer");
+    write_executable(&helper, "#!/bin/sh\necho fake llama-server\n");
+
+    let output = Command::new("bash")
+        .arg(&install_script)
+        .args(["--binary", env!("CARGO_BIN_EXE_zipcode")])
+        .arg("--model")
+        .arg(&model)
+        .arg("--tokenizer")
+        .arg(&tokenizer)
+        .arg("--llama-server")
+        .arg(&helper)
+        .env("HOME", &home)
+        .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
+        .output()
+        .expect("failed to run root install.sh");
+
+    assert!(
+        output.status.success(),
+        "root install.sh should succeed, got: {output:?}"
+    );
+
+    let launcher = home.join(".local/bin/zipcode");
+    assert!(
+        launcher.is_file(),
+        "install should create ~/.local/bin/zipcode"
+    );
+
+    let doctor = Command::new(&launcher)
+        .arg("doctor")
+        .env("HOME", &home)
+        .output()
+        .expect("failed to run installed zipcode doctor");
+
+    assert!(
+        doctor.status.success(),
+        "doctor should succeed, got: {doctor:?}"
+    );
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        stdout.contains("Status: Ready"),
+        "installed zipcode should report Ready, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            &home
+                .join(".zipcode/models/gemma-4-test.gguf")
+                .display()
+                .to_string()
+        ),
+        "doctor should report installed model path, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(&home.join(".zipcode/bin/llama-server").display().to_string()),
+        "doctor should report installed helper path, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+    std::fs::remove_dir_all(asset_dir).expect("cleanup asset dir");
 }
