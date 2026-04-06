@@ -1,11 +1,11 @@
 #!/bin/bash
-# scripts/download_model.sh — Download Gemma 4 GGUF model
+# scripts/download_model.sh — Download a recommended Gemma 4 GGUF model
 set -euo pipefail
 
 MODEL_DIR="${HOME}/.zipcode/models"
 AUTO_YES=0
-HF_REPO="google/gemma-4-27b-it-GGUF"
-TOKENIZER_URL="https://huggingface.co/google/gemma-4-27b-it/raw/main/tokenizer.json"
+HF_REPO="ggml-org/gemma-4-E2B-it-GGUF"
+TOKENIZER_URL="https://huggingface.co/google/gemma-4-E2B-it/raw/main/tokenizer.json"
 
 usage() {
     cat <<EOF
@@ -46,12 +46,12 @@ done
 
 mkdir -p "${MODEL_DIR}"
 
-echo "This script helps you download a Gemma 4 GGUF model."
+echo "This script helps you download a recommended Gemma 4 GGUF model."
 echo ""
 echo "For air-gapped environments, download these files on an internet-connected machine:"
 echo ""
-echo "  1. Model:     https://huggingface.co/google/gemma-4-27b-it-GGUF"
-echo "  2. Tokenizer: https://huggingface.co/google/gemma-4-27b-it/raw/main/tokenizer.json"
+echo "  1. Model:     https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF"
+echo "  2. Tokenizer: https://huggingface.co/google/gemma-4-E2B-it/raw/main/tokenizer.json"
 echo ""
 echo "Note: the model repository may require Hugging Face login / access approval."
 echo ""

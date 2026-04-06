@@ -543,7 +543,7 @@ fn root_install_script_interviews_users_with_links_then_paths() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("https://huggingface.co/google/gemma-4-27b-it-GGUF"),
+        combined.contains("https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF"),
         "interactive install should show the model download link, got: {combined}"
     );
     assert!(

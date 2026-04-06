@@ -180,7 +180,7 @@ SCRIPT
         bash "$ROOT_DIR/install.sh" --binary "$BIN" 2>&1
   )"
   printf '%s\n' "$output"
-  expect_contains "$output" "https://huggingface.co/google/gemma-4-27b-it-GGUF" "install interview model link" || return 1
+  expect_contains "$output" "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF" "install interview model link" || return 1
   expect_contains "$output" "Local path to the .gguf model:" "install interview model prompt" || return 1
   expect_contains "$output" "Status:         Ready" "install interview ready status" || return 1
   PASS_COUNT=$((PASS_COUNT + 1))

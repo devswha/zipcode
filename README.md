@@ -376,10 +376,10 @@ Place in any project root. Contents are injected into the system prompt.
 
 | Component | Minimum |
 |-----------|---------|
-| Model | Gemma 4 27B IT (GGUF format) |
-| VRAM | 24 GB for Q8_0 quantization |
+| Model | Gemma 4 E2B IT (GGUF format) |
+| VRAM | ~8 GB recommended for Q8_0 quantization |
 | CUDA | 12.0+ (optional, CPU fallback available) |
-| Disk | ~28 GB for Q8_0 model file |
+| Disk | ~5 GB for Q8_0 model file |
 
 ### Download
 
@@ -388,7 +388,7 @@ Place in any project root. Contents are injected into the system prompt.
 ./scripts/download_model.sh
 
 # Option 2: manual
-# Download from: huggingface.co/google/gemma-4-27b-it-GGUF
+# Download from: huggingface.co/ggml-org/gemma-4-E2B-it-GGUF
 # Also download tokenizer.json from the matching model repo
 # Place both files in: ~/.zipcode/models/
 ```

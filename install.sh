@@ -155,9 +155,9 @@ collect_model_assets_from_prompt() {
         cat <<EOF
 Model setup:
   1. Download a GGUF model from:
-     https://huggingface.co/google/gemma-4-27b-it-GGUF
+     https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF
   2. Download tokenizer.json from:
-     https://huggingface.co/google/gemma-4-27b-it/raw/main/tokenizer.json
+     https://huggingface.co/google/gemma-4-E2B-it/raw/main/tokenizer.json
 
 After the files are on this machine, paste their local paths below.
 If you already copied them into ${MODEL_DIR}, you can just press Enter.
