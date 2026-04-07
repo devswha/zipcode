@@ -4,6 +4,11 @@
 
 zipcode is a Rust-based local-only AI coding agent. It runs GGUF models via llama.cpp (Rust bindings) or candle, providing Claude Code-like functionality (file editing, shell execution, code search) entirely offline. Designed for air-gapped environments — ships as a single ZIP.
 
+## Wiki
+
+Project knowledge base at `wiki/`. Read `wiki/index.md` for page catalog.
+When learning something new about the project, update or create wiki pages.
+
 ## Stack
 
 - Language: Rust 2021
