@@ -22,13 +22,13 @@
 <p align="center">
   <img src="https://img.shields.io/github/license/devswha/zipcode?style=flat-square" alt="License" />
   <img src="https://img.shields.io/badge/platform-linux%20x86__64-blue?style=flat-square" alt="Platform" />
-  <img src="https://img.shields.io/badge/tests-60%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-120%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-zero%20warnings-brightgreen?style=flat-square" alt="Clippy" />
 </p>
 
 ---
 
-**zipcode** is a Rust-based coding agent that runs **entirely on your machine** using local LLM inference. It can run Gemma-family GGUF models through candle, native `llama-cpp`, or a `llama-server` fallback for newer Gemma 4 models that outpace the current Rust bindings.
+**zipcode** is a Rust-based coding agent that runs **entirely on your machine** using local LLM inference. It can run Gemma-family GGUF models through candle, native `llama-cpp`, or a `llama-server` fallback for newer Gemma 4 models that outpace the current Rust bindings. Responses stream token-by-token via SSE for instant feedback.
 
 The intended entrypoint is plain `zipcode`: if the machine is ready, you land in the REPL; if it is fresh or broken, zipcode points you at setup or repair steps instead of dropping you into backend jargon.
 
@@ -58,6 +58,15 @@ Type /help for commands, Ctrl+D to exit
 | Sensitive code can't leave the machine | Everything stays on disk. |
 | Cloud LLMs add latency | GPU inference on your hardware. |
 | Setup requires `npm`, `pip`, Docker... | Single static binary. |
+
+### Performance
+
+| Setup | Response Time | Tokens/sec |
+|-------|--------------|------------|
+| CPU only (12 threads) | ~150s | ~0.8 |
+| **GPU (RTX 2070 SUPER)** | **~7.6s** | **~15** |
+
+> SSE streaming delivers tokens to your terminal as they're generated — no waiting for the full response.
 
 ---
 
@@ -141,6 +150,12 @@ zipcode --model ./my-model.gguf
 # Gemma 4 fallback via llama.cpp server
 ZIPCODE_LLAMA_SERVER_BIN=/path/to/llama-server \
 zipcode --backend llama-cpp --model ~/.zipcode/models/gemma-4-e2b-it-Q8_0.gguf prompt "hello"
+
+# GPU acceleration (CUDA)
+ZIPCODE_GPU_LAYERS=99 ZIPCODE_FLASH_ATTENTION=1 zipcode
+
+# Build llama-server with CUDA (auto-detects GPU)
+./scripts/build_llama_server.sh
 
 # Read-only mode (safe exploration)
 zipcode --permission-mode read-only
@@ -262,8 +277,8 @@ All tool output is automatically truncated at **8 KB** with a byte-count summary
 |       +-----+    +---------+                     |
 +-------------------------------------------------+
 |             Inference Engine                     |
-|   candle GGUF loader + CUDA acceleration         |
-|   Tokenizer | KV Cache | Streaming Generation   |
+|   candle | llama-cpp | llama-server (SSE)        |
+|   GPU offload | KV cache | Flash attention       |
 +-------------------------------------------------+
 |              Model Store                         |
 |   ~/.zipcode/models/*.gguf                       |
@@ -294,7 +309,7 @@ cli --> runtime --> inference
 
 | Crate | Responsibility |
 |-------|---------------|
-| **inference** | GGUF loading, tokenization, KV cache, streaming generation. Pure computation. |
+| **inference** | GGUF loading, tokenization, KV cache, SSE streaming, GPU offload. Supports candle, llama-cpp, and llama-server backends. |
 | **tools** | 10 tool implementations. `Tool` trait, `ToolRegistry`, `ToolResult` truncation. |
 | **runtime** | Agentic conversation loop. Config hierarchy, permission policy, session persistence. |
 | **cli** | Binary entry point. REPL (rustyline), ANSI rendering (termimad), clap argument parsing. |
@@ -341,6 +356,8 @@ Loaded from the nearest ancestor project root. Overrides global `~/.zipcode/conf
 {
   "permission_mode": "workspace-write",
   "model_dir": "~/.zipcode/models",
+  "gpu_layers": 99,
+  "flash_attention": true,
   "generation": {
     "temperature": 0.7,
     "top_p": 0.9,
@@ -370,6 +387,15 @@ Place in any project root. Contents are injected into the system prompt.
  '- sessions/            # conversation history
      '- <uuid>.json
 ```
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ZIPCODE_LLAMA_SERVER_BIN` | Path to llama-server binary | auto-detect |
+| `ZIPCODE_LLAMA_SERVER_CTX` | Context window size | 8192 |
+| `ZIPCODE_GPU_LAYERS` | GPU layers to offload (e.g., 99 for all) | none (CPU) |
+| `ZIPCODE_FLASH_ATTENTION` | Enable flash attention (`1` or `true`) | false |
 
 ---
 
