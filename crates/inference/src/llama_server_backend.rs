@@ -20,6 +20,23 @@ const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 const DEFAULT_CONTEXT_SIZE: usize = 8192;
 
+#[derive(Debug, Clone)]
+pub struct ServerOptions {
+    pub gpu_layers: Option<i32>,
+    pub flash_attention: bool,
+    pub context_size: usize,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        Self {
+            gpu_layers: None,
+            flash_attention: false,
+            context_size: DEFAULT_CONTEXT_SIZE,
+        }
+    }
+}
+
 pub struct LlamaServerProvider {
     child: Child,
     port: u16,
@@ -32,17 +49,13 @@ impl LlamaServerProvider {
     ///
     /// The binary is resolved from `ZIPCODE_LLAMA_SERVER_BIN`, `LLAMA_SERVER_BIN`,
     /// or `llama-server` on PATH.
-    pub fn load(model_path: &Path) -> Result<Self> {
+    pub fn load(model_path: &Path, options: &ServerOptions) -> Result<Self> {
         let port = reserve_local_port()?;
         let model_alias = std::env::var("ZIPCODE_LLAMA_SERVER_ALIAS")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_ALIAS.to_string());
         let binary = resolve_llama_server_binary()?;
-        let ctx_size = std::env::var("ZIPCODE_LLAMA_SERVER_CTX")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_CONTEXT_SIZE);
 
         let mut command = Command::new(&binary);
         command
@@ -56,7 +69,23 @@ impl LlamaServerProvider {
             .arg(&model_alias)
             .arg("--jinja")
             .arg("-c")
-            .arg(ctx_size.to_string())
+            .arg(options.context_size.to_string());
+
+        if let Some(layers) = options.gpu_layers {
+            command.arg("-ngl").arg(layers.to_string());
+        }
+        if options.flash_attention {
+            command.arg("-fa");
+        }
+
+        let cache_dir = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".zipcode/cache");
+        std::fs::create_dir_all(&cache_dir).ok();
+        command.arg("--slot-save-path").arg(&cache_dir);
+
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -65,6 +94,8 @@ impl LlamaServerProvider {
             binary = %binary.display(),
             model = %model_path.display(),
             port,
+            gpu_layers = ?options.gpu_layers,
+            flash_attention = options.flash_attention,
             "starting llama-server backend"
         );
 
@@ -86,7 +117,7 @@ impl LlamaServerProvider {
         self.config = config;
     }
 
-    /// Call the local server using the OpenAI-compatible chat completions API.
+    /// Call the local server using the OpenAI-compatible chat completions API with SSE streaming.
     pub fn generate_stream(
         &mut self,
         messages: &[ChatMessage],
@@ -95,69 +126,19 @@ impl LlamaServerProvider {
         let (tx, rx) = mpsc::channel();
 
         let request = build_chat_request(messages, tools, &self.config, &self.model_alias);
-        let response = match self.post_json("/v1/chat/completions", &request) {
-            Ok(value) => value,
-            Err(error) => {
+        let port = self.port;
+
+        std::thread::spawn(move || {
+            if let Err(e) = stream_sse_events(port, &request, &tx) {
                 let _ = tx.send(TokenEvent::Error(InferenceError::GenerationError(
-                    error.to_string(),
+                    e.to_string(),
                 )));
-                return rx;
             }
-        };
+        });
 
-        let finish_reason = response["choices"]
-            .get(0)
-            .and_then(|choice| choice["finish_reason"].as_str())
-            .unwrap_or("stop");
-
-        let message = &response["choices"][0]["message"];
-        let content = extract_message_content(message);
-        if !content.is_empty() {
-            let _ = tx.send(TokenEvent::Token(content));
-        }
-
-        let tool_calls = parse_response_tool_calls(message);
-        if !tool_calls.is_empty() {
-            for call in tool_calls {
-                let _ = tx.send(TokenEvent::ToolCall(call));
-            }
-            let _ = tx.send(TokenEvent::Done(FinishReason::ToolUse));
-            return rx;
-        }
-
-        let done = match finish_reason {
-            "length" => FinishReason::MaxTokens,
-            _ => FinishReason::Stop,
-        };
-        let _ = tx.send(TokenEvent::Done(done));
         rx
     }
 
-    fn post_json(&mut self, path: &str, body: &Value) -> Result<Value> {
-        let request = serde_json::to_string(body)?;
-        debug!(
-            path,
-            bytes = request.len(),
-            preview = %request.chars().take(400).collect::<String>(),
-            "sending llama-server request"
-        );
-        let response = http_request(
-            self.port,
-            "POST",
-            path,
-            Some("application/json"),
-            Some(&request),
-            DEFAULT_REQUEST_TIMEOUT,
-        )?;
-        debug!(
-            path,
-            bytes = response.len(),
-            preview = %response.chars().take(400).collect::<String>(),
-            "received llama-server response body"
-        );
-        serde_json::from_str(&response)
-            .with_context(|| format!("Failed to parse llama-server response as JSON: {response}"))
-    }
 }
 
 impl Drop for LlamaServerProvider {
@@ -332,9 +313,10 @@ fn build_chat_request(
         "temperature": config.temperature,
         "top_p": config.top_p,
         "top_k": config.top_k,
-        "stream": false,
+        "stream": true,
         "repeat_penalty": config.repeat_penalty,
         "repeat_last_n": config.repeat_last_n,
+        "id_slot": 0,
     });
 
     if !tools.is_empty() {
@@ -405,6 +387,211 @@ fn openai_message(message: &ChatMessage) -> Value {
     }
 }
 
+#[derive(Debug)]
+enum SseEvent {
+    Token(String),
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: Option<String>,
+    },
+    FinishReason(String),
+    Done,
+}
+
+fn parse_sse_line(line: &str) -> Option<SseEvent> {
+    let data = line.strip_prefix("data: ")?;
+    let data = data.trim();
+    if data.is_empty() {
+        return None;
+    }
+    if data == "[DONE]" {
+        return Some(SseEvent::Done);
+    }
+
+    let json: Value = serde_json::from_str(data).ok()?;
+    let choice = json["choices"].get(0)?;
+
+    // Check finish_reason
+    if let Some(reason) = choice["finish_reason"].as_str() {
+        if reason != "null" {
+            return Some(SseEvent::FinishReason(reason.to_string()));
+        }
+    }
+
+    let delta = &choice["delta"];
+
+    // Tool call deltas
+    if let Some(tool_calls) = delta["tool_calls"].as_array() {
+        if let Some(tc) = tool_calls.first() {
+            let index = tc["index"].as_u64().unwrap_or(0) as usize;
+            let id = tc["id"].as_str().map(String::from);
+            let name = tc["function"]["name"].as_str().map(String::from);
+            let arguments = tc["function"]["arguments"].as_str().map(String::from);
+            return Some(SseEvent::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments,
+            });
+        }
+    }
+
+    // Content token
+    if let Some(content) = delta["content"].as_str() {
+        if !content.is_empty() {
+            return Some(SseEvent::Token(content.to_string()));
+        }
+    }
+
+    None
+}
+
+#[derive(Default)]
+struct ToolCallAccumulator {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn stream_sse_events(
+    port: u16,
+    request: &Value,
+    tx: &mpsc::Sender<TokenEvent>,
+) -> Result<()> {
+    let body = serde_json::to_string(request)?;
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .context("Failed to connect to llama-server")?;
+    stream.set_read_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
+
+    let http_req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\n\
+         Host: 127.0.0.1:{port}\r\n\
+         User-Agent: zipcode/{version}\r\n\
+         Accept: text/event-stream\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {len}\r\n\
+         \r\n\
+         {body}",
+        version = env!("CARGO_PKG_VERSION"),
+        len = body.len(),
+    );
+    stream.write_all(http_req.as_bytes())?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(stream);
+
+    // Read status line
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line)?;
+    if !status_line.contains(" 200 ") {
+        // Read body for error details
+        let mut error_body = String::new();
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => error_body.push_str(&line),
+            }
+            if error_body.len() > 1024 {
+                break;
+            }
+        }
+        anyhow::bail!("llama-server returned {}: {}", status_line.trim(), error_body.trim());
+    }
+
+    // Skip headers
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        if line == "\r\n" || line == "\n" || line.is_empty() {
+            break;
+        }
+    }
+
+    // Read SSE events
+    let mut tool_call_accum: Vec<ToolCallAccumulator> = Vec::new();
+    let mut finish_reason = FinishReason::Stop;
+
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e.into()),
+        }
+
+        let line = line.trim();
+        // Skip chunked transfer encoding hex size lines
+        if line.chars().all(|c| c.is_ascii_hexdigit()) && !line.is_empty() {
+            continue;
+        }
+
+        let Some(event) = parse_sse_line(line) else {
+            continue;
+        };
+
+        match event {
+            SseEvent::Token(text) => {
+                if tx.send(TokenEvent::Token(text)).is_err() {
+                    return Ok(());
+                }
+            }
+            SseEvent::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments,
+            } => {
+                while tool_call_accum.len() <= index {
+                    tool_call_accum.push(ToolCallAccumulator::default());
+                }
+                let acc = &mut tool_call_accum[index];
+                if let Some(id) = id {
+                    acc.id = id;
+                }
+                if let Some(name) = name {
+                    acc.name = name;
+                }
+                if let Some(args) = arguments {
+                    acc.arguments.push_str(&args);
+                }
+            }
+            SseEvent::FinishReason(reason) => {
+                finish_reason = match reason.as_str() {
+                    "length" => FinishReason::MaxTokens,
+                    "tool_calls" => FinishReason::ToolUse,
+                    _ => FinishReason::Stop,
+                };
+            }
+            SseEvent::Done => break,
+        }
+    }
+
+    // Emit accumulated tool calls
+    if !tool_call_accum.is_empty() {
+        for acc in tool_call_accum {
+            let arguments: serde_json::Value =
+                serde_json::from_str(&acc.arguments).unwrap_or_else(|_| json!({}));
+            let _ = tx.send(TokenEvent::ToolCall(ToolCallParsed {
+                id: acc.id,
+                name: acc.name,
+                arguments,
+            }));
+        }
+        finish_reason = FinishReason::ToolUse;
+    }
+
+    let _ = tx.send(TokenEvent::Done(finish_reason));
+    Ok(())
+}
+
+#[allow(dead_code)]
 fn extract_message_content(message: &Value) -> String {
     if let Some(text) = message["content"].as_str() {
         return text.to_string();
@@ -420,6 +607,7 @@ fn extract_message_content(message: &Value) -> String {
     String::new()
 }
 
+#[allow(dead_code)]
 fn parse_response_tool_calls(message: &Value) -> Vec<ToolCallParsed> {
     message["tool_calls"]
         .as_array()
@@ -448,6 +636,34 @@ fn parse_response_tool_calls(message: &Value) -> Vec<ToolCallParsed> {
 mod tests {
     use super::*;
     use crate::chat_template::ToolSpec;
+
+    #[test]
+    fn parse_sse_data_line_extracts_token() {
+        let line = r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
+        let event = parse_sse_line(line);
+        assert!(matches!(event, Some(SseEvent::Token(ref t)) if t == "hello"));
+    }
+
+    #[test]
+    fn parse_sse_data_line_detects_done() {
+        let line = "data: [DONE]";
+        let event = parse_sse_line(line);
+        assert!(matches!(event, Some(SseEvent::Done)));
+    }
+
+    #[test]
+    fn parse_sse_data_line_extracts_tool_call_chunks() {
+        let line = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":"}}]}}]}"#;
+        let event = parse_sse_line(line);
+        assert!(matches!(event, Some(SseEvent::ToolCallDelta { .. })));
+    }
+
+    #[test]
+    fn parse_sse_data_line_ignores_empty() {
+        assert!(parse_sse_line("").is_none());
+        assert!(parse_sse_line(": comment").is_none());
+        assert!(parse_sse_line("data: ").is_none());
+    }
 
     #[test]
     fn build_chat_request_includes_tools() {
@@ -501,5 +717,13 @@ mod tests {
         });
 
         assert_eq!(extract_message_content(&message), "hello world");
+    }
+
+    #[test]
+    fn server_options_default_has_no_gpu_layers() {
+        let opts = ServerOptions::default();
+        assert_eq!(opts.gpu_layers, None);
+        assert!(!opts.flash_attention);
+        assert_eq!(opts.context_size, DEFAULT_CONTEXT_SIZE);
     }
 }
