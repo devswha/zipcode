@@ -73,8 +73,8 @@ cd zipcode
 
 The clone installer builds zipcode, installs a `zipcode` launcher into `~/.local/bin`,
 copies any model artifacts you point it at, and when nothing is ready it walks you
-through a setup interview: show the download links, paste the local paths after
-you fetch the files, or skip for now.
+through a setup interview: download in the terminal now, show the download links,
+paste the local paths after you fetch the files, or skip for now.
 
 Common flags:
 
@@ -83,6 +83,7 @@ Common flags:
 ./install.sh --llama-server /path/to/llama-server
 ./install.sh --skip-build --binary ./target/release/zipcode
 ./scripts/download_model.sh --yes --dir ~/.zipcode/models
+./scripts/download_model.sh --yes --preset 31b --dir ~/.zipcode/models
 ```
 
 The online download path may require Hugging Face login / access approval for the
@@ -91,7 +92,7 @@ Gemma GGUF repository.
 ### 2. Get a model + tokenizer
 
 ```bash
-# Automated (requires internet + huggingface-cli)
+# Automated (requires internet + hf or huggingface-cli)
 ./scripts/download_model.sh
 
 # Or manual: download a Gemma GGUF + matching tokenizer.json

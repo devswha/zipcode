@@ -11,8 +11,8 @@ Usage: ./install.sh [options]
 
 Install zipcode from this source checkout into ~/.zipcode and ~/.local/bin.
 If model assets are missing, the installer walks you through the next step:
-show the download links, ask for local paths after you fetch the files, or
-skip setup for now.
+download in the terminal now, show the download links, ask for local paths
+after you fetch the files, or skip setup for now.
 
 Options:
   --binary PATH         Use an existing zipcode binary instead of building one.
@@ -143,10 +143,75 @@ prompt_press_enter() {
     IFS= read -r _ || true
 }
 
+model_preset_name() {
+    case "$1" in
+        e2b) printf '%s\n' "Gemma 4 E2B IT (recommended smaller download)" ;;
+        31b) printf '%s\n' "Gemma 4 31B IT (larger, higher VRAM)" ;;
+        *) fail "unknown model preset: $1" ;;
+    esac
+}
+
+model_repo_url_for_preset() {
+    case "$1" in
+        e2b) printf '%s\n' "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF" ;;
+        31b) printf '%s\n' "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF" ;;
+        *) fail "unknown model preset: $1" ;;
+    esac
+}
+
+tokenizer_url_for_preset() {
+    case "$1" in
+        e2b) printf '%s\n' "https://huggingface.co/google/gemma-4-E2B-it/raw/main/tokenizer.json" ;;
+        31b) printf '%s\n' "https://huggingface.co/google/gemma-4-31B-it/raw/main/tokenizer.json" ;;
+        *) fail "unknown model preset: $1" ;;
+    esac
+}
+
+choose_model_preset() {
+    local preset_choice=""
+
+    echo >&2
+    cat >&2 <<EOF
+Choose a model profile:
+  1. $(model_preset_name e2b)
+  2. $(model_preset_name 31b)
+EOF
+
+    preset_choice="$(prompt_choice "Selection:" "1")"
+    case "${preset_choice}" in
+        1) printf '%s' "e2b" ;;
+        2) printf '%s' "31b" ;;
+        *) echo "Unknown selection '${preset_choice}'. Using the recommended E2B model." >&2
+           printf '%s' "e2b" ;;
+    esac
+}
+
+run_terminal_model_download() {
+    local preset="$1"
+    local downloader="${ZIPCODE_DOWNLOAD_MODEL_SCRIPT:-${SCRIPT_DIR}/scripts/download_model.sh}"
+
+    [ -f "${downloader}" ] || fail "download helper not found: ${downloader}"
+
+    echo
+    echo "Downloading in this terminal now:"
+    echo "  • Model profile: $(model_preset_name "${preset}")"
+    echo "  • GGUF page:     $(model_repo_url_for_preset "${preset}")"
+    echo "  • Tokenizer:     $(tokenizer_url_for_preset "${preset}")"
+    echo
+
+    bash "${downloader}" --yes --dir "${MODEL_DIR}" --preset "${preset}"
+
+    MODEL_SOURCE="$(discover_single_model "${MODEL_DIR}" || true)"
+    if [ -f "${MODEL_DIR}/tokenizer.json" ]; then
+        TOKENIZER_SOURCE="${MODEL_DIR}/tokenizer.json"
+    fi
+}
+
 collect_model_assets_from_prompt() {
-    local mode="$1"
-    local discovered_model="$2"
-    local discovered_tokenizer="$3"
+    local preset="$1"
+    local mode="$2"
+    local discovered_model="$3"
+    local discovered_tokenizer="$4"
     local model_input=""
     local tokenizer_input=""
 
@@ -155,9 +220,9 @@ collect_model_assets_from_prompt() {
         cat <<EOF
 Model setup:
   1. Download a GGUF model from:
-     https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF
+     $(model_repo_url_for_preset "${preset}")
   2. Download tokenizer.json from:
-     https://huggingface.co/google/gemma-4-E2B-it/raw/main/tokenizer.json
+     $(tokenizer_url_for_preset "${preset}")
 
 After the files are on this machine, paste their local paths below.
 If you already copied them into ${MODEL_DIR}, you can just press Enter.
@@ -202,6 +267,7 @@ discover_model_assets() {
 
 guided_model_setup() {
     local choice=""
+    local preset=""
 
     discover_model_assets
     if [ -n "${MODEL_SOURCE}" ] && [ -n "${TOKENIZER_SOURCE}" ]; then
@@ -213,20 +279,29 @@ guided_model_setup() {
 Model assets are still needed before zipcode can run the full setup.
 
 Choose one:
-  1. Show the download links, then I will paste the file paths
-  2. I already downloaded the files; ask me for the paths now
-  3. Skip model setup for now
+  1. Download in this terminal now (recommended)
+  2. Show the download links, then I will paste the file paths
+  3. I already downloaded the files; ask me for the paths now
+  4. Skip model setup for now
 EOF
 
-    choice="$(prompt_choice "Selection:" "$(default_choice_for_stdin "1" "3")")"
+    choice="$(prompt_choice "Selection:" "$(default_choice_for_stdin "1" "4")")"
     case "${choice}" in
         1)
-            collect_model_assets_from_prompt "links" "${MODEL_SOURCE}" "${TOKENIZER_SOURCE}"
+            preset="$(choose_model_preset)"
+            run_terminal_model_download "${preset}" || {
+                echo "Terminal download did not finish. You can paste local paths instead."
+                collect_model_assets_from_prompt "${preset}" "paths" "${MODEL_SOURCE}" "${TOKENIZER_SOURCE}"
+            }
             ;;
         2)
-            collect_model_assets_from_prompt "paths" "${MODEL_SOURCE}" "${TOKENIZER_SOURCE}"
+            preset="$(choose_model_preset)"
+            collect_model_assets_from_prompt "${preset}" "links" "${MODEL_SOURCE}" "${TOKENIZER_SOURCE}"
             ;;
         3)
+            collect_model_assets_from_prompt "e2b" "paths" "${MODEL_SOURCE}" "${TOKENIZER_SOURCE}"
+            ;;
+        4)
             echo "Skipping model setup for now."
             ;;
         *)

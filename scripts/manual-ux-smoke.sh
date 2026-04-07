@@ -172,7 +172,7 @@ SCRIPT
   echo
   echo "===== install.sh interview flow ====="
   output="$(
-    printf '1\n\n%s\n%s\n1\n%s\n' \
+    printf '2\n1\n\n%s\n%s\n1\n%s\n' \
       "$asset_dir/gemma-4-test.gguf" \
       "$asset_dir/tokenizer.json" \
       "$asset_dir/llama-server" |
@@ -183,6 +183,64 @@ SCRIPT
   expect_contains "$output" "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF" "install interview model link" || return 1
   expect_contains "$output" "Local path to the .gguf model:" "install interview model prompt" || return 1
   expect_contains "$output" "Status:         Ready" "install interview ready status" || return 1
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+run_install_terminal_download_case() {
+  local home_dir asset_dir fake_downloader output
+  home_dir="$(make_temp_home)"
+  asset_dir="$(mktemp -d)"
+  TMP_DIRS+=("$asset_dir")
+  fake_downloader="$asset_dir/fake-download-model.sh"
+
+  cat > "$fake_downloader" <<'SCRIPT'
+#!/bin/sh
+set -eu
+dir=""
+preset="e2b"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir)
+      dir="$2"
+      shift
+      ;;
+    --preset)
+      preset="$2"
+      shift
+      ;;
+  esac
+  shift
+done
+mkdir -p "$dir"
+if [ "$preset" = "31b" ]; then
+  printf 'gguf' > "$dir/gemma-4-31b-it-q8_0.gguf"
+else
+  printf 'gguf' > "$dir/gemma-4-e2b-it-q8_0.gguf"
+fi
+printf '{}' > "$dir/tokenizer.json"
+echo "fake downloader wrote $preset assets to $dir"
+SCRIPT
+  chmod +x "$fake_downloader"
+
+  cat > "$asset_dir/llama-server" <<'SCRIPT'
+#!/bin/sh
+echo fake llama-server
+SCRIPT
+  chmod +x "$asset_dir/llama-server"
+
+  echo
+  echo "===== install.sh terminal download flow ====="
+  output="$(
+    printf '1\n2\n1\n%s\n' "$asset_dir/llama-server" |
+      env HOME="$home_dir" ZIPCODE_INSTALL_SKIP_SYSTEM_BIN=1 \
+        ZIPCODE_DOWNLOAD_MODEL_SCRIPT="$fake_downloader" \
+        bash "$ROOT_DIR/install.sh" --binary "$BIN" 2>&1
+  )"
+  printf '%s\n' "$output"
+  expect_contains "$output" "Downloading in this terminal now:" "install terminal download banner" || return 1
+  expect_contains "$output" "Gemma 4 31B IT" "install terminal download preset" || return 1
+  expect_contains "$output" "fake downloader wrote 31b assets" "install terminal download helper" || return 1
+  expect_contains "$output" "Status:         Ready" "install terminal download ready status" || return 1
   PASS_COUNT=$((PASS_COUNT + 1))
 }
 
@@ -231,6 +289,7 @@ main() {
   run_setup_then_doctor_case
   run_empty_env_case
   run_install_interview_case
+  run_install_terminal_download_case
   run_real_gemma4_case
 
   echo

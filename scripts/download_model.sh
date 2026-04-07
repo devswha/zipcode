@@ -4,15 +4,36 @@ set -euo pipefail
 
 MODEL_DIR="${HOME}/.zipcode/models"
 AUTO_YES=0
-HF_REPO="ggml-org/gemma-4-E2B-it-GGUF"
-TOKENIZER_URL="https://huggingface.co/google/gemma-4-E2B-it/raw/main/tokenizer.json"
+MODEL_PRESET="e2b"
+
+set_model_preset() {
+    case "$1" in
+        e2b)
+            HF_REPO="ggml-org/gemma-4-E2B-it-GGUF"
+            TOKENIZER_URL="https://huggingface.co/google/gemma-4-E2B-it/raw/main/tokenizer.json"
+            MODEL_LABEL="Gemma 4 E2B IT"
+            ;;
+        31b)
+            HF_REPO="ggml-org/gemma-4-31B-it-GGUF"
+            TOKENIZER_URL="https://huggingface.co/google/gemma-4-31B-it/raw/main/tokenizer.json"
+            MODEL_LABEL="Gemma 4 31B IT"
+            ;;
+        *)
+            echo "Error: unknown preset: $1 (expected e2b or 31b)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+set_model_preset "${MODEL_PRESET}"
 
 usage() {
     cat <<EOF
-Usage: ./scripts/download_model.sh [--dir PATH] [--yes]
+Usage: ./scripts/download_model.sh [--dir PATH] [--preset e2b|31b] [--yes]
 
 Options:
   --dir PATH   Download into PATH instead of ~/.zipcode/models
+  --preset     Choose the recommended model family (default: e2b)
   --yes        Skip the interactive confirmation prompt
   -h, --help   Show this help text
 EOF
@@ -31,6 +52,15 @@ while [ "$#" -gt 0 ]; do
         --yes)
             AUTO_YES=1
             ;;
+        --preset)
+            [ "$#" -gt 1 ] || {
+                echo "Error: --preset requires a value" >&2
+                exit 1
+            }
+            MODEL_PRESET="$2"
+            set_model_preset "${MODEL_PRESET}"
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -46,12 +76,12 @@ done
 
 mkdir -p "${MODEL_DIR}"
 
-echo "This script helps you download a recommended Gemma 4 GGUF model."
+echo "This script helps you download a recommended ${MODEL_LABEL} GGUF model."
 echo ""
 echo "For air-gapped environments, download these files on an internet-connected machine:"
 echo ""
-echo "  1. Model:     https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF"
-echo "  2. Tokenizer: https://huggingface.co/google/gemma-4-E2B-it/raw/main/tokenizer.json"
+echo "  1. Model:     https://huggingface.co/${HF_REPO}"
+echo "  2. Tokenizer: ${TOKENIZER_URL}"
 echo ""
 echo "Note: the model repository may require Hugging Face login / access approval."
 echo ""
@@ -137,7 +167,7 @@ cleanup_partial_download() {
 }
 
 if [ "${AUTO_YES}" -ne 1 ]; then
-    read -r -p "Download now? (requires internet + huggingface-cli) [y/N] " REPLY
+    read -r -p "Download now? (requires internet + hf or huggingface-cli) [y/N] " REPLY
     if [[ ! "${REPLY}" =~ ^[Yy]$ ]]; then
         exit 0
     fi

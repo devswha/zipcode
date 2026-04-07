@@ -520,7 +520,7 @@ fn root_install_script_interviews_users_with_links_then_paths() {
     write_executable(&helper, "#!/bin/sh\necho fake llama-server\n");
 
     let scripted_input = format!(
-        "1\n\n{}\n{}\n1\n{}\n",
+        "2\n1\n\n{}\n{}\n1\n{}\n",
         model.display(),
         tokenizer.display(),
         helper.display()
@@ -572,6 +572,108 @@ fn root_install_script_interviews_users_with_links_then_paths() {
     assert!(
         stdout.contains("Status: Ready"),
         "interactive install should still produce a Ready doctor state, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+    std::fs::remove_dir_all(asset_dir).expect("cleanup asset dir");
+}
+
+#[test]
+fn root_install_script_can_download_in_terminal_then_finish_setup() {
+    let home = make_temp_dir("root-install-terminal-download");
+    let asset_dir = make_temp_dir("root-install-terminal-download-assets");
+    let helper = asset_dir.join("llama-server");
+    let fake_downloader = asset_dir.join("fake-download-model.sh");
+    let install_script = repo_root().join("install.sh");
+
+    write_executable(&helper, "#!/bin/sh\necho fake llama-server\n");
+    write_executable(
+        &fake_downloader,
+        r#"#!/bin/sh
+set -eu
+dir=""
+preset="e2b"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir)
+      dir="$2"
+      shift
+      ;;
+    --preset)
+      preset="$2"
+      shift
+      ;;
+  esac
+  shift
+done
+mkdir -p "$dir"
+if [ "$preset" = "31b" ]; then
+  printf 'gguf' > "$dir/gemma-4-31b-it-q8_0.gguf"
+else
+  printf 'gguf' > "$dir/gemma-4-e2b-it-q8_0.gguf"
+fi
+printf '{}' > "$dir/tokenizer.json"
+echo "fake downloader wrote $preset assets to $dir"
+"#,
+    );
+
+    let scripted_input = format!("1\n2\n1\n{}\n", helper.display());
+    let output = Command::new("bash")
+        .arg(&install_script)
+        .args(["--binary", env!("CARGO_BIN_EXE_zipcode")])
+        .env("HOME", &home)
+        .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
+        .env("ZIPCODE_DOWNLOAD_MODEL_SCRIPT", &fake_downloader)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .expect("stdin")
+                .write_all(scripted_input.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("run interactive install with fake downloader");
+
+    assert!(
+        output.status.success(),
+        "terminal download install should succeed, got: {output:?}"
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Downloading in this terminal now:"),
+        "install should advertise the terminal-download path, got: {combined}"
+    );
+    assert!(
+        combined.contains("Gemma 4 31B IT"),
+        "install should show the selected 31B preset, got: {combined}"
+    );
+    assert!(
+        combined.contains("fake downloader wrote 31b assets"),
+        "install should run the configured downloader, got: {combined}"
+    );
+
+    let doctor = Command::new(home.join(".local/bin/zipcode"))
+        .arg("doctor")
+        .env("HOME", &home)
+        .output()
+        .expect("run installed zipcode doctor");
+    assert!(
+        doctor.status.success(),
+        "doctor should succeed, got: {doctor:?}"
+    );
+    let stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        stdout.contains("Status: Ready") && stdout.contains("gemma-4-31b-it-q8_0.gguf"),
+        "terminal download flow should leave a Ready install, got: {stdout}"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
