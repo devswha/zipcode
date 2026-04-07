@@ -47,14 +47,16 @@ fi
 
 echo "Configuring llama-server build..."
 
-# Auto-detect CUDA
+# Auto-detect CUDA (requires nvcc from CUDA Toolkit, not just the driver)
 cuda_available=0
 if command -v nvcc >/dev/null 2>&1; then
     cuda_available=1
-    echo "CUDA detected (nvcc found), enabling GPU support."
+    echo "CUDA Toolkit detected (nvcc found), enabling GPU support."
 elif command -v nvidia-smi >/dev/null 2>&1; then
-    cuda_available=1
-    echo "CUDA detected (nvidia-smi found), enabling GPU support."
+    echo "Warning: NVIDIA GPU detected but CUDA Toolkit (nvcc) not found."
+    echo "  Install CUDA Toolkit for GPU-accelerated builds:"
+    echo "    sudo apt install nvidia-cuda-toolkit"
+    echo "  Building CPU-only for now."
 fi
 
 cmake_args=(-S "${SRC_DIR}" -B "${BUILD_DIR}" -DLLAMA_BUILD_SERVER=ON)

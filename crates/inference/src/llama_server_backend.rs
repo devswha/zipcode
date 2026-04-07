@@ -75,7 +75,7 @@ impl LlamaServerProvider {
             command.arg("-ngl").arg(layers.to_string());
         }
         if options.flash_attention {
-            command.arg("-fa").arg("on");
+            command.arg("--flash-attn").arg("on");
         }
 
         let cache_dir = std::env::var_os("HOME")
