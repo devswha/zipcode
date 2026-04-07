@@ -75,7 +75,7 @@ impl LlamaServerProvider {
             command.arg("-ngl").arg(layers.to_string());
         }
         if options.flash_attention {
-            command.arg("-fa");
+            command.arg("-fa").arg("on");
         }
 
         let cache_dir = std::env::var_os("HOME")
@@ -206,99 +206,55 @@ fn wait_until_ready(child: &mut Child, port: u16) -> Result<()> {
             anyhow::bail!("llama-server exited before becoming ready (status: {status})");
         }
 
-        match http_request(
-            port,
-            "GET",
-            "/v1/models",
-            None,
-            None,
-            Duration::from_secs(2),
-        ) {
-            Ok(_) => {
-                std::thread::sleep(Duration::from_secs(1));
-                return Ok(());
+        if Instant::now() >= deadline {
+            anyhow::bail!("Timed out waiting for llama-server on port {port}");
+        }
+
+        match health_check(port) {
+            HealthStatus::Ready => return Ok(()),
+            HealthStatus::Loading => {
+                debug!(port, "llama-server model still loading");
+                std::thread::sleep(Duration::from_millis(500));
             }
-            Err(error) if Instant::now() < deadline => {
+            HealthStatus::Unreachable(error) => {
                 debug!(port, error = %error, "waiting for llama-server to accept requests");
                 std::thread::sleep(Duration::from_millis(500));
             }
-            Err(error) => {
-                anyhow::bail!("Timed out waiting for llama-server on port {port}: {error}");
-            }
         }
     }
 }
 
-fn http_request(
-    port: u16,
-    method: &str,
-    path: &str,
-    content_type: Option<&str>,
-    body: Option<&str>,
-    timeout: Duration,
-) -> Result<String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port))
-        .with_context(|| format!("Failed to connect to llama-server on port {port}"))?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
+enum HealthStatus {
+    Ready,
+    Loading,
+    Unreachable(String),
+}
 
-    let body = body.unwrap_or("");
-    let mut request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUser-Agent: zipcode/{version}\r\nAccept: application/json\r\n",
-        version = env!("CARGO_PKG_VERSION"),
+fn health_check(port: u16) -> HealthStatus {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        return HealthStatus::Unreachable("connection refused".to_string());
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+
+    let request = format!(
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
     );
-    if let Some(content_type) = content_type {
-        request.push_str(&format!("Content-Type: {content_type}\r\n"));
-    }
-    if !body.is_empty() {
-        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    request.push_str("\r\n");
-    request.push_str(body);
-
-    stream.write_all(request.as_bytes())?;
-    stream.flush()?;
-
-    let mut reader = BufReader::new(stream);
-    let mut status_line = String::new();
-    reader.read_line(&mut status_line)?;
-    if status_line.trim().is_empty() {
-        anyhow::bail!("Empty HTTP response from llama-server");
+    if stream.write_all(request.as_bytes()).is_err() || stream.flush().is_err() {
+        return HealthStatus::Unreachable("write failed".to_string());
     }
 
-    let mut headers = Vec::new();
-    let mut content_length = None;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        if line == "\r\n" || line == "\n" || line.is_empty() {
-            break;
-        }
+    let mut buf = Vec::new();
+    let _ = stream.read_to_end(&mut buf);
+    let response = String::from_utf8_lossy(&buf);
 
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-        headers.push(line);
-    }
-
-    let mut body_bytes = Vec::new();
-    if let Some(length) = content_length {
-        body_bytes.resize(length, 0);
-        reader.read_exact(&mut body_bytes)?;
+    if response.contains("\"ok\"") {
+        HealthStatus::Ready
     } else {
-        reader.read_to_end(&mut body_bytes)?;
+        HealthStatus::Loading
     }
-
-    let body =
-        String::from_utf8(body_bytes).context("llama-server returned a non-UTF-8 response body")?;
-    if !status_line.contains(" 200 ") {
-        anyhow::bail!("llama-server returned {status_line}: {body}");
-    }
-
-    Ok(body)
 }
+
 
 fn build_chat_request(
     messages: &[ChatMessage],
