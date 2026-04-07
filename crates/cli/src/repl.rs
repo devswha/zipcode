@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use zipcode_inference::{create_engine, Backend, GenerationConfig};
+use zipcode_inference::{create_engine, Backend, GenerationConfig, ServerOptions};
 use zipcode_runtime::config::find_project_root;
 use zipcode_runtime::prompt::build_system_prompt;
 use zipcode_runtime::{
@@ -222,8 +222,23 @@ pub fn create_loop(
         std::env::set_var("ZIPCODE_LLAMA_SERVER_BIN", path);
     }
 
+    let server_options = ServerOptions {
+        gpu_layers: std::env::var("ZIPCODE_GPU_LAYERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or(config.gpu_layers),
+        flash_attention: std::env::var("ZIPCODE_FLASH_ATTENTION")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(config.flash_attention),
+        context_size: std::env::var("ZIPCODE_LLAMA_SERVER_CTX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8192),
+    };
+
     let backend = Backend::parse(backend_str)?;
-    let engine = match create_engine(backend, &model_file, &tokenizer_path, gen_config.clone()) {
+    let engine = match create_engine(backend, &model_file, &tokenizer_path, gen_config.clone(), server_options.clone()) {
         Ok(engine) => engine,
         Err(native_error)
             if matches!(backend, Backend::LlamaCpp) && is_probably_gemma4_model(&model_file) =>
@@ -236,6 +251,7 @@ pub fn create_loop(
                 &model_file,
                 &tokenizer_path,
                 gen_config,
+                server_options,
             )
             .with_context(|| {
                 format!(
@@ -430,6 +446,8 @@ mod tests {
             llama_server_bin: None,
             permission_mode: "workspace-write".to_string(),
             generation: GenerationOverrides::default(),
+            gpu_layers: None,
+            flash_attention: false,
         };
 
         let resolved = resolve_model_path(None, &config, &nested, &dir).unwrap();

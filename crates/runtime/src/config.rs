@@ -14,6 +14,10 @@ pub struct ZipcodeConfig {
     pub permission_mode: String,
     #[serde(default)]
     pub generation: GenerationOverrides,
+    #[serde(default)]
+    pub gpu_layers: Option<i32>,
+    #[serde(default)]
+    pub flash_attention: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -41,6 +45,8 @@ impl Default for ZipcodeConfig {
             llama_server_bin: None,
             permission_mode: default_permission(),
             generation: GenerationOverrides::default(),
+            gpu_layers: None,
+            flash_attention: false,
         }
     }
 }
@@ -99,6 +105,12 @@ impl ZipcodeConfig {
                 if let Some(t) = gen["max_tokens"].as_u64() {
                     config.generation.max_tokens = Some(t as usize);
                 }
+            }
+            if let Some(layers) = project["gpu_layers"].as_i64() {
+                config.gpu_layers = Some(layers as i32);
+            }
+            if let Some(fa) = project["flash_attention"].as_bool() {
+                config.flash_attention = fa;
             }
         }
 
@@ -220,6 +232,19 @@ mod tests {
         std::fs::write(dir.path().join(".zipcode.json"), "{}").unwrap();
 
         assert_eq!(find_project_root(&nested), dir.path());
+    }
+
+    #[test]
+    fn test_load_project_override_gpu_settings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"gpu_layers": 99, "flash_attention": true}"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(config.gpu_layers, Some(99));
+        assert!(config.flash_attention);
     }
 
     #[test]
