@@ -125,16 +125,30 @@ PY
 download_model_repo() {
     local output_file
     output_file="$(mktemp)"
+    local status=0
+
+    run_download_with_visibility() {
+        if [ -t 1 ] && [ -t 2 ]; then
+            "$@"
+            return $?
+        fi
+
+        set +e
+        "$@" >"${output_file}" 2>&1
+        status=$?
+        set -e
+
+        cat "${output_file}"
+        return "${status}"
+    }
 
     if command -v hf >/dev/null 2>&1; then
-        if hf download "${HF_REPO}" --local-dir "${MODEL_DIR}" >"${output_file}" 2>&1; then
-            cat "${output_file}"
+        if run_download_with_visibility hf download "${HF_REPO}" --local-dir "${MODEL_DIR}"; then
             rm -f "${output_file}"
             return 0
         fi
     elif command -v huggingface-cli >/dev/null 2>&1; then
-        if huggingface-cli download "${HF_REPO}" --local-dir "${MODEL_DIR}" >"${output_file}" 2>&1; then
-            cat "${output_file}"
+        if run_download_with_visibility huggingface-cli download "${HF_REPO}" --local-dir "${MODEL_DIR}"; then
             rm -f "${output_file}"
             return 0
         fi
@@ -144,7 +158,9 @@ download_model_repo() {
         return 1
     fi
 
-    cat "${output_file}" >&2
+    if [ ! -t 1 ] || [ ! -t 2 ]; then
+        cat "${output_file}" >&2
+    fi
     rm -f "${output_file}"
 
     cat >&2 <<EOF
