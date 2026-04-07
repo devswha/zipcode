@@ -46,7 +46,21 @@ if [ -n "${GIT_REF}" ]; then
 fi
 
 echo "Configuring llama-server build..."
+
+# Auto-detect CUDA
+cuda_available=0
+if command -v nvcc >/dev/null 2>&1; then
+    cuda_available=1
+    echo "CUDA detected (nvcc found), enabling GPU support."
+elif command -v nvidia-smi >/dev/null 2>&1; then
+    cuda_available=1
+    echo "CUDA detected (nvidia-smi found), enabling GPU support."
+fi
+
 cmake_args=(-S "${SRC_DIR}" -B "${BUILD_DIR}" -DLLAMA_BUILD_SERVER=ON)
+if [ "${cuda_available}" -eq 1 ]; then
+    cmake_args+=(-DGGML_CUDA=ON)
+fi
 if [ -n "${ZIPCODE_LLAMA_SERVER_CMAKE_ARGS:-}" ]; then
     # shellcheck disable=SC2206
     extra_args=(${ZIPCODE_LLAMA_SERVER_CMAKE_ARGS})
