@@ -17,28 +17,62 @@ use zipcode_tools::{
     ToolRegistry,
 };
 
-use crate::render::{print_tool_result, print_tool_start};
+use crate::render::{print_tool_result, print_tool_start, Spinner};
 
 /// CLI callback that renders streaming tokens and tool events.
-pub struct CliCallback;
+///
+/// Manages a background spinner during model inference and between
+/// tool execution rounds to indicate activity.
+pub struct CliCallback {
+    spinner: Option<Spinner>,
+}
+
+impl CliCallback {
+    pub fn new() -> Self {
+        Self { spinner: None }
+    }
+
+    /// Start the thinking spinner. Call before `run_turn`.
+    pub fn start_turn(&mut self) {
+        self.spinner = Some(Spinner::start("thinking"));
+    }
+
+    /// Ensure the spinner is stopped. Call after `run_turn` returns.
+    pub fn stop_turn(&mut self) {
+        if let Some(mut s) = self.spinner.take() {
+            s.stop();
+        }
+    }
+
+    fn stop_spinner(&mut self) {
+        if let Some(mut s) = self.spinner.take() {
+            s.stop();
+        }
+    }
+}
 
 impl zipcode_runtime::StreamCallback for CliCallback {
     fn on_token(&mut self, text: &str) {
+        self.stop_spinner();
         print!("{text}");
         use std::io::Write;
         let _ = std::io::stdout().flush();
     }
 
     fn on_tool_start(&mut self, name: &str, args: &serde_json::Value) {
+        self.stop_spinner();
         println!(); // newline after streamed tokens
         print_tool_start(name, args);
     }
 
     fn on_tool_result(&mut self, name: &str, result: &str) {
         print_tool_result(name, result);
+        // Restart spinner — model will think again after processing results
+        self.spinner = Some(Spinner::start("thinking"));
     }
 
     fn on_permission_prompt(&mut self, message: &str) -> bool {
+        self.stop_spinner();
         use std::io::{self, Write};
         print!("\x1b[33m[permission]\x1b[0m {message} [Y/n] ");
         io::stdout().flush().ok();
@@ -49,6 +83,7 @@ impl zipcode_runtime::StreamCallback for CliCallback {
     }
 
     fn on_error(&mut self, error: &str) {
+        self.stop_spinner();
         eprintln!("\x1b[31merror:\x1b[0m {error}");
     }
 }
@@ -291,8 +326,10 @@ pub fn run_oneshot(
     backend_str: &str,
 ) -> Result<()> {
     let mut conv = create_loop(model_path, permission_mode, backend_str)?;
-    let mut cb = CliCallback;
+    let mut cb = CliCallback::new();
+    cb.start_turn();
     conv.run_turn(text, &mut cb)?;
+    cb.stop_turn();
     println!(); // final newline
     Ok(())
 }
@@ -309,7 +346,7 @@ pub fn run_interactive(
     );
 
     let mut conv = create_loop(model_path, permission_mode, backend_str)?;
-    let mut cb = CliCallback;
+    let mut cb = CliCallback::new();
 
     let mut rl = DefaultEditor::new().context("Failed to initialize line editor")?;
 
@@ -345,9 +382,11 @@ pub fn run_interactive(
                 }
 
                 // Regular user input — run a turn
+                cb.start_turn();
                 if let Err(e) = conv.run_turn(&input, &mut cb) {
                     eprintln!("\x1b[31merror:\x1b[0m {e}");
                 }
+                cb.stop_turn();
                 println!(); // newline after assistant response
             }
             Err(ReadlineError::Interrupted) => {

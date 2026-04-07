@@ -18,3 +18,4 @@
 
 ## Troubleshooting
 - [[cuda-build-errors]] — CUDA build failures: toolkit versions, compiler flags, solutions
+- [[test-scenarios]] — Validated test scenarios and results

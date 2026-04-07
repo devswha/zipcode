@@ -13,7 +13,12 @@ Key rules:
 - Read files before modifying them
 - Prefer editing existing files over creating new ones
 - Run tests after making changes
-- Be concise and direct"#;
+- Be concise and direct
+
+## Tool Usage Guidelines
+
+- **Prefer edit_file over write_file** when modifying existing files — edit_file does targeted replacement and is safer for large files; write_file overwrites the entire file and risks losing content if the rewrite is incomplete
+- **Use `**/*` glob patterns** for project-wide searches — `*` only matches files in the current directory and will miss files in subdirectories (e.g. use `**/*.rs` not `*.rs` to find all Rust files)"#;
 
 pub fn build_system_prompt(
     cwd: &Path,
