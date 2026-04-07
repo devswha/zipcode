@@ -84,6 +84,7 @@ Common flags:
 ./install.sh --skip-build --binary ./target/release/zipcode
 ./scripts/download_model.sh --yes --dir ~/.zipcode/models
 ./scripts/download_model.sh --yes --preset 31b --dir ~/.zipcode/models
+./scripts/build_llama_server.sh ~/.zipcode
 ```
 
 The online download path may require Hugging Face login / access approval for the
@@ -172,6 +173,7 @@ zipcode-v0.1.0-linux-x86_64-cuda.zip
  |- zipcode                     # single binary (~30 MB)
  |- install.sh                  # extracted-bundle installer
  |- install_llama_server.sh     # repair helper for adding llama-server later
+ |- build_llama_server.sh       # build llama-server from source when needed
  |- download_model.sh           # model download helper
  |- README.md
  |- llama-server                # optional, when bundled during packaging

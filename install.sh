@@ -36,6 +36,12 @@ require_file() {
     [ -f "${path}" ] || fail "${label} not found: ${path}"
 }
 
+list_model_candidates() {
+    local search_dir="$1"
+    [ -d "${search_dir}" ] || return 0
+    find "${search_dir}" -maxdepth 1 -type f -name '*.gguf' ! -name 'mmproj*.gguf' -print0 | sort -z
+}
+
 discover_single_model() {
     local search_dir="$1"
     local matches=()
@@ -45,7 +51,7 @@ discover_single_model() {
 
     while IFS= read -r -d '' candidate; do
         matches+=("${candidate}")
-    done < <(find "${search_dir}" -maxdepth 1 -type f -name '*.gguf' -print0 | sort -z)
+    done < <(list_model_candidates "${search_dir}")
 
     [ "${#matches[@]}" -eq 1 ] || return 1
     printf '%s\n' "${matches[0]}"
@@ -167,6 +173,71 @@ tokenizer_url_for_preset() {
     esac
 }
 
+preferred_model_for_preset() {
+    local preset="$1"
+    local search_dir="$2"
+    local needle=""
+    local candidate=""
+    local lower_name=""
+    local matches=()
+    local fallback=""
+
+    case "${preset}" in
+        e2b) needle="gemma-4-e2b" ;;
+        31b) needle="gemma-4-31b" ;;
+        *) fail "unknown model preset: $preset" ;;
+    esac
+
+    while IFS= read -r -d '' candidate; do
+        lower_name="$(basename -- "${candidate}" | tr '[:upper:]' '[:lower:]')"
+        case "${lower_name}" in
+            *"${needle}"*)
+                matches+=("${candidate}")
+                ;;
+        esac
+    done < <(list_model_candidates "${search_dir}")
+
+    if [ "${#matches[@]}" -eq 0 ]; then
+        return 1
+    fi
+
+    for candidate in "${matches[@]}"; do
+        lower_name="$(basename -- "${candidate}" | tr '[:upper:]' '[:lower:]')"
+        case "${lower_name}" in
+            *q8_0*)
+                printf '%s\n' "${candidate}"
+                return 0
+                ;;
+        esac
+    done
+
+    fallback="${matches[0]}"
+    printf '%s\n' "${fallback}"
+}
+
+prompt_model_choice() {
+    local default_index="${1:-1}"
+    shift
+    local candidates=("$@")
+    local i=0
+    local answer=""
+
+    echo >&2
+    echo "Multiple AI models are available. Choose which one zipcode should use:" >&2
+    for candidate in "${candidates[@]}"; do
+        i=$((i + 1))
+        printf '  %d. %s\n' "${i}" "$(basename -- "${candidate}")" >&2
+    done
+
+    answer="$(prompt_choice "Selection:" "${default_index}")"
+    if [[ "${answer}" =~ ^[0-9]+$ ]] && [ "${answer}" -ge 1 ] && [ "${answer}" -le "${#candidates[@]}" ]; then
+        printf '%s\n' "${candidates[$((answer - 1))]}"
+        return 0
+    fi
+
+    printf '%s\n' "${candidates[$((default_index - 1))]}"
+}
+
 choose_model_preset() {
     local preset_choice=""
 
@@ -201,7 +272,7 @@ run_terminal_model_download() {
 
     bash "${downloader}" --yes --dir "${MODEL_DIR}" --preset "${preset}"
 
-    MODEL_SOURCE="$(discover_single_model "${MODEL_DIR}" || true)"
+    MODEL_SOURCE="$(preferred_model_for_preset "${preset}" "${MODEL_DIR}" || true)"
     if [ -f "${MODEL_DIR}/tokenizer.json" ]; then
         TOKENIZER_SOURCE="${MODEL_DIR}/tokenizer.json"
     fi
@@ -265,6 +336,84 @@ discover_model_assets() {
     fi
 }
 
+saved_model_from_config() {
+    local config_path="$1"
+
+    [ -f "${config_path}" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+
+    python3 - "$config_path" <<'PY'
+import json, pathlib, sys
+config_path = pathlib.Path(sys.argv[1])
+try:
+    data = json.loads(config_path.read_text())
+except Exception:
+    raise SystemExit(1)
+model_dir = data.get("model_dir")
+model_file = data.get("model_file")
+if not model_dir or not model_file:
+    raise SystemExit(1)
+path = pathlib.Path(model_dir) / model_file
+if path.is_file():
+    print(path)
+else:
+    raise SystemExit(1)
+PY
+}
+
+resolve_setup_model() {
+    local candidate=""
+    local candidates=()
+    local saved_model=""
+
+    if [ -n "${MODEL_SOURCE}" ]; then
+        candidate="${MODEL_DIR}/$(basename -- "${MODEL_SOURCE}")"
+        if [ -f "${candidate}" ]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+        if [ -f "${MODEL_SOURCE}" ]; then
+            printf '%s\n' "${MODEL_SOURCE}"
+            return 0
+        fi
+    fi
+
+    saved_model="$(saved_model_from_config "${CONFIG_FILE}" || true)"
+    if [ -n "${saved_model}" ]; then
+        printf '%s\n' "${saved_model}"
+        return 0
+    fi
+
+    while IFS= read -r -d '' candidate; do
+        candidates+=("${candidate}")
+    done < <(list_model_candidates "${MODEL_DIR}")
+
+    case "${#candidates[@]}" in
+        0) return 1 ;;
+        1)
+            printf '%s\n' "${candidates[0]}"
+            return 0
+            ;;
+        *)
+            if [ -t 0 ] || [ -p /dev/stdin ]; then
+                prompt_model_choice "1" "${candidates[@]}"
+                return 0
+            fi
+            return 1
+            ;;
+    esac
+}
+
+run_terminal_helper_build() {
+    local builder="${ZIPCODE_LLAMA_SERVER_BUILD_SCRIPT:-${SCRIPT_DIR}/scripts/build_llama_server.sh}"
+
+    [ -f "${builder}" ] || fail "llama-server build helper not found: ${builder}"
+
+    echo
+    echo "Building llama-server in this terminal now..."
+    bash "${builder}" "${INSTALL_DIR}"
+}
+
 guided_model_setup() {
     local choice=""
     local preset=""
@@ -311,6 +460,7 @@ EOF
 }
 
 guided_helper_setup() {
+    local selected_model="${1:-}"
     local helper_choice=""
     local helper_input=""
     local model_name=""
@@ -320,27 +470,42 @@ guided_helper_setup() {
         return 0
     fi
 
-    if [ -n "${MODEL_SOURCE}" ]; then
+    if [ -n "${selected_model}" ]; then
+        model_name="$(basename -- "${selected_model}")"
+    elif [ -n "${MODEL_SOURCE}" ]; then
         model_name="$(basename -- "${MODEL_SOURCE}")"
-    elif discover_single_model "${MODEL_DIR}" >/dev/null 2>&1; then
-        model_name="$(basename -- "$(discover_single_model "${MODEL_DIR}")")"
     fi
 
-    case "${model_name}" in
+    if [ -z "${model_name}" ]; then
+        while IFS= read -r -d '' candidate; do
+            case "$(basename -- "${candidate}" | tr '[:upper:]' '[:lower:]')" in
+                *gemma-4*)
+                    model_name="$(basename -- "${candidate}")"
+                    break
+                    ;;
+            esac
+        done < <(list_model_candidates "${MODEL_DIR}")
+    fi
+
+    case "$(printf '%s' "${model_name}" | tr '[:upper:]' '[:lower:]')" in
         *gemma-4*) ;;
         *) return 0 ;;
     esac
 
     echo
-    cat <<EOF
-Optional Gemma 4 compatibility helper:
-  1. I have a llama-server binary; ask me for the path
-  2. Skip helper setup for now
+    cat <<'EOF'
+Gemma 4 compatibility helper is required for zipcode to run this model:
+  1. Build/install llama-server in this terminal now (recommended)
+  2. I already have a llama-server binary; ask me for the path
+  3. Skip helper setup for now
 EOF
 
-    helper_choice="$(prompt_choice "Selection:" "$(default_choice_for_stdin "2" "2")")"
+    helper_choice="$(prompt_choice "Selection:" "$(default_choice_for_stdin "1" "3")")"
     case "${helper_choice}" in
         1)
+            run_terminal_helper_build
+            ;;
+        2)
             helper_input="$(prompt_value "Local path to llama-server:" "")"
             if [ -n "${helper_input}" ]; then
                 require_file "${helper_input}" "llama-server binary"
@@ -349,7 +514,7 @@ EOF
                 echo "No llama-server path provided; skipping helper setup."
             fi
             ;;
-        2)
+        3)
             echo "Skipping helper setup for now."
             ;;
         *)
@@ -450,7 +615,8 @@ if [ -n "${TOKENIZER_SOURCE}" ]; then
     copy_if_needed "${TOKENIZER_SOURCE}" "${MODEL_DIR}/tokenizer.json"
 fi
 
-guided_helper_setup
+SETUP_MODEL="$(resolve_setup_model || true)"
+guided_helper_setup "${SETUP_MODEL}"
 
 if [ -n "${LLAMA_SERVER_SOURCE}" ]; then
     "${INSTALL_HELPER}" "${LLAMA_SERVER_SOURCE}" "${INSTALL_DIR}" >/dev/null
@@ -461,6 +627,13 @@ if [ -x "${INSTALL_BIN_DIR}/llama-server" ]; then
     LLAMA_SERVER_INSTALLED="${INSTALL_BIN_DIR}/llama-server"
 fi
 
+MODEL_REQUIRES_HELPER=0
+if [ -n "${SETUP_MODEL}" ]; then
+    case "$(basename -- "${SETUP_MODEL}" | tr '[:upper:]' '[:lower:]')" in
+        *gemma-4*) MODEL_REQUIRES_HELPER=1 ;;
+    esac
+fi
+
 write_default_config "${CONFIG_FILE}" "${MODEL_DIR}"
 write_setup_env "${SETUP_ENV}" "${INSTALL_BIN_DIR}" "${USER_BIN_DIR}" "${LLAMA_SERVER_INSTALLED}"
 USER_LAUNCHER_INSTALLED="$(ensure_user_launcher "${INSTALL_BIN_DIR}/zipcode" "${USER_BIN_DIR}")"
@@ -469,11 +642,14 @@ USER_LAUNCHER_INSTALLED="$(ensure_user_launcher "${INSTALL_BIN_DIR}/zipcode" "${
     echo "Next steps:"
     echo "  • zipcode installs into ${INSTALL_DIR}"
     echo "  • launcher installed at ${USER_LAUNCHER_INSTALLED}"
+    if [ -n "${SETUP_MODEL}" ]; then
+        echo "  • selected model: ${SETUP_MODEL}"
+    fi
     if ! path_contains_dir "${USER_BIN_DIR}"; then
         echo "  • ${USER_BIN_DIR} is not on PATH in this shell yet"
         echo "    Run: source \"${SETUP_ENV}\""
     fi
-    if [ -z "${MODEL_SOURCE}" ] && ! discover_single_model "${MODEL_DIR}" >/dev/null 2>&1; then
+    if [ -z "${SETUP_MODEL}" ]; then
         echo "  • add a .gguf model with: ./install.sh --model /path/to/model.gguf"
         echo "    or download one with: ./scripts/download_model.sh --yes --dir ${MODEL_DIR}"
     fi
@@ -481,20 +657,23 @@ USER_LAUNCHER_INSTALLED="$(ensure_user_launcher "${INSTALL_BIN_DIR}/zipcode" "${
         echo "  • add tokenizer.json with: ./install.sh --tokenizer /path/to/tokenizer.json"
         echo "    or let ./scripts/download_model.sh fetch it into ${MODEL_DIR}"
     fi
-    if [ -z "${LLAMA_SERVER_INSTALLED}" ]; then
-        echo "  • optional Gemma 4 fallback helper: ./install.sh --llama-server /path/to/llama-server"
+    if [ "${MODEL_REQUIRES_HELPER}" -eq 1 ] && [ -z "${LLAMA_SERVER_INSTALLED}" ]; then
+        echo "  • install the required Gemma 4 helper with: ./scripts/build_llama_server.sh ${INSTALL_DIR}"
+        echo "    or provide an existing binary with: ./install.sh --llama-server /path/to/llama-server"
+    elif [ -z "${LLAMA_SERVER_INSTALLED}" ]; then
+        echo "  • optional helper: ./install.sh --llama-server /path/to/llama-server"
     fi
 } > "${NEXT_STEPS_FILE}"
 
 if [ "${SKIP_SETUP}" -eq 1 ]; then
     echo "Skipped zipcode setup (--skip-setup)."
-elif discover_single_model "${MODEL_DIR}" >/dev/null 2>&1; then
+elif [ -n "${SETUP_MODEL}" ]; then
     echo
     echo "Running zipcode setup --skip-smoke..."
-    "${INSTALL_BIN_DIR}/zipcode" setup --skip-smoke
+    "${INSTALL_BIN_DIR}/zipcode" setup --skip-smoke --model "${SETUP_MODEL}"
 else
     echo
-    echo "Skipping zipcode setup for now because no .gguf model is installed yet."
+    echo "Skipping zipcode setup for now because no usable .gguf model was selected yet."
 fi
 
 echo

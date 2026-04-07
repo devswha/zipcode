@@ -172,7 +172,7 @@ SCRIPT
   echo
   echo "===== install.sh interview flow ====="
   output="$(
-    printf '2\n1\n\n%s\n%s\n1\n%s\n' \
+    printf '2\n1\n\n%s\n%s\n2\n%s\n' \
       "$asset_dir/gemma-4-test.gguf" \
       "$asset_dir/tokenizer.json" \
       "$asset_dir/llama-server" |
@@ -187,11 +187,12 @@ SCRIPT
 }
 
 run_install_terminal_download_case() {
-  local home_dir asset_dir fake_downloader output
+  local home_dir asset_dir fake_downloader fake_helper_builder output
   home_dir="$(make_temp_home)"
   asset_dir="$(mktemp -d)"
   TMP_DIRS+=("$asset_dir")
   fake_downloader="$asset_dir/fake-download-model.sh"
+  fake_helper_builder="$asset_dir/fake-build-llama-server.sh"
 
   cat > "$fake_downloader" <<'SCRIPT'
 #!/bin/sh
@@ -214,33 +215,60 @@ done
 mkdir -p "$dir"
 if [ "$preset" = "31b" ]; then
   printf 'gguf' > "$dir/gemma-4-31b-it-q8_0.gguf"
+  printf 'gguf' > "$dir/gemma-4-31b-it-f16.gguf"
 else
   printf 'gguf' > "$dir/gemma-4-e2b-it-q8_0.gguf"
 fi
+printf 'gguf' > "$dir/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+printf 'gguf' > "$dir/mmproj-gemma-4-31b-it-f16.gguf"
 printf '{}' > "$dir/tokenizer.json"
 echo "fake downloader wrote $preset assets to $dir"
 SCRIPT
   chmod +x "$fake_downloader"
 
-  cat > "$asset_dir/llama-server" <<'SCRIPT'
+  cat > "$fake_helper_builder" <<'SCRIPT'
+#!/bin/sh
+set -eu
+install_dir="${1:-${HOME}/.zipcode}"
+mkdir -p "$install_dir/bin"
+cat > "$install_dir/bin/llama-server" <<'EOF'
 #!/bin/sh
 echo fake llama-server
+EOF
+chmod +x "$install_dir/bin/llama-server"
+echo "fake helper builder installed llama-server into $install_dir/bin/llama-server"
 SCRIPT
-  chmod +x "$asset_dir/llama-server"
+  chmod +x "$fake_helper_builder"
 
   echo
   echo "===== install.sh terminal download flow ====="
   output="$(
-    printf '1\n2\n1\n%s\n' "$asset_dir/llama-server" |
+    printf '1\n2\n1\n' |
       env HOME="$home_dir" ZIPCODE_INSTALL_SKIP_SYSTEM_BIN=1 \
         ZIPCODE_DOWNLOAD_MODEL_SCRIPT="$fake_downloader" \
+        ZIPCODE_LLAMA_SERVER_BUILD_SCRIPT="$fake_helper_builder" \
         bash "$ROOT_DIR/install.sh" --binary "$BIN" 2>&1
   )"
   printf '%s\n' "$output"
   expect_contains "$output" "Downloading in this terminal now:" "install terminal download banner" || return 1
   expect_contains "$output" "Gemma 4 31B IT" "install terminal download preset" || return 1
   expect_contains "$output" "fake downloader wrote 31b assets" "install terminal download helper" || return 1
+  expect_contains "$output" "fake helper builder installed llama-server" "install terminal helper build" || return 1
   expect_contains "$output" "Status:         Ready" "install terminal download ready status" || return 1
+
+  local bare_output bare_rc
+  set +e
+  bare_output="$(env HOME="$home_dir" "$home_dir/.local/bin/zipcode" 2>&1)"
+  bare_rc=$?
+  set -e
+  printf '%s\n' "$bare_output"
+  expect_contains "$bare_output" "type /help" "install terminal bare repl path" || return 1
+  if [[ "$bare_output" == *"Setup needed before zipcode can start."* ]] || [[ "$bare_output" == *"Repair needed before zipcode can start."* ]]; then
+    echo "[FAIL] install terminal bare should not fall back to setup/repair"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    return 1
+  fi
+  echo "[INFO] bare installed zipcode exit code: $bare_rc"
   PASS_COUNT=$((PASS_COUNT + 1))
 }
 

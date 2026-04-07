@@ -106,6 +106,7 @@ mkdir -p "${ARCHIVE_DIR}/scripts/lib"
 cp target/release/zipcode "${ARCHIVE_DIR}/"
 cp scripts/install.sh "${ARCHIVE_DIR}/"
 cp scripts/install_llama_server.sh "${ARCHIVE_DIR}/"
+cp scripts/build_llama_server.sh "${ARCHIVE_DIR}/"
 cp scripts/download_model.sh "${ARCHIVE_DIR}/"
 cp scripts/lib/install_common.sh "${ARCHIVE_DIR}/scripts/lib/"
 cp README.md "${ARCHIVE_DIR}/" 2>/dev/null || true

@@ -520,7 +520,7 @@ fn root_install_script_interviews_users_with_links_then_paths() {
     write_executable(&helper, "#!/bin/sh\necho fake llama-server\n");
 
     let scripted_input = format!(
-        "2\n1\n\n{}\n{}\n1\n{}\n",
+        "2\n1\n\n{}\n{}\n2\n{}\n",
         model.display(),
         tokenizer.display(),
         helper.display()
@@ -582,11 +582,10 @@ fn root_install_script_interviews_users_with_links_then_paths() {
 fn root_install_script_can_download_in_terminal_then_finish_setup() {
     let home = make_temp_dir("root-install-terminal-download");
     let asset_dir = make_temp_dir("root-install-terminal-download-assets");
-    let helper = asset_dir.join("llama-server");
     let fake_downloader = asset_dir.join("fake-download-model.sh");
+    let fake_helper_builder = asset_dir.join("fake-build-llama-server.sh");
     let install_script = repo_root().join("install.sh");
 
-    write_executable(&helper, "#!/bin/sh\necho fake llama-server\n");
     write_executable(
         &fake_downloader,
         r#"#!/bin/sh
@@ -609,21 +608,39 @@ done
 mkdir -p "$dir"
 if [ "$preset" = "31b" ]; then
   printf 'gguf' > "$dir/gemma-4-31b-it-q8_0.gguf"
+  printf 'gguf' > "$dir/gemma-4-31b-it-f16.gguf"
 else
   printf 'gguf' > "$dir/gemma-4-e2b-it-q8_0.gguf"
 fi
+printf 'gguf' > "$dir/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+printf 'gguf' > "$dir/mmproj-gemma-4-31b-it-f16.gguf"
 printf '{}' > "$dir/tokenizer.json"
 echo "fake downloader wrote $preset assets to $dir"
 "#,
     );
+    write_executable(
+        &fake_helper_builder,
+        r#"#!/bin/sh
+set -eu
+install_dir="${1:-${HOME}/.zipcode}"
+mkdir -p "$install_dir/bin"
+cat > "$install_dir/bin/llama-server" <<'EOF'
+#!/bin/sh
+echo fake llama-server
+EOF
+chmod +x "$install_dir/bin/llama-server"
+echo "fake helper builder installed llama-server into $install_dir/bin/llama-server"
+"#,
+    );
 
-    let scripted_input = format!("1\n2\n1\n{}\n", helper.display());
+    let scripted_input = "1\n2\n1\n".to_string();
     let output = Command::new("bash")
         .arg(&install_script)
         .args(["--binary", env!("CARGO_BIN_EXE_zipcode")])
         .env("HOME", &home)
         .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
         .env("ZIPCODE_DOWNLOAD_MODEL_SCRIPT", &fake_downloader)
+        .env("ZIPCODE_LLAMA_SERVER_BUILD_SCRIPT", &fake_helper_builder)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -660,6 +677,10 @@ echo "fake downloader wrote $preset assets to $dir"
         combined.contains("fake downloader wrote 31b assets"),
         "install should run the configured downloader, got: {combined}"
     );
+    assert!(
+        combined.contains("fake helper builder installed llama-server"),
+        "install should run the configured helper builder, got: {combined}"
+    );
 
     let doctor = Command::new(home.join(".local/bin/zipcode"))
         .arg("doctor")
@@ -676,6 +697,91 @@ echo "fake downloader wrote $preset assets to $dir"
         "terminal download flow should leave a Ready install, got: {stdout}"
     );
 
+    let bare = Command::new(home.join(".local/bin/zipcode"))
+        .env("HOME", &home)
+        .output()
+        .expect("run installed zipcode");
+    let bare_stdout = String::from_utf8_lossy(&bare.stdout);
+    assert!(
+        bare_stdout.contains("type /help")
+            && !bare_stdout.contains("Setup needed")
+            && !bare_stdout.contains("Repair needed"),
+        "bare installed zipcode should reach the REPL path once ready, got: {bare:?}"
+    );
+
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
     std::fs::remove_dir_all(asset_dir).expect("cleanup asset dir");
+}
+
+#[test]
+fn root_install_script_handles_multiple_existing_models_and_still_reaches_ready_setup() {
+    let home = make_temp_dir("root-install-multi-existing");
+    let model_dir = home.join(".zipcode/models");
+    let asset_dir = make_temp_dir("root-install-multi-existing-assets");
+    let fake_helper_builder = asset_dir.join("fake-build-llama-server.sh");
+    let install_script = repo_root().join("install.sh");
+
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::write(model_dir.join("gemma-4-e2b-it-q8_0.gguf"), b"gguf").expect("write model 1");
+    std::fs::write(model_dir.join("gemma-4-e2b-it-f16.gguf"), b"gguf").expect("write model 2");
+    std::fs::write(model_dir.join("mmproj-gemma-4-e2b-it-f16.gguf"), b"gguf")
+        .expect("write mmproj");
+    std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
+
+    write_executable(
+        &fake_helper_builder,
+        r#"#!/bin/sh
+set -eu
+install_dir="${1:-${HOME}/.zipcode}"
+mkdir -p "$install_dir/bin"
+cat > "$install_dir/bin/llama-server" <<'EOF'
+#!/bin/sh
+echo fake llama-server
+EOF
+chmod +x "$install_dir/bin/llama-server"
+echo "fake helper builder installed llama-server into $install_dir/bin/llama-server"
+"#,
+    );
+
+    let scripted_input = "3\n\n\n1\n1\n".to_string();
+    let output = Command::new("bash")
+        .arg(&install_script)
+        .args(["--binary", env!("CARGO_BIN_EXE_zipcode")])
+        .env("HOME", &home)
+        .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
+        .env("ZIPCODE_LLAMA_SERVER_BUILD_SCRIPT", &fake_helper_builder)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .expect("stdin")
+                .write_all(scripted_input.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("run install with multiple existing models");
+
+    assert!(
+        output.status.success(),
+        "install should succeed, got: {output:?}"
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Multiple AI models are available.")
+            && combined.contains("fake helper builder installed llama-server")
+            && combined.contains("Status:         Ready"),
+        "installer should choose a model and complete setup, got: {combined}"
+    );
+    assert!(
+        !combined.contains("Skipping zipcode setup for now"),
+        "installer should not skip setup when existing models are selectable, got: {combined}"
+    );
 }
