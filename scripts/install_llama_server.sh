@@ -50,6 +50,9 @@ copy_runtime_libs() {
     local source_bin="$1"
     local root1 root2 root3 root
     local found=0
+    local copied_lib=""
+    local soname=""
+    local fallback_soname=""
 
     root1="$(dirname -- "${source_bin}")"
     root2="$(dirname -- "${root1}")"
@@ -61,7 +64,18 @@ copy_runtime_libs() {
         [ -d "${root}" ] || continue
         while IFS= read -r lib_path; do
             [ -n "${lib_path}" ] || continue
-            cp -L "${lib_path}" "${INSTALL_LIB_DIR}/$(basename -- "${lib_path}")"
+            copied_lib="${INSTALL_LIB_DIR}/$(basename -- "${lib_path}")"
+            cp -L "${lib_path}" "${copied_lib}"
+            soname="$(readelf -d "${copied_lib}" 2>/dev/null | awk -F'[][]' '/SONAME/ {print $2; exit}' || true)"
+            if [ -z "${soname}" ]; then
+                fallback_soname="$(basename -- "${copied_lib}" | sed -E 's/(.*\.so\.[0-9]+).*/\1/')"
+                if [ "${fallback_soname}" != "$(basename -- "${copied_lib}")" ]; then
+                    soname="${fallback_soname}"
+                fi
+            fi
+            if [ -n "${soname}" ] && [ "${soname}" != "$(basename -- "${copied_lib}")" ]; then
+                ln -sf "$(basename -- "${copied_lib}")" "${INSTALL_LIB_DIR}/${soname}"
+            fi
             found=1
         done < <(find "${root}" -maxdepth 3 -type f \( \
             -name 'libllama.so*' -o \
