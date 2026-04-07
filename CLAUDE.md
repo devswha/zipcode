@@ -57,13 +57,20 @@ cli → runtime → inference
 - Tool-call loop capped at 25 iterations (`MAX_TOOL_ITERATIONS`)
 - Chat template hardcoded for Gemma format (`<start_of_turn>/<end_of_turn>`, `<tool_call>` tags)
 
+## Environment Variables (llama-server backend)
+
+- `ZIPCODE_LLAMA_SERVER_BIN` — Path to llama-server binary
+- `ZIPCODE_LLAMA_SERVER_ALIAS` — Model alias (default: "zipcode")
+- `ZIPCODE_LLAMA_SERVER_CTX` — Context window size (default: 8192)
+- `ZIPCODE_GPU_LAYERS` — Number of layers to offload to GPU (e.g., 99)
+- `ZIPCODE_FLASH_ATTENTION` — Enable flash attention ("1" or "true")
+
 ## Current Limitations (known issues to address)
 
 1. **Gemma 4 on native bindings is still blocked** — `llama-cpp-rs` 0.1.141 still lacks `gemma4` architecture support, so zipcode now falls back to a recent external `llama-server` binary when `ZIPCODE_LLAMA_SERVER_BIN` is set or `llama-server` is on PATH.
 2. **candle backend has no quantized Gemma** — candle 0.8 has no `quantized_gemma` module. Uses `quantized_llama` as stand-in. Only compiles, does not actually load Gemma GGUF.
 3. **Chat template is Gemma-only** — Other models (Qwen, Llama) use different tool-calling formats. Models that don't understand `<tool_call>` tags won't trigger tool execution.
-4. **No streaming to terminal** — `generate_stream()` runs synchronously, queues all events, then returns receiver. No true first-token streaming.
-5. **Agent tool is a stub** — Returns "not yet implemented".
+4. **Agent tool is a stub** — Returns "not yet implemented".
 
 ## File Conventions
 
