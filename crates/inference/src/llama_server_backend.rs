@@ -726,4 +726,35 @@ mod tests {
         assert!(!opts.flash_attention);
         assert_eq!(opts.context_size, DEFAULT_CONTEXT_SIZE);
     }
+
+    #[test]
+    #[ignore = "requires ZIPCODE_TEST_MODEL_PATH and llama-server on PATH"]
+    fn sse_streaming_returns_tokens_incrementally() {
+        let model_path = std::env::var("ZIPCODE_TEST_MODEL_PATH")
+            .expect("ZIPCODE_TEST_MODEL_PATH must be set");
+        let model_path = std::path::Path::new(&model_path);
+
+        let options = ServerOptions::default();
+        let mut provider = LlamaServerProvider::load(model_path, &options).unwrap();
+
+        let messages = vec![ChatMessage::user("Say hello in exactly one word.")];
+        let rx = provider.generate_stream(&messages, &[]);
+
+        let mut got_token = false;
+        let mut got_done = false;
+        for event in rx {
+            match event {
+                TokenEvent::Token(_) => got_token = true,
+                TokenEvent::Done(_) => {
+                    got_done = true;
+                    break;
+                }
+                TokenEvent::Error(e) => panic!("unexpected error: {e}"),
+                _ => {}
+            }
+        }
+
+        assert!(got_token, "expected at least one token event");
+        assert!(got_done, "expected done event");
+    }
 }

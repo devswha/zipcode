@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1775203554286,
+  "lastScanned": 1775544048486,
   "projectRoot": "/home/devswha/workspace/zipcode",
   "techStack": {
     "languages": [
@@ -44,57 +44,286 @@
     "crates": {
       "path": "crates",
       "purpose": null,
-      "fileCount": 0,
-      "lastAccessed": 1775203554283,
-      "keyFiles": []
+      "fileCount": 1,
+      "lastAccessed": 1775544048469,
+      "keyFiles": [
+        "AGENTS.md"
+      ]
     },
     "docs": {
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 0,
-      "lastAccessed": 1775203554284,
+      "lastAccessed": 1775544048475,
       "keyFiles": []
     },
     "models": {
       "path": "models",
       "purpose": "Data models",
       "fileCount": 1,
-      "lastAccessed": 1775203554285,
+      "lastAccessed": 1775544048478,
       "keyFiles": []
     },
     "scripts": {
       "path": "scripts",
       "purpose": "Build/utility scripts",
-      "fileCount": 3,
-      "lastAccessed": 1775203554285,
+      "fileCount": 6,
+      "lastAccessed": 1775544048480,
       "keyFiles": [
+        "build_llama_server.sh",
         "download_model.sh",
         "install.sh",
-        "package.sh"
+        "install_llama_server.sh",
+        "manual-ux-smoke.sh"
       ]
     },
     "target": {
       "path": "target",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1775203554285,
+      "lastAccessed": 1775544048481,
       "keyFiles": [
         "CACHEDIR.TAG"
+      ]
+    },
+    "scripts/lib": {
+      "path": "scripts/lib",
+      "purpose": "Library code",
+      "fileCount": 1,
+      "lastAccessed": 1775544048482,
+      "keyFiles": [
+        "install_common.sh"
       ]
     }
   },
   "hotPaths": [
     {
+      "path": "crates/inference/src/llama_server_backend.rs",
+      "accessCount": 23,
+      "lastAccessed": 1775547349912,
+      "type": "file"
+    },
+    {
+      "path": "crates/inference/src/lib.rs",
+      "accessCount": 14,
+      "lastAccessed": 1775546963090,
+      "type": "file"
+    },
+    {
+      "path": "crates/cli/src/repl.rs",
+      "accessCount": 11,
+      "lastAccessed": 1775547346260,
+      "type": "file"
+    },
+    {
+      "path": "crates/runtime/src/config.rs",
+      "accessCount": 8,
+      "lastAccessed": 1775546731346,
+      "type": "file"
+    },
+    {
       "path": "crates/inference/Cargo.toml",
-      "accessCount": 4,
-      "lastAccessed": 1775206047304,
+      "accessCount": 7,
+      "lastAccessed": 1775546791813,
+      "type": "file"
+    },
+    {
+      "path": "CLAUDE.md",
+      "accessCount": 5,
+      "lastAccessed": 1775547356010,
       "type": "file"
     },
     {
       "path": ".env",
-      "accessCount": 1,
-      "lastAccessed": 1775203622384,
+      "accessCount": 2,
+      "lastAccessed": 1775544249577,
       "type": "file"
+    },
+    {
+      "path": "crates/runtime/src/conversation.rs",
+      "accessCount": 2,
+      "lastAccessed": 1775545368922,
+      "type": "file"
+    },
+    {
+      "path": "crates/inference/src/types.rs",
+      "accessCount": 2,
+      "lastAccessed": 1775546356163,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1775544249459,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1775544253452,
+      "type": "file"
+    },
+    {
+      "path": "crates/cli/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1775544253512,
+      "type": "file"
+    },
+    {
+      "path": "crates/runtime/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1775544253569,
+      "type": "file"
+    },
+    {
+      "path": "crates/cli/src/main.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544269395,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544269439,
+      "type": "file"
+    },
+    {
+      "path": "crates/runtime/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544269467,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/bash.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544272965,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/edit_file.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544277290,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/read_file.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544277315,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/grep_search.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544277357,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/write_file.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544277437,
+      "type": "file"
+    },
+    {
+      "path": "crates/inference/src/llama_cpp_backend.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544281251,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/todo_write.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544285589,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/glob_search.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544285648,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/agent.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544285672,
+      "type": "file"
+    },
+    {
+      "path": "install.sh",
+      "accessCount": 1,
+      "lastAccessed": 1775544285703,
+      "type": "file"
+    },
+    {
+      "path": "crates/runtime/src/session.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544289567,
+      "type": "file"
+    },
+    {
+      "path": "crates/runtime/src/permission.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544289592,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 1,
+      "lastAccessed": 1775544294515,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/repl.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544298905,
+      "type": "file"
+    },
+    {
+      "path": "crates/inference/src/chat_template.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544298966,
+      "type": "file"
+    },
+    {
+      "path": "crates/tools/src/tool_search.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544299022,
+      "type": "file"
+    },
+    {
+      "path": "crates/runtime/tests/integration.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544304326,
+      "type": "file"
+    },
+    {
+      "path": "crates/cli/tests/smoke.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544304640,
+      "type": "file"
+    },
+    {
+      "path": "crates/inference/src/engine.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544308850,
+      "type": "file"
+    },
+    {
+      "path": "crates/inference/src/device.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775544308869,
+      "type": "file"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-04-07-inference-speed-optimization.md",
+      "accessCount": 1,
+      "lastAccessed": 1775546457417,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 1,
+      "lastAccessed": 1775546785698,
+      "type": "directory"
     }
   ],
   "userDirectives": []

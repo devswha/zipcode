@@ -1,11 +1,15 @@
 {
   "version": 1,
-  "active": false,
-  "skill": "code-review",
-  "keyword": "code review",
-  "phase": "completing",
-  "activated_at": "2026-04-03T06:11:29.917Z",
-  "updated_at": "2026-04-03T06:11:29.973Z",
+  "active": true,
+  "skill": "ralph",
+  "keyword": "$ralph",
+  "phase": "planning",
+  "activated_at": "2026-04-07T06:20:22.850Z",
+  "updated_at": "2026-04-07T06:20:22.850Z",
   "source": "keyword-detector",
-  "input_lock": null
+  "session_id": "",
+  "thread_id": "019d529d-807c-7710-bbc4-db1f5f9cddfa",
+  "turn_id": "019d668c-09d2-73f1-8873-51103fc2fb41",
+  "iteration": 5,
+  "last_turn_at": "2026-04-07T06:40:14.464Z"
 }

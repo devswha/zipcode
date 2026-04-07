@@ -20,7 +20,7 @@ pub use device::select_device;
 pub use engine::InferenceEngine;
 #[cfg(feature = "llama-cpp")]
 pub use llama_cpp_backend::LlamaCppProvider;
-pub use llama_server_backend::LlamaServerProvider;
+pub use llama_server_backend::{LlamaServerProvider, ServerOptions};
 pub use mock::{MockInferenceProvider, MockResponse};
 pub use types::*;
 
@@ -73,8 +73,9 @@ pub fn create_engine(
     model_path: &std::path::Path,
     tokenizer_path: &std::path::Path,
     config: GenerationConfig,
+    server_options: ServerOptions,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
-    create_engine_inner(backend, model_path, tokenizer_path, config)
+    create_engine_inner(backend, model_path, tokenizer_path, config, server_options)
 }
 
 #[cfg(all(feature = "llama-cpp", feature = "candle"))]
@@ -83,19 +84,22 @@ fn create_engine_inner(
     model_path: &std::path::Path,
     tokenizer_path: &std::path::Path,
     config: GenerationConfig,
+    server_options: ServerOptions,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
     match backend {
         Backend::LlamaCpp => {
+            let _ = &server_options;
             let mut provider = LlamaCppProvider::load(model_path)?;
             provider.set_config(config);
             Ok(Box::new(provider))
         }
         Backend::LlamaServer => {
-            let mut provider = LlamaServerProvider::load(model_path)?;
+            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
             provider.set_config(config);
             Ok(Box::new(provider))
         }
         Backend::Candle => {
+            let _ = &server_options;
             let device = select_device();
             let mut engine = InferenceEngine::load(model_path, tokenizer_path, device)?;
             engine.set_config(config);
@@ -110,20 +114,23 @@ fn create_engine_inner(
     model_path: &std::path::Path,
     _tokenizer_path: &std::path::Path,
     config: GenerationConfig,
+    server_options: ServerOptions,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
     match backend {
         Backend::LlamaCpp => {
+            let _ = &server_options;
             let mut provider = LlamaCppProvider::load(model_path)?;
             provider.set_config(config);
             Ok(Box::new(provider))
         }
         Backend::LlamaServer => {
-            let mut provider = LlamaServerProvider::load(model_path)?;
+            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
             provider.set_config(config);
             Ok(Box::new(provider))
         }
         Backend::Candle => {
             let _ = config;
+            let _ = &server_options;
             anyhow::bail!(
                 "candle backend requested but the `candle` feature is not enabled. \
                  Rebuild with: cargo build --features candle"
@@ -138,14 +145,16 @@ fn create_engine_inner(
     model_path: &std::path::Path,
     tokenizer_path: &std::path::Path,
     config: GenerationConfig,
+    server_options: ServerOptions,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
     match backend {
         Backend::LlamaServer => {
-            let mut provider = LlamaServerProvider::load(model_path)?;
+            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
             provider.set_config(config);
             Ok(Box::new(provider))
         }
         Backend::Candle => {
+            let _ = &server_options;
             let device = select_device();
             let mut engine = InferenceEngine::load(model_path, tokenizer_path, device)?;
             engine.set_config(config);
@@ -153,6 +162,7 @@ fn create_engine_inner(
         }
         Backend::LlamaCpp => {
             let _ = config;
+            let _ = &server_options;
             anyhow::bail!(
                 "llama-cpp backend requested but the `llama-cpp` feature is not enabled. \
                  Rebuild with: cargo build --features llama-cpp"
@@ -167,16 +177,21 @@ fn create_engine_inner(
     model_path: &std::path::Path,
     _tokenizer_path: &std::path::Path,
     config: GenerationConfig,
+    server_options: ServerOptions,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
     match backend {
         Backend::LlamaServer => {
-            let mut provider = LlamaServerProvider::load(model_path)?;
+            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
             provider.set_config(config);
             Ok(Box::new(provider))
         }
-        Backend::LlamaCpp | Backend::Candle => anyhow::bail!(
-            "No native inference backend enabled. Enable at least one of the `candle` or `llama-cpp` features, or use `llama-server`."
-        ),
+        Backend::LlamaCpp | Backend::Candle => {
+            let _ = config;
+            let _ = &server_options;
+            anyhow::bail!(
+                "No native inference backend enabled. Enable at least one of the `candle` or `llama-cpp` features, or use `llama-server`."
+            )
+        }
     }
 }
 
@@ -184,7 +199,7 @@ fn create_engine_inner(
 mod tests {
     use super::Backend;
     #[cfg(feature = "llama-cpp")]
-    use super::{create_engine, GenerationConfig};
+    use super::{create_engine, GenerationConfig, ServerOptions};
     #[cfg(feature = "llama-cpp")]
     use std::path::Path;
 
@@ -220,6 +235,7 @@ mod tests {
             model_path,
             Path::new("unused-tokenizer.json"),
             GenerationConfig::default(),
+            ServerOptions::default(),
         );
 
         if let Err(error) = engine {
