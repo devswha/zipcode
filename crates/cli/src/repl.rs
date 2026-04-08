@@ -27,6 +27,14 @@ pub struct CliCallback {
     spinner: Option<Spinner>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlashCommand {
+    Help,
+    Quit,
+    Clear,
+    Status,
+}
+
 impl CliCallback {
     pub fn new() -> Self {
         Self { spinner: None }
@@ -337,6 +345,16 @@ pub fn run_oneshot(
     Ok(())
 }
 
+fn parse_slash_command(input: &str) -> Option<SlashCommand> {
+    match input {
+        "/help" => Some(SlashCommand::Help),
+        "/quit" | "/exit" => Some(SlashCommand::Quit),
+        "/clear" => Some(SlashCommand::Clear),
+        "/status" => Some(SlashCommand::Status),
+        _ => None,
+    }
+}
+
 /// Run an interactive REPL loop.
 pub fn run_interactive(
     model_path: Option<&Path>,
@@ -365,21 +383,18 @@ pub fn run_interactive(
                 let _ = rl.add_history_entry(&input);
 
                 // Handle slash commands
-                if input.starts_with('/') {
-                    match input.as_str() {
-                        "/help" => print_help(),
-                        "/quit" | "/exit" => {
+                if let Some(command) = parse_slash_command(&input) {
+                    match command {
+                        SlashCommand::Help => print_help(),
+                        SlashCommand::Quit => {
                             println!("Goodbye.");
                             break;
                         }
-                        "/clear" => {
+                        SlashCommand::Clear => {
                             conv.session = Session::new();
                             println!("Conversation cleared.");
                         }
-                        "/status" => print_status(&conv),
-                        _ => {
-                            println!("Unknown command: {input}. Type /help for available commands.")
-                        }
+                        SlashCommand::Status => print_status(&conv),
                     }
                     continue;
                 }
@@ -525,5 +540,27 @@ mod tests {
         assert_eq!(resolved, model_file);
         let _ = std::fs::remove_file(model_file);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parse_slash_command_accepts_known_commands_only() {
+        assert_eq!(parse_slash_command("/help"), Some(SlashCommand::Help));
+        assert_eq!(parse_slash_command("/status"), Some(SlashCommand::Status));
+        assert_eq!(parse_slash_command("/clear"), Some(SlashCommand::Clear));
+        assert_eq!(parse_slash_command("/quit"), Some(SlashCommand::Quit));
+        assert_eq!(parse_slash_command("/exit"), Some(SlashCommand::Quit));
+    }
+
+    #[test]
+    fn parse_slash_command_treats_paths_and_unknown_slashes_as_regular_input() {
+        assert_eq!(
+            parse_slash_command("/home/devswha/workspace/test_zipcode"),
+            None
+        );
+        assert_eq!(parse_slash_command("/unknown"), None);
+        assert_eq!(
+            parse_slash_command("\"/home/devswha/workspace/test_zipcode\" 레포 분석해봐"),
+            None
+        );
     }
 }
