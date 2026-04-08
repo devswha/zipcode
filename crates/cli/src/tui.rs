@@ -1,4 +1,4 @@
-use std::io::{self, Stdout, Write};
+use std::io::{self, IsTerminal, Stdout, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -30,7 +30,15 @@ pub fn run_interactive_with_ui(
     backend_str: &str,
     ui_mode: UiMode,
 ) -> Result<()> {
-    match ui_mode {
+    let effective_ui = if matches!(ui_mode, UiMode::Fullscreen)
+        && !(io::stdin().is_terminal() && io::stdout().is_terminal())
+    {
+        UiMode::Plain
+    } else {
+        ui_mode
+    };
+
+    match effective_ui {
         UiMode::Plain => run_interactive(model_path, permission_mode, backend_str),
         UiMode::Fullscreen => run_interactive_fullscreen(model_path, permission_mode, backend_str),
     }

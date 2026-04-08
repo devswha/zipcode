@@ -339,7 +339,7 @@ cli --> runtime --> inference
 | `--model <PATH>` | `~/.zipcode/models/` | Path to `.gguf` file |
 | `--backend <BACKEND>` | `llama-cpp` | `llama-cpp` / `llama-server` / `candle` |
 | `--permission-mode` | `workspace-write` | `read-only` / `workspace-write` / `full-access` |
-| `--ui <MODE>` | `plain` | Interactive UI mode: `plain` or `fullscreen` |
+| `--ui <MODE>` | `fullscreen` | Interactive UI mode: `plain` or `fullscreen` |
 
 ### Slash Commands (REPL)
 
@@ -352,8 +352,11 @@ cli --> runtime --> inference
 
 ### Fullscreen TUI MVP
 
-Use `zipcode --ui fullscreen` (or `zipcode repl --ui fullscreen`) to launch a Codex/Claude-style
-fullscreen terminal UI MVP with:
+`zipcode` now launches the fullscreen UI by default when the install is ready. Use
+`zipcode --ui fullscreen` (or `zipcode repl --ui fullscreen`) explicitly if you want to force it,
+or `zipcode --ui plain` to return to the classic line-oriented REPL.
+
+The fullscreen terminal UI MVP includes:
 
 - transcript area
 - bottom composer

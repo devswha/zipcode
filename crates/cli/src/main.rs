@@ -25,7 +25,7 @@ struct Cli {
     backend: String,
 
     /// UI mode for interactive sessions
-    #[arg(long, value_enum, default_value_t = UiMode::Plain, global = true)]
+    #[arg(long, value_enum, default_value_t = UiMode::Fullscreen, global = true)]
     ui: UiMode,
 
     #[command(subcommand)]

@@ -722,8 +722,30 @@ set -eu
 install_dir="${1:-${HOME}/.zipcode}"
 mkdir -p "$install_dir/bin"
 cat > "$install_dir/bin/llama-server" <<'EOF'
-#!/bin/sh
-echo fake llama-server
+#!/usr/bin/python3
+import http.server
+import socketserver
+import sys
+
+args = sys.argv[1:]
+port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"status":"ok"}' if self.path == "/health" else b"ok"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        return
+
+class Server(socketserver.TCPServer):
+    allow_reuse_address = True
+
+server = Server(("127.0.0.1", port), Handler)
+server.serve_forever()
 EOF
 chmod +x "$install_dir/bin/llama-server"
 echo "fake helper builder installed llama-server into $install_dir/bin/llama-server"
@@ -832,8 +854,30 @@ set -eu
 install_dir="${1:-${HOME}/.zipcode}"
 mkdir -p "$install_dir/bin"
 cat > "$install_dir/bin/llama-server" <<'EOF'
-#!/bin/sh
-echo fake llama-server
+#!/usr/bin/python3
+import http.server
+import socketserver
+import sys
+
+args = sys.argv[1:]
+port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"status":"ok"}' if self.path == "/health" else b"ok"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        return
+
+class Server(socketserver.TCPServer):
+    allow_reuse_address = True
+
+server = Server(("127.0.0.1", port), Handler)
+server.serve_forever()
 EOF
 chmod +x "$install_dir/bin/llama-server"
 echo "fake helper builder installed llama-server into $install_dir/bin/llama-server"
