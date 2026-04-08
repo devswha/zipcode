@@ -351,6 +351,7 @@ cli --> runtime --> inference
 ### Project config (`.zipcode.json`)
 
 Loaded from the nearest ancestor project root. Overrides global `~/.zipcode/config.json`.
+Paths such as `model_dir`, `model_file`, and `llama_server_bin` support `~/...` home expansion.
 
 ```json
 {

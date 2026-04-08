@@ -59,8 +59,8 @@ impl Tool for ReadFileTool {
             );
         }
 
-        let bytes = fs::read(&path)
-            .with_context(|| format!("failed to read file: {}", path.display()))?;
+        let bytes =
+            fs::read(&path).with_context(|| format!("failed to read file: {}", path.display()))?;
 
         if bytes[..bytes.len().min(8192)].contains(&0u8) {
             anyhow::bail!("file appears to be binary: {}", path.display());
@@ -202,7 +202,10 @@ mod tests {
         let result = tool.execute(args, &ctx());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("too large"), "error should mention size: {err}");
+        assert!(
+            err.contains("too large"),
+            "error should mention size: {err}"
+        );
     }
 
     #[test]

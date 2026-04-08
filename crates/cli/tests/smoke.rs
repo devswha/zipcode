@@ -300,6 +300,84 @@ fn doctor_reports_missing_server_for_gemma4_without_llama_server() {
 }
 
 #[test]
+fn doctor_allows_llama_server_without_tokenizer() {
+    let home = make_temp_dir("doctor-llama-server-no-tokenizer");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_executable(
+        &zipcode_bin_dir.join("llama-server"),
+        "#!/bin/sh\necho fake llama-server\n",
+    );
+
+    let output = zipcode_bin()
+        .args(["doctor", "--backend", "llama-server"])
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+
+    assert!(output.status.success(), "doctor should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Status: Ready") && !stdout.contains("Tokenizer:"),
+        "llama-server flow should not require tokenizer, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn doctor_resolves_tilde_project_model_dir() {
+    let home = make_temp_dir("doctor-tilde-home");
+    let project = make_temp_dir("doctor-tilde-project");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("demo.gguf"), b"gguf").expect("write fake gguf");
+    write_executable(
+        &zipcode_bin_dir.join("llama-server"),
+        "#!/bin/sh\necho fake llama-server\n",
+    );
+    write_file(
+        &project.join(".zipcode.json"),
+        r#"{
+  "model_dir": "~/.zipcode/models"
+}"#,
+    );
+
+    let output = zipcode_bin()
+        .args(["doctor", "--backend", "llama-server"])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+
+    assert!(output.status.success(), "doctor should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Status: Ready")
+            && stdout.contains(&model_dir.join("demo.gguf").display().to_string()),
+        "doctor should resolve tilde project paths via HOME, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp home");
+    std::fs::remove_dir_all(project).expect("cleanup temp project");
+}
+
+#[test]
 fn setup_writes_config_and_wrapper_when_smoke_skipped() {
     let home = make_temp_dir("setup-skip-smoke");
     let model_dir = home.join(".zipcode/models");

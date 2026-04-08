@@ -138,7 +138,6 @@ impl LlamaServerProvider {
 
         rx
     }
-
 }
 
 impl Drop for LlamaServerProvider {
@@ -237,9 +236,8 @@ fn health_check(port: u16) -> HealthStatus {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
-    let request = format!(
-        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() || stream.flush().is_err() {
         return HealthStatus::Unreachable("write failed".to_string());
     }
@@ -254,7 +252,6 @@ fn health_check(port: u16) -> HealthStatus {
         HealthStatus::Loading
     }
 }
-
 
 fn build_chat_request(
     messages: &[ChatMessage],
@@ -411,15 +408,11 @@ struct ToolCallAccumulator {
     arguments: String,
 }
 
-fn stream_sse_events(
-    port: u16,
-    request: &Value,
-    tx: &mpsc::Sender<TokenEvent>,
-) -> Result<()> {
+fn stream_sse_events(port: u16, request: &Value, tx: &mpsc::Sender<TokenEvent>) -> Result<()> {
     let body = serde_json::to_string(request)?;
 
-    let mut stream = TcpStream::connect(("127.0.0.1", port))
-        .context("Failed to connect to llama-server")?;
+    let mut stream =
+        TcpStream::connect(("127.0.0.1", port)).context("Failed to connect to llama-server")?;
     stream.set_read_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
 
@@ -456,7 +449,11 @@ fn stream_sse_events(
                 break;
             }
         }
-        anyhow::bail!("llama-server returned {}: {}", status_line.trim(), error_body.trim());
+        anyhow::bail!(
+            "llama-server returned {}: {}",
+            status_line.trim(),
+            error_body.trim()
+        );
     }
 
     // Skip headers
@@ -686,8 +683,8 @@ mod tests {
     #[test]
     #[ignore = "requires ZIPCODE_TEST_MODEL_PATH and llama-server on PATH"]
     fn sse_streaming_returns_tokens_incrementally() {
-        let model_path = std::env::var("ZIPCODE_TEST_MODEL_PATH")
-            .expect("ZIPCODE_TEST_MODEL_PATH must be set");
+        let model_path =
+            std::env::var("ZIPCODE_TEST_MODEL_PATH").expect("ZIPCODE_TEST_MODEL_PATH must be set");
         let model_path = std::path::Path::new(&model_path);
 
         let options = ServerOptions::default();

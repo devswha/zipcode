@@ -5,7 +5,7 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
 use zipcode_inference::{create_engine, Backend, GenerationConfig, ServerOptions};
-use zipcode_runtime::config::find_project_root;
+use zipcode_runtime::config::{expand_user_path, find_project_root, resolve_project_path};
 use zipcode_runtime::prompt::build_system_prompt;
 use zipcode_runtime::{
     parse_permission_mode, ConversationLoop, PermissionPolicy, Session, ZipcodeConfig,
@@ -167,10 +167,11 @@ pub(crate) fn resolve_model_path(
     project_root: &Path,
 ) -> Result<PathBuf> {
     if let Some(path) = explicit_model_path {
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
+        let expanded = expand_user_path(path);
+        let resolved = if expanded.is_absolute() {
+            expanded
         } else {
-            cwd.join(path)
+            cwd.join(expanded)
         };
 
         return if resolved.is_dir() {
@@ -182,14 +183,10 @@ pub(crate) fn resolve_model_path(
         };
     }
 
-    let model_dir = if config.model_dir.is_absolute() {
-        config.model_dir.clone()
-    } else {
-        project_root.join(&config.model_dir)
-    };
+    let model_dir = resolve_project_path(&config.model_dir, project_root);
 
     if let Some(ref model_file) = config.model_file {
-        let configured = PathBuf::from(model_file);
+        let configured = expand_user_path(Path::new(model_file));
         let resolved = if configured.is_absolute() {
             configured
         } else if has_nonempty_parent(&configured) {
@@ -273,7 +270,13 @@ pub fn create_loop(
     };
 
     let backend = Backend::parse(backend_str)?;
-    let engine = match create_engine(backend, &model_file, &tokenizer_path, gen_config.clone(), server_options.clone()) {
+    let engine = match create_engine(
+        backend,
+        &model_file,
+        &tokenizer_path,
+        gen_config.clone(),
+        server_options.clone(),
+    ) {
         Ok(engine) => engine,
         Err(native_error)
             if matches!(backend, Backend::LlamaCpp) && is_probably_gemma4_model(&model_file) =>
@@ -491,6 +494,36 @@ mod tests {
 
         let resolved = resolve_model_path(None, &config, &nested, &dir).unwrap();
         assert_eq!(resolved, model_file);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_model_path_expands_tilde_model_file() {
+        let dir = temp_dir("tilde-model-file");
+        let home = dirs::home_dir().unwrap();
+        let model_dir = home.join(".zipcode/models");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let file_name = format!("tilde-model-{unique}.gguf");
+        let model_file = model_dir.join(&file_name);
+        std::fs::write(&model_file, "").unwrap();
+
+        let config = ZipcodeConfig {
+            model_dir: PathBuf::from("unused"),
+            model_file: Some(format!("~/.zipcode/models/{file_name}")),
+            llama_server_bin: None,
+            permission_mode: "workspace-write".to_string(),
+            generation: GenerationOverrides::default(),
+            gpu_layers: None,
+            flash_attention: false,
+        };
+
+        let resolved = resolve_model_path(None, &config, &dir, &dir).unwrap();
+        assert_eq!(resolved, model_file);
+        let _ = std::fs::remove_file(model_file);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

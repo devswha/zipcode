@@ -1,6 +1,0 @@
-{
-  "last_turn_at": "2026-04-07T06:40:14.488Z",
-  "turn_count": 7,
-  "last_agent_output": "좋습니다. 그럼 **지금은 정상 동작**입니다 ✅\n\n의미:\n- native `llama-cpp`는 Gemma 4를 못 읽고\n- `llama-server` fallback으로 넘어간",
-  "last_progress_at": "2026-04-07T06:40:14.488Z"
-}

@@ -4,3 +4,5 @@
 models/*.gguf
 models/*.bin
 .env
+.omc/
+.omx/

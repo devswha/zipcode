@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use zipcode_inference::Backend;
-use zipcode_runtime::config::{find_project_root, global_config_path};
+use zipcode_runtime::config::{
+    expand_user_path, find_project_root, global_config_path, resolve_project_path,
+};
 use zipcode_runtime::ZipcodeConfig;
 
 use crate::repl::{
@@ -253,18 +255,27 @@ fn build_readiness_report(
     };
     let model_search = model_search_locations(explicit_model_path, config, cwd, &project_root);
     let model_issue_is_misconfigured = explicit_model_path.is_some() || config.model_file.is_some();
-
-    let tokenizer = model
-        .as_deref()
-        .map(tokenizer_path_for_model)
-        .filter(|path| path.is_file());
-    let tokenizer_issue = model.as_deref().and_then(|model_path| {
-        let tokenizer_path = tokenizer_path_for_model(model_path);
-        (!tokenizer_path.is_file())
-            .then(|| format!("tokenizer.json is missing next to {}", model_path.display()))
-    });
-
     let llama_server = discover_llama_server_bin(config);
+    let tokenizer_required = tokenizer_is_required(backend, model.as_deref());
+
+    let tokenizer = tokenizer_required
+        .then(|| {
+            model
+                .as_deref()
+                .map(tokenizer_path_for_model)
+                .filter(|path| path.is_file())
+        })
+        .flatten();
+    let tokenizer_issue = tokenizer_required
+        .then(|| {
+            model.as_deref().and_then(|model_path| {
+                let tokenizer_path = tokenizer_path_for_model(model_path);
+                (!tokenizer_path.is_file())
+                    .then(|| format!("tokenizer.json is missing next to {}", model_path.display()))
+            })
+        })
+        .flatten();
+
     let status = classify_readiness(
         backend,
         model.as_deref(),
@@ -316,12 +327,12 @@ fn classify_readiness(
         return ReadinessStatus::MissingModel;
     };
 
-    if tokenizer.is_none() {
-        return ReadinessStatus::MissingTokenizer;
+    if helper_is_required(backend, Some(model)) && llama_server_bin.is_none() {
+        return ReadinessStatus::MissingServer;
     }
 
-    if matches!(backend, Backend::LlamaServer) && llama_server_bin.is_none() {
-        return ReadinessStatus::MissingServer;
+    if tokenizer_is_required(backend, Some(model)) && tokenizer.is_none() {
+        return ReadinessStatus::MissingTokenizer;
     }
 
     if matches!(backend, Backend::LlamaCpp) && is_probably_gemma4_model(model) {
@@ -385,6 +396,7 @@ fn print_startup_guidance(
 
 fn startup_details(report: &ReadinessReport, config_warning: Option<&str>) -> Vec<String> {
     let mut lines = Vec::new();
+    let tokenizer_required = tokenizer_is_required(report.backend, report.model.as_deref());
 
     if let Some(warning) = config_warning {
         lines.push(format!("Saved settings could not be read ({warning})."));
@@ -398,8 +410,10 @@ fn startup_details(report: &ReadinessReport, config_warning: Option<&str>) -> Ve
         lines.push("No local AI model was found yet.".to_string());
     }
 
-    if let Some(issue) = &report.tokenizer_issue {
-        lines.push(issue.clone());
+    if tokenizer_required {
+        if let Some(issue) = &report.tokenizer_issue {
+            lines.push(issue.clone());
+        }
     }
 
     if helper_is_required(report.backend, report.model.as_deref())
@@ -419,6 +433,7 @@ fn startup_details(report: &ReadinessReport, config_warning: Option<&str>) -> Ve
 
 fn doctor_check_lines(report: &ReadinessReport, config_warning: Option<&str>) -> Vec<String> {
     let mut lines = Vec::new();
+    let tokenizer_required = tokenizer_is_required(report.backend, report.model.as_deref());
 
     if check_cuda() {
         lines.push("  ✅ GPU support: available".to_string());
@@ -448,7 +463,7 @@ fn doctor_check_lines(report: &ReadinessReport, config_warning: Option<&str>) ->
         }
     }
 
-    if report.model.is_some() {
+    if tokenizer_required && report.model.is_some() {
         match &report.tokenizer {
             Some(path) => lines.push(format!("  ✅ Tokenizer: {}", path.display())),
             None => lines.push(format!(
@@ -506,15 +521,20 @@ fn next_steps(
 }
 
 fn setup_steps(report: &ReadinessReport) -> Vec<String> {
+    let tokenizer_required = tokenizer_is_required(report.backend, report.model.as_deref());
+
     match report.status {
-        ReadinessStatus::MissingModel => vec![
-            format!(
+        ReadinessStatus::MissingModel => {
+            let mut lines = vec![format!(
                 "Copy a .gguf AI model into {} or rerun with `--model <PATH>`.",
                 model_location_hint(report)
-            ),
-            "Copy the matching tokenizer.json next to that model file.".to_string(),
-            "Run `zipcode setup --skip-smoke`, then run `zipcode` again.".to_string(),
-        ],
+            )];
+            if tokenizer_required {
+                lines.push("Copy the matching tokenizer.json next to that model file.".to_string());
+            }
+            lines.push("Run `zipcode setup --skip-smoke`, then run `zipcode` again.".to_string());
+            lines
+        }
         ReadinessStatus::MissingTokenizer => vec![
             format!(
                 "Copy tokenizer.json next to {}.",
@@ -539,6 +559,7 @@ fn setup_steps(report: &ReadinessReport) -> Vec<String> {
 
 fn repair_steps(report: &ReadinessReport, config_warning: Option<&str>) -> Vec<String> {
     let mut lines = Vec::new();
+    let tokenizer_required = tokenizer_is_required(report.backend, report.model.as_deref());
 
     if let Some(warning) = config_warning {
         lines.push(format!(
@@ -553,8 +574,10 @@ fn repair_steps(report: &ReadinessReport, config_warning: Option<&str>) -> Vec<S
         }
     }
 
-    if let Some(issue) = &report.tokenizer_issue {
-        lines.push(format!("Restore the missing tokenizer file ({issue})."));
+    if tokenizer_required {
+        if let Some(issue) = &report.tokenizer_issue {
+            lines.push(format!("Restore the missing tokenizer file ({issue})."));
+        }
     }
 
     if report.llama_server_issue_is_misconfigured {
@@ -576,6 +599,10 @@ fn repair_steps(report: &ReadinessReport, config_warning: Option<&str>) -> Vec<S
 
 fn helper_is_required(backend: Backend, model: Option<&Path>) -> bool {
     matches!(backend, Backend::LlamaServer) || model.is_some_and(is_probably_gemma4_model)
+}
+
+fn tokenizer_is_required(backend: Backend, model: Option<&Path>) -> bool {
+    !helper_is_required(backend, model)
 }
 
 fn model_location_hint(report: &ReadinessReport) -> String {
@@ -650,7 +677,7 @@ fn model_search_locations(
 
     let model_dir = resolve_model_dir(config, project_root);
     if let Some(model_file) = &config.model_file {
-        let configured = PathBuf::from(model_file);
+        let configured = expand_user_path(Path::new(model_file));
         let resolved = if configured.is_absolute() {
             configured
         } else if has_nonempty_parent(&configured) {
@@ -673,18 +700,15 @@ fn model_search_locations(
 }
 
 fn resolve_model_dir(config: &ZipcodeConfig, project_root: &Path) -> PathBuf {
-    if config.model_dir.is_absolute() {
-        config.model_dir.clone()
-    } else {
-        project_root.join(&config.model_dir)
-    }
+    resolve_project_path(&config.model_dir, project_root)
 }
 
 fn resolve_path_from_cwd(path: &Path, cwd: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
+    let expanded = expand_user_path(path);
+    if expanded.is_absolute() {
+        expanded
     } else {
-        cwd.join(path)
+        cwd.join(expanded)
     }
 }
 
@@ -826,7 +850,7 @@ mod tests {
     fn classify_missing_tokenizer_when_model_has_no_tokenizer() {
         let status = classify_readiness(
             Backend::LlamaCpp,
-            Some(Path::new("/tmp/gemma-4-test.gguf")),
+            Some(Path::new("/tmp/codeqwen.gguf")),
             None,
             Some(Path::new("/tmp/llama-server")),
         );
@@ -834,11 +858,22 @@ mod tests {
     }
 
     #[test]
+    fn classify_llama_server_is_ready_without_tokenizer() {
+        let status = classify_readiness(
+            Backend::LlamaServer,
+            Some(Path::new("/tmp/gemma-4-test.gguf")),
+            None,
+            Some(Path::new("/tmp/llama-server")),
+        );
+        assert_eq!(status, ReadinessStatus::NativeOk);
+    }
+
+    #[test]
     fn classify_missing_server_for_gemma4_without_server() {
         let status = classify_readiness(
             Backend::LlamaCpp,
             Some(Path::new("/tmp/gemma-4-test.gguf")),
-            Some(Path::new("/tmp/tokenizer.json")),
+            None,
             None,
         );
         assert_eq!(status, ReadinessStatus::MissingServer);
@@ -850,6 +885,17 @@ mod tests {
             Backend::LlamaCpp,
             Some(Path::new("/tmp/gemma-4-test.gguf")),
             Some(Path::new("/tmp/tokenizer.json")),
+            Some(Path::new("/tmp/llama-server")),
+        );
+        assert_eq!(status, ReadinessStatus::FallbackRequired);
+    }
+
+    #[test]
+    fn classify_fallback_required_for_gemma4_without_tokenizer_when_server_exists() {
+        let status = classify_readiness(
+            Backend::LlamaCpp,
+            Some(Path::new("/tmp/gemma-4-test.gguf")),
+            None,
             Some(Path::new("/tmp/llama-server")),
         );
         assert_eq!(status, ReadinessStatus::FallbackRequired);

@@ -37,6 +37,35 @@ fn default_permission() -> String {
     "workspace-write".to_string()
 }
 
+#[must_use]
+pub fn expand_user_path(path: &Path) -> PathBuf {
+    let Some(raw) = path.to_str() else {
+        return path.to_path_buf();
+    };
+
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| path.to_path_buf());
+    }
+
+    if let Some(stripped) = raw.strip_prefix("~/") {
+        return dirs::home_dir()
+            .map(|home| home.join(stripped))
+            .unwrap_or_else(|| path.to_path_buf());
+    }
+
+    path.to_path_buf()
+}
+
+#[must_use]
+pub fn resolve_project_path(path: &Path, project_root: &Path) -> PathBuf {
+    let expanded = expand_user_path(path);
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        project_root.join(expanded)
+    }
+}
+
 impl Default for ZipcodeConfig {
     fn default() -> Self {
         Self {
@@ -77,23 +106,13 @@ impl ZipcodeConfig {
                 config.permission_mode = perm.to_string();
             }
             if let Some(dir) = project["model_dir"].as_str() {
-                let path = PathBuf::from(dir);
-                config.model_dir = if path.is_absolute() {
-                    path
-                } else {
-                    project_root.join(path)
-                };
+                config.model_dir = resolve_project_path(Path::new(dir), &project_root);
             }
             if let Some(file) = project["model_file"].as_str() {
                 config.model_file = Some(file.to_string());
             }
             if let Some(bin) = project["llama_server_bin"].as_str() {
-                let path = PathBuf::from(bin);
-                config.llama_server_bin = Some(if path.is_absolute() {
-                    path
-                } else {
-                    project_root.join(path)
-                });
+                config.llama_server_bin = Some(resolve_project_path(Path::new(bin), &project_root));
             }
             if let Some(gen) = project.get("generation") {
                 if let Some(t) = gen["temperature"].as_f64() {
@@ -260,6 +279,38 @@ mod tests {
         assert_eq!(
             config.llama_server_bin,
             Some(dir.path().join("bin/llama-server"))
+        );
+    }
+
+    #[test]
+    fn test_load_project_override_tilde_model_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"model_dir": "~/.zipcode/models"}"#,
+        )
+        .unwrap();
+
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(
+            config.model_dir,
+            dirs::home_dir().unwrap().join(".zipcode/models")
+        );
+    }
+
+    #[test]
+    fn test_load_project_override_tilde_llama_server_bin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"llama_server_bin": "~/.zipcode/bin/llama-server"}"#,
+        )
+        .unwrap();
+
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(
+            config.llama_server_bin,
+            Some(dirs::home_dir().unwrap().join(".zipcode/bin/llama-server"))
         );
     }
 }
