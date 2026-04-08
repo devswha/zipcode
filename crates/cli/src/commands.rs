@@ -8,9 +8,9 @@ use zipcode_runtime::config::{
 };
 use zipcode_runtime::ZipcodeConfig;
 
-use crate::repl::{
-    has_nonempty_parent, is_probably_gemma4_model, resolve_model_path, run_interactive, run_oneshot,
-};
+use crate::repl::{has_nonempty_parent, is_probably_gemma4_model, resolve_model_path, run_oneshot};
+use crate::tui::run_interactive_with_ui;
+use crate::UiMode;
 
 const SETUP_WRAPPER_NAME: &str = "zipcode-local";
 const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
@@ -82,6 +82,7 @@ pub fn run_default(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
     backend_str: &str,
+    ui_mode: UiMode,
 ) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let config_load = load_config_with_warning(&cwd);
@@ -90,7 +91,9 @@ pub fn run_default(
     let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
 
     match readiness {
-        UserReadiness::Ready => run_interactive(model_path, permission_mode, backend_str),
+        UserReadiness::Ready => {
+            run_interactive_with_ui(model_path, permission_mode, backend_str, ui_mode)
+        }
         state => {
             print_startup_guidance(state, &report, config_load.warning.as_deref());
             Ok(())

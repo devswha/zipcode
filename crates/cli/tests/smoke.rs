@@ -126,6 +126,10 @@ fn help_flag() {
         stdout.contains("Usage") || stdout.contains("usage"),
         "help should show usage info, got: {stdout}"
     );
+    assert!(
+        stdout.contains("--ui"),
+        "help should document the fullscreen UI flag, got: {stdout}"
+    );
 }
 
 #[test]
@@ -143,6 +147,21 @@ fn help_lists_explicit_power_user_flows() {
             "root help should list `{command}`, got: {stdout}"
         );
     }
+}
+
+#[test]
+fn help_lists_ui_flag() {
+    let output = zipcode_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to run zipcode --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--ui"),
+        "root help should document --ui, got: {stdout}"
+    );
 }
 
 #[test]
@@ -862,4 +881,139 @@ echo "fake helper builder installed llama-server into $install_dir/bin/llama-ser
         !combined.contains("Skipping zipcode setup for now"),
         "installer should not skip setup when existing models are selectable, got: {combined}"
     );
+}
+
+#[test]
+fn fullscreen_repl_e2e_accepts_status_and_quit() {
+    let python = if Command::new("python3").arg("--version").output().is_ok() {
+        "python3"
+    } else {
+        "python"
+    };
+
+    let home = make_temp_dir("fullscreen-e2e-home");
+    let model_dir = home.join(".zipcode/models");
+    let helper_path = home.join(".zipcode/bin/fake-llama-server");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(helper_path.parent().expect("helper parent"))
+        .expect("create helper dir");
+    let model_path = model_dir.join("fake.gguf");
+    std::fs::write(&model_path, b"gguf").expect("write fake model");
+    write_executable(
+        &helper_path,
+        r#"#!/usr/bin/python3
+import signal
+import socket
+import sys
+
+args = sys.argv[1:]
+port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen()
+
+def shutdown(*_args):
+    server.close()
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, shutdown)
+signal.signal(signal.SIGINT, shutdown)
+
+while True:
+    conn, _ = server.accept()
+    request = conn.recv(4096)
+    if b"GET /health " in request:
+        body = b'{"status":"ok"}'
+    else:
+        body = b'ok'
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+        + body
+    )
+    conn.sendall(response)
+    conn.close()
+"#,
+    );
+
+    let script = format!(
+        r#"
+import os, pty, select, subprocess, sys, time
+cmd = [{cmd:?}, "repl", "--ui", "fullscreen", "--backend", "llama-server", "--model", {model:?}]
+env = os.environ.copy()
+env["ZIPCODE_LLAMA_SERVER_BIN"] = {helper:?}
+env["ZIPCODE_TUI_AUTOMATION_SCRIPT"] = "/status\n/quit\n"
+env["HOME"] = {home:?}
+master, slave = pty.openpty()
+proc = subprocess.Popen(
+    cmd,
+    stdin=slave,
+    stdout=slave,
+    stderr=slave,
+    cwd={cwd:?},
+    env=env,
+    text=False,
+)
+os.close(slave)
+deadline = time.time() + 20
+chunks = []
+while time.time() < deadline:
+    if proc.poll() is not None:
+        break
+    try:
+        ready, _, _ = select.select([master], [], [], 0.2)
+        if ready:
+            chunk = os.read(master, 8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError:
+        break
+if proc.poll() is None:
+    proc.terminate()
+    proc.wait(timeout=5)
+while True:
+    try:
+        chunk = os.read(master, 8192)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    except OSError:
+        break
+output = b"".join(chunks).decode("utf-8", "replace")
+print(output)
+sys.exit(proc.returncode or 0)
+"#,
+        cmd = env!("CARGO_BIN_EXE_zipcode"),
+        model = model_path.display().to_string(),
+        helper = helper_path.display().to_string(),
+        home = home.display().to_string(),
+        cwd = repo_root().display().to_string(),
+    );
+
+    let output = Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .output()
+        .expect("failed to run fullscreen TUI E2E harness");
+
+    assert!(
+        output.status.success(),
+        "fullscreen TUI harness should exit 0, got: {output:?}"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Session Status")
+            && combined.contains("Session ID:")
+            && !combined.contains("Unknown command"),
+        "fullscreen e2e should process /status and /quit cleanly, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
 }

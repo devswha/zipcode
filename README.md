@@ -334,6 +334,7 @@ cli --> runtime --> inference
 | `--model <PATH>` | `~/.zipcode/models/` | Path to `.gguf` file |
 | `--backend <BACKEND>` | `llama-cpp` | `llama-cpp` / `llama-server` / `candle` |
 | `--permission-mode` | `workspace-write` | `read-only` / `workspace-write` / `full-access` |
+| `--ui <MODE>` | `plain` | Interactive UI mode: `plain` or `fullscreen` |
 
 ### Slash Commands (REPL)
 
@@ -343,6 +344,28 @@ cli --> runtime --> inference
 | `/status` | Session ID, message count, cwd |
 | `/clear` | Reset conversation |
 | `/quit` | Exit |
+
+### Fullscreen TUI MVP
+
+Use `zipcode --ui fullscreen` (or `zipcode repl --ui fullscreen`) to launch a Codex/Claude-style
+fullscreen terminal UI MVP with:
+
+- transcript area
+- bottom composer
+- inline status bar
+- multiline composer editing
+- input history recall
+- exact slash-command handling (`/help`, `/status`, `/clear`, `/quit`)
+- alternate-screen rendering for a more app-like experience
+
+Key bindings:
+- `Enter` — submit
+- `Ctrl+J` — newline
+- `Arrow keys` — move cursor / recall input history
+- `PgUp` / `PgDn` — scroll transcript
+- `F1` — help overlay
+- `Esc` — clear input or close overlay
+- `Ctrl+D` — exit
 
 ---
 

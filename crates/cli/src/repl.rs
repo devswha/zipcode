@@ -28,7 +28,7 @@ pub struct CliCallback {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SlashCommand {
+pub(crate) enum SlashCommand {
     Help,
     Quit,
     Clear,
@@ -345,7 +345,7 @@ pub fn run_oneshot(
     Ok(())
 }
 
-fn parse_slash_command(input: &str) -> Option<SlashCommand> {
+pub(crate) fn parse_slash_command(input: &str) -> Option<SlashCommand> {
     match input {
         "/help" => Some(SlashCommand::Help),
         "/quit" | "/exit" => Some(SlashCommand::Quit),
@@ -427,14 +427,7 @@ pub fn run_interactive(
 }
 
 fn print_help() {
-    println!("Available commands:");
-    println!("  /help    — show this help");
-    println!("  /status  — show session info and model");
-    println!("  /clear   — clear conversation history");
-    println!("  /quit    — exit zipcode");
-    println!();
-    println!("  Ctrl+C   — cancel current input (continues)");
-    println!("  Ctrl+D   — exit zipcode");
+    println!("{}", help_text());
 }
 
 fn print_status(conv: &ConversationLoop) {
@@ -442,6 +435,10 @@ fn print_status(conv: &ConversationLoop) {
     println!("Messages:    {}", conv.session.messages.len());
     println!("Tools:       {}", conv.tools.names().len());
     println!("Working dir: {}", conv.cwd.display());
+}
+
+pub(crate) fn help_text() -> &'static str {
+    "Available commands:\n  /help    — show this help\n  /status  — show session info and model\n  /clear   — clear conversation history\n  /quit    — exit zipcode\n\n  Ctrl+C   — cancel current input (continues)\n  Ctrl+D   — exit zipcode"
 }
 
 #[cfg(test)]

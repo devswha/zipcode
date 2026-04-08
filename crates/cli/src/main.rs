@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod commands;
 mod render;
 mod repl;
+mod tui;
+mod tui_composer;
 
 #[derive(Parser)]
 #[command(name = "zipcode", version, about = "Local AI coding assistant")]
@@ -22,8 +24,18 @@ struct Cli {
     #[arg(long, default_value = "llama-cpp", global = true)]
     backend: String,
 
+    /// UI mode for interactive sessions
+    #[arg(long, value_enum, default_value_t = UiMode::Plain, global = true)]
+    ui: UiMode,
+
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+enum UiMode {
+    Plain,
+    Fullscreen,
 }
 
 #[derive(Subcommand)]
@@ -65,7 +77,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Repl) => {
-            repl::run_interactive(model_path, permission_mode, backend)?;
+            tui::run_interactive_with_ui(model_path, permission_mode, backend, cli.ui)?;
         }
         Some(Commands::Doctor) => {
             commands::doctor(model_path, backend)?;
@@ -77,7 +89,7 @@ fn main() -> Result<()> {
             repl::run_oneshot(&text, model_path, permission_mode, backend)?;
         }
         None => {
-            commands::run_default(model_path, permission_mode, backend)?;
+            commands::run_default(model_path, permission_mode, backend, cli.ui)?;
         }
     }
 
