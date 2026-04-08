@@ -1017,3 +1017,264 @@ sys.exit(proc.returncode or 0)
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
 }
+
+#[test]
+fn build_llama_server_retries_cpu_only_after_cuda_failure() {
+    let temp = make_temp_dir("build-llama-server-cpu-fallback");
+    let fake_bin = temp.join("bin");
+    let workdir = temp.join("work");
+    let install_dir = temp.join("install");
+    let cmake_log = temp.join("cmake.log");
+    std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+    std::fs::create_dir_all(&workdir).expect("create workdir");
+
+    write_executable(
+        &fake_bin.join("git"),
+        r#"#!/bin/sh
+set -eu
+dest=""
+for arg in "$@"; do
+  dest="$arg"
+done
+mkdir -p "$dest"
+"#,
+    );
+    write_executable(
+        &fake_bin.join("nvcc"),
+        r#"#!/bin/sh
+echo "nvcc: NVIDIA (R) Cuda compiler driver"
+echo "Cuda compilation tools, release 11.5, V11.5.119"
+"#,
+    );
+    write_executable(
+        &fake_bin.join("nvidia-smi"),
+        r#"#!/bin/sh
+if [ "${1:-}" = "--query-gpu=compute_cap" ]; then
+  echo "7.5"
+else
+  echo "NVIDIA-SMI fake"
+fi
+"#,
+    );
+    write_executable(
+        &fake_bin.join("c++"),
+        r#"#!/bin/sh
+if [ "${1:-}" = "-dumpfullversion" ] || [ "${1:-}" = "-dumpversion" ]; then
+  echo "11.4.0"
+else
+  exit 0
+fi
+"#,
+    );
+    write_executable(
+        &fake_bin.join("cmake"),
+        format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "{log}"
+if [ "${{1:-}}" = "-S" ]; then
+  build=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "-B" ]; then
+      build="$arg"
+    fi
+    prev="$arg"
+  done
+  mkdir -p "$build"
+  printf '%s\n' "$@" > "$build/config-args.txt"
+  exit 0
+fi
+if [ "${{1:-}}" = "--build" ]; then
+  build="${{2:?}}"
+  if grep -q -- '-DGGML_CUDA=ON' "$build/config-args.txt" && [ ! -f "{sentinel}" ]; then
+    touch "{sentinel}"
+    echo "fake cuda build failure" >&2
+    exit 1
+  fi
+  mkdir -p "$build/bin"
+  cat > "$build/bin/llama-server" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod +x "$build/bin/llama-server"
+  exit 0
+fi
+exit 0
+"#,
+            log = cmake_log.display(),
+            sentinel = temp.join("gpu-failed-once").display(),
+        )
+        .as_str(),
+    );
+
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/build_llama_server.sh"))
+        .arg(&install_dir)
+        .env(
+            "PATH",
+            format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("ZIPCODE_LLAMA_SERVER_WORKDIR", &workdir)
+        .output()
+        .expect("run build_llama_server.sh");
+
+    assert!(
+        output.status.success(),
+        "build script should recover via CPU fallback, got: {output:?}"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Retrying CPU-only build"),
+        "build script should announce CPU fallback, got: {combined}"
+    );
+    assert!(
+        install_dir.join("bin/llama-server").is_file(),
+        "install helper should still install llama-server wrapper"
+    );
+
+    let log = std::fs::read_to_string(cmake_log).expect("read cmake log");
+    assert!(
+        log.contains("-DGGML_CUDA=ON"),
+        "initial configure should try CUDA, got: {log}"
+    );
+}
+
+#[test]
+fn build_llama_server_uses_gcc10_host_compiler_when_available() {
+    let temp = make_temp_dir("build-llama-server-gcc10");
+    let fake_bin = temp.join("bin");
+    let workdir = temp.join("work");
+    let install_dir = temp.join("install");
+    let cmake_log = temp.join("cmake.log");
+    std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+    std::fs::create_dir_all(&workdir).expect("create workdir");
+
+    write_executable(
+        &fake_bin.join("git"),
+        r#"#!/bin/sh
+set -eu
+dest=""
+for arg in "$@"; do
+  dest="$arg"
+done
+mkdir -p "$dest"
+"#,
+    );
+    write_executable(
+        &fake_bin.join("nvcc"),
+        r#"#!/bin/sh
+echo "nvcc: NVIDIA (R) Cuda compiler driver"
+echo "Cuda compilation tools, release 11.5, V11.5.119"
+"#,
+    );
+    write_executable(
+        &fake_bin.join("nvidia-smi"),
+        r#"#!/bin/sh
+if [ "${1:-}" = "--query-gpu=compute_cap" ]; then
+  echo "7.5"
+else
+  echo "NVIDIA-SMI fake"
+fi
+"#,
+    );
+    write_executable(
+        &fake_bin.join("c++"),
+        r#"#!/bin/sh
+if [ "${1:-}" = "-dumpfullversion" ] || [ "${1:-}" = "-dumpversion" ]; then
+  echo "11.4.0"
+else
+  exit 0
+fi
+"#,
+    );
+    write_executable(
+        &fake_bin.join("gcc-10"),
+        r#"#!/bin/sh
+if [ "${1:-}" = "-dumpfullversion" ] || [ "${1:-}" = "-dumpversion" ]; then
+  echo "10.5.0"
+else
+  exit 0
+fi
+"#,
+    );
+    write_executable(
+        &fake_bin.join("g++-10"),
+        r#"#!/bin/sh
+if [ "${1:-}" = "-dumpfullversion" ] || [ "${1:-}" = "-dumpversion" ]; then
+  echo "10.5.0"
+else
+  exit 0
+fi
+"#,
+    );
+    write_executable(
+        &fake_bin.join("cmake"),
+        format!(
+            r#"#!/bin/sh
+set -eu
+printf 'ARGS:%s\n' "$*" >> "{log}"
+printf 'CC=%s CXX=%s\n' "${{CC:-}}" "${{CXX:-}}" >> "{log}"
+if [ "${{1:-}}" = "-S" ]; then
+  build=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "-B" ]; then
+      build="$arg"
+    fi
+    prev="$arg"
+  done
+  mkdir -p "$build"
+  printf '%s\n' "$@" > "$build/config-args.txt"
+  exit 0
+fi
+if [ "${{1:-}}" = "--build" ]; then
+  build="${{2:?}}"
+  mkdir -p "$build/bin"
+  cat > "$build/bin/llama-server" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod +x "$build/bin/llama-server"
+  exit 0
+fi
+exit 0
+"#,
+            log = cmake_log.display(),
+        )
+        .as_str(),
+    );
+
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/build_llama_server.sh"))
+        .arg(&install_dir)
+        .env(
+            "PATH",
+            format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("ZIPCODE_LLAMA_SERVER_WORKDIR", &workdir)
+        .output()
+        .expect("run build_llama_server.sh");
+
+    assert!(
+        output.status.success(),
+        "build script should succeed, got: {output:?}"
+    );
+    let log = std::fs::read_to_string(cmake_log).expect("read cmake log");
+    assert!(
+        log.contains("-DCMAKE_CUDA_HOST_COMPILER="),
+        "configure should set a CUDA host compiler, got: {log}"
+    );
+    assert!(
+        log.contains("g++-10"),
+        "gcc-10/g++-10 should be selected, got: {log}"
+    );
+    assert!(
+        log.contains("-DCMAKE_CUDA_ARCHITECTURES=75"),
+        "compute capability should be narrowed to detected arch, got: {log}"
+    );
+}

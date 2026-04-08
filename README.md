@@ -157,6 +157,11 @@ ZIPCODE_GPU_LAYERS=99 ZIPCODE_FLASH_ATTENTION=1 zipcode
 # Build llama-server with CUDA (auto-detects GPU)
 ./scripts/build_llama_server.sh
 
+# If CUDA 11.x + newer GCC fails, prefer gcc-10/g++-10 for GPU builds
+CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 \
+ZIPCODE_LLAMA_SERVER_CMAKE_ARGS="-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-10" \
+./scripts/build_llama_server.sh
+
 # Read-only mode (safe exploration)
 zipcode --permission-mode read-only
 ```
@@ -417,6 +422,8 @@ Place in any project root. Contents are injected into the system prompt.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ZIPCODE_LLAMA_SERVER_BIN` | Path to llama-server binary | auto-detect |
+| `ZIPCODE_LLAMA_SERVER_CMAKE_ARGS` | Extra cmake flags for `build_llama_server.sh` | none |
+| `ZIPCODE_LLAMA_SERVER_CUDA_ARCHITECTURES` | Override detected CUDA arch list (example: `75`) | auto-detect when possible |
 | `ZIPCODE_LLAMA_SERVER_CTX` | Context window size | 8192 |
 | `ZIPCODE_GPU_LAYERS` | GPU layers to offload (e.g., 99 for all) | none (CPU) |
 | `ZIPCODE_FLASH_ATTENTION` | Enable flash attention (`1` or `true`) | false |
