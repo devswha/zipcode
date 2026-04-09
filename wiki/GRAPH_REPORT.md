@@ -1,0 +1,94 @@
+# GRAPH_REPORT — zipcode knowledge graph
+
+Graphify-style summary of the zipcode `crates/` workspace as of 2026-04-09.
+
+> This report is the "map" view of the wiki: god nodes ranked, surprising cross-crate connections, questions the graph can answer, and a consolidated gotcha list. Community pages live under [`pages/`](pages/).
+
+---
+
+## God Nodes (by degree, approximate)
+
+Ranked by how many other concepts route through them.
+
+| Rank | Node | Location | Why it's central |
+|------|------|----------|------------------|
+| 1 | `InferenceProvider` trait | `crates/inference/src/lib.rs:28` | 4 implementors; single point where `runtime` talks to inference. Swapping backends = implement one trait. |
+| 2 | `ConversationLoop` | `crates/runtime/src/conversation.rs:21` | Holds `Box<dyn InferenceProvider>` + `ToolRegistry` + `PermissionPolicy` + `Session` + `system_prompt`. Every turn flows through `run_turn()`. |
+| 3 | `Tool` trait + `ToolRegistry` | `crates/tools/src/lib.rs:160,168` | 10 implementors; `execute_tool()` (`:212`) is the single entry point from `runtime`. |
+| 4 | `ChatMessage` | `crates/inference/src/types.rs:13` | Wire format carried by every component: REPL → conversation loop → inference → chat template → back. |
+| 5 | `PermissionMode` | `crates/tools/src/lib.rs:91` | Referenced by `ToolContext`, `PermissionPolicy`, CLI args, config. Gates every tool call. |
+| 6 | Gemma chat template | `crates/inference/src/chat_template.rs:11` | Every prompt is formatted through `format_conversation()` before reaching any backend. |
+| 7 | `resolve_and_validate_path()` | `crates/tools/src/lib.rs:10` | Called by every file-touching tool (read, write, edit, glob, grep). Single path-safety gate. |
+
+See [`pages/`](pages/) for detail on each.
+
+---
+
+## Cross-crate connections (surprising edges)
+
+1. **`runtime` never imports `tools::*` for tool logic — only the trait interface.** `ConversationLoop` holds `tools: ToolRegistry` but only ever calls `execute_tool()`. The 10 concrete tool types stay behind the `Box<dyn Tool>` wall. **Why it matters:** adding a tool doesn't require changes in `runtime`.
+
+2. **The conversation loop's iteration cap lives in `runtime`, but the tool-result truncation cap lives in `tools`.** `MAX_TOOL_ITERATIONS = 25` (`crates/runtime/src/conversation.rs:41`) and `MAX_TOOL_OUTPUT_BYTES = 8192` (`crates/tools/src/lib.rs:209`). Two independent safety limits, two independent crates. **Why it matters:** a runaway agent is bounded by both — model iterations AND per-tool output size.
+
+3. **Chat template parsing is upstream of the conversation loop.** The model returns raw text; `chat_template::parse_tool_calls()` (`crates/inference/src/chat_template.rs:60`) extracts `<tool_call>` JSON before `ConversationLoop` ever sees a `ToolCallParsed`. **Why it matters:** a model that doesn't emit `<tool_call>` blocks (Qwen, Llama 3, OpenAI-compatible) will be silently tool-blind.
+
+4. **`cli` owns model-path resolution, not `runtime`.** `crates/cli/src/repl.rs` resolves `--model` flag > project config > global config > `~/.zipcode/models` scan. **Why it matters:** automated test drivers need to pass `--model` or set config; `runtime` can't find a model by itself.
+
+5. **Permission policy is split across two crates.** `PermissionMode` enum lives in `tools` (`:91`); `PermissionPolicy::check()` lives in `runtime` (`permission.rs:24`). **Why it matters:** adding a new permission tier requires editing both crates.
+
+6. **Session persistence is JSON-per-file, not a database.** `~/.zipcode/sessions/{uuid}.json` (`crates/runtime/src/session.rs:57`). **Why it matters:** `ls ~/.zipcode/sessions/ | wc -l` scales linearly forever; no retention policy.
+
+7. **The `llama-server` backend is the only fully-functional path today.** `llama-cpp-rs` 0.1.141 lacks Gemma 4 arch support; candle has no `quantized_gemma`. See [`gotchas`](pages/gotchas.md#backend-reality-check).
+
+---
+
+## Suggested questions the graph can answer
+
+Drop these into a code search or walk the links — the wiki is pre-wired for them.
+
+1. **"Where does a tool call actually execute?"** → `crates/tools/src/lib.rs:212` (`execute_tool`) called from `crates/runtime/src/conversation.rs:100-140`. Both pages cross-link.
+2. **"What stops the agent from looping forever?"** → Two bounds: 25 tool iterations (`conversation.rs:41`) and 8 KB per tool result (`tools/lib.rs:209`).
+3. **"Why doesn't model X work?"** → Almost always the hardcoded Gemma chat template. See [`chat-template`](pages/chat-template.md).
+4. **"Where is `~/.zipcode/config.json` read?"** → `crates/runtime/src/config.rs:95` (`ZipcodeConfig::load`), merged with `.zipcode.json` from project root.
+5. **"Which tools are blocked in read-only mode?"** → Everything except `read_file`, `glob_search`, `grep_search`, `tool_search`. `crates/runtime/src/permission.rs:24`.
+6. **"How does llama-server get its GPU flags?"** → `ZIPCODE_GPU_LAYERS` / `ZIPCODE_FLASH_ATTENTION` env vars override `config.gpu_layers` / `config.flash_attention`, passed to subprocess as `-ngl` and `--flash-attn`. See [`llama-server`](pages/llama-server.md).
+7. **"How is the system prompt built?"** → `crates/runtime/src/prompt.rs`: base prompt + permission line + cwd + `.zipcode.md` content + `git status --short`.
+
+---
+
+## Gotcha summary (full list in [`pages/gotchas`](pages/gotchas.md))
+
+| # | Gotcha | Location |
+|---|--------|----------|
+| 1 | Chat template is Gemma-only; other models appear tool-blind | `chat_template.rs:11-56` |
+| 2 | Candle backend uses `quantized_llama` as a Gemma placeholder; compiles but won't load real Gemma | `engine.rs:1-4` |
+| 3 | `llama-cpp-rs` 0.1.141 lacks Gemma 4 arch → zipcode falls back to `llama-server` subprocess | `llama_cpp_backend.rs` + CLAUDE.md |
+| 4 | Tool output silently truncated at 8 KB; model isn't told how much was cut | `tools/lib.rs:209,129-149` |
+| 5 | Tool iteration cap of 25 returns an error, not a graceful handoff | `conversation.rs:41` |
+| 6 | Agent tool is a stub — returns "not yet implemented" | `agent.rs` |
+| 7 | Path traversal prevention depends on every file tool calling `resolve_and_validate_path()` | `tools/lib.rs:10-78` |
+| 8 | `llama-server` subprocess killed in `Drop`; if the process crashes during health check, no explicit error path | `llama_server_backend.rs:143-148` |
+| 9 | Session files grow unbounded in `~/.zipcode/sessions/` (no rotation) | `session.rs:57` |
+| 10 | Env var names for GPU are case-sensitive; typos silently ignored | `config.rs` + CLI env read |
+
+---
+
+## Test surface (~130 tests total)
+
+| Crate | Inline unit | Integration | Notable |
+|-------|-------------|-------------|---------|
+| `inference` | ~20 | 1 ignored (needs real model) | types, chat_template well-covered |
+| `tools` | ~40 | 0 | Every tool has a unit test; path traversal test at `lib.rs:305` |
+| `runtime` | ~22 | 6 (`tests/integration.rs`) | `MockInferenceProvider` drives loop tests (permission denied, iteration cap, etc.) |
+| `cli` | 0 | ~40 (`tests/smoke.rs`) | Spawns real binary in temp `HOME`; fullscreen TUI e2e uses `ZIPCODE_TUI_AUTOMATION_SCRIPT` |
+
+**EXTRACTED** from explorer output; exact counts may drift as tests are added.
+
+---
+
+## Next entry points
+
+- New to the code? Read in this order: [inference](pages/inference.md) → [tools](pages/tools.md) → [conversation-loop](pages/conversation-loop.md).
+- Debugging a user-visible bug? Start at [cli](pages/cli.md), follow the stream path into [conversation-loop](pages/conversation-loop.md).
+- Adding a feature? See [recipes](pages/recipes.md).
+- Something's weird? Check [gotchas](pages/gotchas.md) first.

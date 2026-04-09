@@ -1,0 +1,139 @@
+# cli — clap, REPL, fullscreen TUI, doctor, setup
+
+The `zipcode` (cli) crate — the user-facing entrypoint. Depends on `runtime` and re-wires `tools` at startup.
+
+**Crate path:** [`crates/cli/`](../../crates/cli/)
+
+---
+
+## Module layout
+
+**EXTRACTED** `crates/cli/src/`
+
+| File | Owns |
+|------|------|
+| `main.rs` | clap parser + subcommand dispatch |
+| `commands.rs` | `doctor`, `setup`, `run_default` |
+| `repl.rs` | `run_interactive_with_ui()`, `run_oneshot()`, model resolution, engine creation |
+| `tui.rs` | Fullscreen TUI with `termimad` + `rustyline` |
+| `tui_composer.rs` | Message composition UI |
+| `render.rs` | Terminal rendering helpers |
+
+---
+
+## Global CLI flags
+
+**EXTRACTED** `main.rs:12-58`
+
+| Flag | Purpose |
+|------|---------|
+| `--model <PATH>` | Override model path (takes precedence over config) |
+| `--permission-mode <MODE>` | `read-only` / `workspace-write` / `full-access` |
+| `--backend <BACKEND>` | `llama-cpp` (default compile flag) / `llama-server` / `candle` |
+| `--ui <UI_MODE>` | `plain` / `fullscreen` (default: fullscreen, per recent commit `e2d22bd`) |
+
+---
+
+## Subcommands
+
+**EXTRACTED** `main.rs`
+
+| Subcommand | Behavior |
+|-----------|---------|
+| `repl` | Interactive REPL (default if no subcommand given) |
+| `prompt <TEXT>` | One-shot: send prompt, stream reply, exit |
+| `doctor` | System health report (models, tokenizer, llama-server, config) |
+| `setup [--skip-smoke]` | Guided setup: find models, find llama-server, write config, smoke-test |
+
+**INFERRED** — if no args are passed, recent commit `29c436a` made bare paths not be misread as REPL commands, and `59610ad` restored helper-backed setup flows. Run `zipcode --help` for the live help.
+
+---
+
+## `doctor`
+
+**EXTRACTED** `commands.rs`
+
+Classifies state as:
+
+| State | Meaning |
+|-------|---------|
+| `Ready` | All prerequisites present |
+| `NeedsSetup` | No config / no models — user should run `zipcode setup` |
+| `NeedsRepair` | Partial state — some files missing |
+
+Reports:
+- Model file existence (from config or scan of `~/.zipcode/models`)
+- Tokenizer file (if `candle` or `llama-cpp` backend)
+- `llama-server` binary location (env var → PATH)
+- Current config values
+
+---
+
+## `setup`
+
+**EXTRACTED** `commands.rs`
+
+1. Discover models in `~/.zipcode/models`.
+2. Locate `llama-server`:
+   - `ZIPCODE_LLAMA_SERVER_BIN` env var (absolute path)
+   - Fallback: `which llama-server` on PATH
+3. Optional smoke prompt (`--skip-smoke` to bypass).
+4. Write `~/.zipcode/config.json`.
+5. Create `~/.zipcode/bin/zipcode-local` wrapper script (shell shim for convenience).
+
+Used by `install.sh` to bootstrap a fresh machine.
+
+---
+
+## REPL initialization
+
+**EXTRACTED** `repl.rs` (file layout; exact line numbers vary)
+
+1. Parse CLI args.
+2. Load `ZipcodeConfig::load(cwd)` — see [config](config.md).
+3. Resolve model path (flag > project config > global config > scan `model_dir`).
+4. Detect Gemma 4 by filename pattern.
+5. Build `ServerOptions` from env vars + config (`ZIPCODE_GPU_LAYERS`, `ZIPCODE_FLASH_ATTENTION`, `DEFAULT_CONTEXT_SIZE = 8192`).
+6. Call `create_engine(backend, model_path, tokenizer_path, config, server_options)` — returns `Box<dyn InferenceProvider>`.
+7. Build `ToolRegistry` with all 10 tools from `zipcode-tools`.
+8. Build system prompt via `prompt::build(...)` — see [conversation-loop › run_turn](conversation-loop.md#run_turn-flow) for how it's consumed.
+9. Create `Session::new()`.
+10. Construct [`ConversationLoop`](conversation-loop.md).
+11. Enter TUI (`tui.rs`) or plain REPL depending on `--ui`.
+
+---
+
+## Fullscreen TUI
+
+**EXTRACTED** `tui.rs`
+
+- `termimad` for markdown rendering of assistant output.
+- `rustyline` for input line editing + history.
+- Slash commands: `/help`, `/status`, `/clear`, `/quit`, `/doctor`, etc.
+- Automation hook: `ZIPCODE_TUI_AUTOMATION_SCRIPT` env var lets integration tests drive the TUI non-interactively (commit `52a7717`, `e2d22bd`).
+
+---
+
+## Tests
+
+**EXTRACTED** — `crates/cli/tests/smoke.rs`, ~40 integration tests:
+
+| Covers | Approx tests |
+|--------|--------------|
+| `doctor`, `--help`, `--version`, `prompt` with no model (graceful error) | ~6 |
+| `setup` flow: config write, wrapper creation | ~4 |
+| Bare `zipcode` invocation routes to setup/repair guidance | ~3 |
+| `install.sh` bootstrap: terminal download, model discovery | ~5 |
+| Fullscreen TUI e2e with mocked `llama-server` | ~8 |
+| `build_llama_server.sh` helper: CUDA fallback, `gcc-10` detection (commit `52a7717`) | ~4 |
+
+All tests use temp `HOME` directories to avoid side effects.
+
+---
+
+## Related pages
+
+- [config](config.md) — loaded here at startup
+- [conversation-loop](conversation-loop.md) — constructed here, driven by the TUI
+- [tools](tools.md) — registry built here
+- [llama-server](llama-server.md) — consumes the `ServerOptions` constructed here

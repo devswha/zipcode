@@ -1,0 +1,101 @@
+# permissions — 3-tier access control for tool execution
+
+Permission state is **split across two crates** — GOTCHA flagged in [`GRAPH_REPORT`](../GRAPH_REPORT.md#cross-crate-connections-surprising-edges) — because the enum lives with the tools and the policy lives with the runtime.
+
+| Concept | Where | File |
+|---------|-------|------|
+| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:91` |
+| `PermissionPolicy` + `check()` | `zipcode-runtime` | `crates/runtime/src/permission.rs:24` |
+| CLI flag `--permission-mode` | `zipcode` (cli) | `crates/cli/src/main.rs` |
+| Config field `permission_mode` | `zipcode-runtime` | `crates/runtime/src/config.rs` (default: `workspace-write`) |
+
+---
+
+## `PermissionMode`
+
+**EXTRACTED** `crates/tools/src/lib.rs:91-98`
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    ReadOnly,
+    WorkspaceWrite,
+    FullAccess,
+}
+```
+
+Serialization: kebab-case (`read-only`, `workspace-write`, `full-access`). The parser also accepts `danger-full-access` as an alias (`permission.rs:60-69`).
+
+---
+
+## `PermissionPolicy::check()`
+
+**EXTRACTED** `crates/runtime/src/permission.rs:24-42`
+
+Returns a 3-variant enum:
+
+```rust
+pub enum PermissionCheck {
+    Allowed,
+    NeedsApproval(String),   // message shown to user via StreamCallback::on_permission_prompt
+    Denied(String),          // tool never runs; denial message surfaced to model
+}
+```
+
+### Matrix
+
+| Tool | Read-only | Workspace-write | Full-access |
+|------|:---------:|:---------------:|:-----------:|
+| `read_file` | Allowed | Allowed | Allowed |
+| `glob_search` | Allowed | Allowed | Allowed |
+| `grep_search` | Allowed | Allowed | Allowed |
+| `tool_search` | Allowed | Allowed | Allowed |
+| `write_file` | Denied | Allowed | Allowed |
+| `edit_file` | Denied | Allowed | Allowed |
+| `todo_write` | Denied | Allowed | Allowed |
+| `bash` | Denied | **Approval** | Allowed |
+| `repl` | Denied | **Approval** | Allowed |
+| `agent` | Denied | Denied / Allowed (STUB) | Allowed |
+
+**EXTRACTED** from `permission.rs:24-42` — read-only's allowlist is hardcoded; workspace-write's approval list is `{bash, repl}`.
+
+### Approval flow
+
+When `check()` returns `NeedsApproval(msg)`, [`ConversationLoop`](conversation-loop.md) calls `StreamCallback::on_permission_prompt(msg)`. The CLI prompts the user interactively; if the user returns `false`, the tool is skipped and the denial is surfaced to the model as the tool result.
+
+---
+
+## Tests
+
+**EXTRACTED** `permission.rs` — 6 inline tests:
+
+- `full_access_allows_everything`
+- `read_only_allows_read_tools`
+- `read_only_denies_write_tools`
+- `workspace_write_requires_approval_for_bash`
+- `workspace_write_requires_approval_for_repl`
+- `parse_permission_mode_accepts_danger_alias`
+
+---
+
+## Adding a new tier or tool
+
+1. **New tier:** add a variant to `PermissionMode` in `tools/lib.rs:91` **and** a match arm in `PermissionPolicy::check()` in `runtime/permission.rs:24`. Both crates must compile together.
+2. **New tool into existing tier:** add its name to the appropriate allowlist/approval list in `permission.rs:24-42`. Also add a test in `permission.rs`.
+3. **CLI flag:** `--permission-mode` is parsed via `parse_permission_mode()` (`permission.rs:60-69`). Any new variant must round-trip through that function.
+
+---
+
+## GOTCHAs
+
+- **GOTCHA** — `read-only` mode's allowlist is a hardcoded set; any new read-safe tool you add is **implicitly denied** in read-only mode unless you remember to update `permission.rs:24`.
+- **GOTCHA** — the `AgentTool` stub has no entry in the policy matrix today; its behavior in each tier is undefined until the stub is implemented. Cross-reference [tools › the 10 tools](tools.md#the-10-tools).
+
+---
+
+## Related pages
+
+- [tools](tools.md) — the executors gated by this policy
+- [conversation-loop](conversation-loop.md) — calls `check()` on every tool invocation
+- [cli](cli.md) — parses `--permission-mode` and handles the approval UI
