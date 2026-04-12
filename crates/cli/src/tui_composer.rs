@@ -170,11 +170,12 @@ impl Composer {
                 col = 0;
                 continue;
             }
-            if col >= width {
+            let w = crate::width::char_display_width(ch);
+            if col > 0 && col + w > width {
                 row += 1;
                 col = 0;
             }
-            col += 1;
+            col += w;
         }
         if col >= width {
             row += 1;
@@ -216,20 +217,12 @@ fn current_line_end(text: &str, cursor: usize) -> usize {
 }
 
 fn current_column(text: &str, cursor: usize) -> usize {
-    text[current_line_start(text, cursor)..cursor]
-        .chars()
-        .count()
+    let line_start = current_line_start(text, cursor);
+    crate::width::column_at_byte(&text[line_start..], cursor - line_start)
 }
 
 fn offset_in_line(text: &str, start: usize, end: usize, target_column: usize) -> usize {
-    let mut cursor = start;
-    for (count, ch) in text[start..end].chars().enumerate() {
-        if count >= target_column {
-            break;
-        }
-        cursor += ch.len_utf8();
-    }
-    cursor
+    start + crate::width::byte_at_column(&text[start..end], target_column)
 }
 
 fn wrap_text_preserving_newlines(text: &str, width: usize) -> Vec<String> {
@@ -240,15 +233,7 @@ fn wrap_text_preserving_newlines(text: &str, width: usize) -> Vec<String> {
             out.push(String::new());
             continue;
         }
-        let mut current = String::new();
-        for ch in raw_line.chars() {
-            if current.chars().count() >= width {
-                out.push(current);
-                current = String::new();
-            }
-            current.push(ch);
-        }
-        out.push(current);
+        out.extend(crate::width::wrap_display(raw_line, width));
     }
     if text.ends_with('\n') {
         out.push(String::new());
@@ -304,5 +289,90 @@ mod tests {
         }
         let (row, col) = composer.cursor_visual_position(3);
         assert_eq!((row, col), (2, 2));
+    }
+
+    #[test]
+    fn cursor_visual_position_cjk_counts_double_width() {
+        let mut composer = Composer::new();
+        // "안녕" → 4 display columns (2+2)
+        for ch in "안녕".chars() {
+            composer.insert_char(ch);
+        }
+        let (row, col) = composer.cursor_visual_position(10);
+        assert_eq!((row, col), (0, 4));
+    }
+
+    #[test]
+    fn wrapped_lines_cjk_wraps_by_display_width() {
+        let composer = {
+            let mut c = Composer::new();
+            // "한국어" → 6 display columns (2+2+2)
+            for ch in "한국어".chars() {
+                c.insert_char(ch);
+            }
+            c
+        };
+        // width=3 → each CJK char is 2 cols, so only 1 char fits per line
+        // (second char would need 2+2=4 > 3)
+        let lines = composer.wrapped_lines(3);
+        assert_eq!(lines, vec!["한", "국", "어"]);
+    }
+
+    #[test]
+    fn wrapped_lines_cjk_mixed_width() {
+        let composer = {
+            let mut c = Composer::new();
+            for ch in "한국어abc".chars() {
+                c.insert_char(ch);
+            }
+            c
+        };
+        // width=4: "한국"=4, "어ab"=2+1+1=4, "c"=1
+        let lines = composer.wrapped_lines(4);
+        assert_eq!(lines, vec!["한국", "어ab", "c"]);
+    }
+
+    #[test]
+    fn move_up_down_cjk_preserves_visual_column() {
+        let mut composer = Composer::new();
+        // Line 1: "abcd" (4 cols), Line 2: "안녕하" (6 cols)
+        for ch in "abcd\n안녕하".chars() {
+            composer.insert_char(ch);
+        }
+        // Cursor is at end of line 2 (col 6 in display width)
+        assert!(composer.can_move_up());
+
+        // Move to start of current line
+        composer.move_home();
+        // Now at start of line 2 (col 0)
+        assert!(composer.can_move_up());
+        assert!(!composer.can_move_down());
+
+        // Move up — should go to line 1, col 0
+        assert!(composer.move_up());
+        assert!(!composer.can_move_up());
+        assert!(composer.can_move_down());
+    }
+
+    #[test]
+    fn move_down_clamps_to_start_of_wide_char_when_target_column_is_inside_it() {
+        let mut composer = Composer::new();
+        for ch in "a\n안녕".chars() {
+            composer.insert_char(ch);
+        }
+
+        assert!(composer.move_up());
+        assert_eq!(composer.cursor, 1); // end of first line (display col 1)
+        composer.move_end();
+        assert!(composer.move_down());
+        assert_eq!(composer.cursor, "a\n".len()); // clamp to start of '안'
+    }
+
+    #[test]
+    fn cursor_visual_position_wide_char_in_single_column_area_avoids_blank_row() {
+        let mut composer = Composer::new();
+        composer.insert_char('한');
+
+        assert_eq!(composer.cursor_visual_position(1), (1, 0));
     }
 }

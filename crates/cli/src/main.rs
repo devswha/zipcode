@@ -8,6 +8,7 @@ mod render;
 mod repl;
 mod tui;
 mod tui_composer;
+mod width;
 
 #[derive(Parser)]
 #[command(name = "zipcode", version, about = "Local AI coding assistant")]

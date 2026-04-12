@@ -1,12 +1,16 @@
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::Value;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader, Read, Seek};
+use std::path::Path;
 
 use crate::{Tool, ToolContext, ToolResult};
 
 pub struct GrepSearchTool;
+
+const MAX_SEARCH_OUTPUT_BYTES: usize = 8_192;
+const SEARCH_STOP_MESSAGE: &str =
+    "[stopped after collecting enough matches; refine the pattern/path for more]";
 
 impl Tool for GrepSearchTool {
     fn name(&self) -> &str {
@@ -53,74 +57,117 @@ impl Tool for GrepSearchTool {
 
         let glob_filter = args["glob"].as_str();
 
-        let files = collect_files(&search_path, glob_filter)?;
-
         let mut output_lines: Vec<String> = Vec::new();
+        let mut output_bytes = 0usize;
 
-        for file_path in &files {
-            search_file(file_path, &regex, &mut output_lines);
-        }
+        let stopped_early = if search_path.is_file() {
+            search_file(&search_path, &regex, &mut output_lines, &mut output_bytes)
+        } else {
+            search_directory(
+                &search_path,
+                glob_filter,
+                &regex,
+                &mut output_lines,
+                &mut output_bytes,
+            )?
+        };
 
         if output_lines.is_empty() {
             return Ok(ToolResult::new("No matches found.".to_string()));
         }
 
-        Ok(ToolResult::new(output_lines.join("\n")))
+        if stopped_early {
+            output_lines.push(SEARCH_STOP_MESSAGE.to_string());
+        }
+
+        let mut result = ToolResult::new(output_lines.join("\n"));
+        result.truncated = stopped_early;
+        Ok(result)
     }
 }
 
-/// Collect files to search. If path is a file, return just that file.
-/// If path is a directory, walk recursively applying optional glob filter.
-fn collect_files(path: &Path, glob_filter: Option<&str>) -> Result<Vec<PathBuf>> {
-    if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-
+/// Search a directory lazily, stopping as soon as the output budget is exhausted.
+fn search_directory(
+    path: &Path,
+    glob_filter: Option<&str>,
+    regex: &Regex,
+    output_lines: &mut Vec<String>,
+    output_bytes: &mut usize,
+) -> Result<bool> {
     let pattern = if let Some(g) = glob_filter {
         format!("{}/**/{}", path.to_str().unwrap_or("."), g)
     } else {
         format!("{}/**/*", path.to_str().unwrap_or("."))
     };
 
-    let files: Vec<PathBuf> = glob::glob(&pattern)
-        .context("Invalid glob pattern")?
-        .filter_map(|e| e.ok())
-        .filter(|p| p.is_file())
-        .collect();
+    for entry in glob::glob(&pattern).context("Invalid glob pattern")? {
+        let Ok(file_path) = entry else {
+            continue;
+        };
+        if !file_path.is_file() {
+            continue;
+        }
+        if search_file(&file_path, regex, output_lines, output_bytes) {
+            return Ok(true);
+        }
+    }
 
-    Ok(files)
+    Ok(false)
 }
 
 /// Search a single file for regex matches, appending results to output_lines.
+/// Returns true when the output budget has been exhausted and the caller should stop.
 /// Silently skips binary or unreadable files.
-fn search_file(path: &Path, regex: &Regex, output_lines: &mut Vec<String>) {
+fn search_file(
+    path: &Path,
+    regex: &Regex,
+    output_lines: &mut Vec<String>,
+    output_bytes: &mut usize,
+) -> bool {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return,
+        Err(_) => return false,
     };
 
-    let mut bytes = Vec::new();
-    if file.read_to_end(&mut bytes).is_err() {
-        return;
-    }
-
-    // Skip binary files: check for null bytes in the first 8KB
-    let check_len = bytes.len().min(8192);
-    if bytes[..check_len].contains(&0u8) {
-        return;
-    }
-
-    let content = match std::str::from_utf8(&bytes) {
-        Ok(s) => s,
-        Err(_) => return,
+    let mut header = [0_u8; 8192];
+    let header_len = match file.read(&mut header) {
+        Ok(len) => len,
+        Err(_) => return false,
     };
 
-    let path_str = path.to_string_lossy();
-    for (idx, line) in content.lines().enumerate() {
-        if regex.is_match(line) {
-            output_lines.push(format!("{}:{}: {}", path_str, idx + 1, line));
+    if header[..header_len].contains(&0u8) {
+        return false;
+    }
+
+    if file.rewind().is_err() {
+        return false;
+    }
+
+    let reader = BufReader::new(file);
+    let path_str = path.to_string_lossy().into_owned();
+
+    for (idx, line) in reader.lines().enumerate() {
+        let Ok(line) = line else {
+            return false;
+        };
+        if regex.is_match(&line) {
+            let rendered = format!("{path_str}:{}: {line}", idx + 1);
+            let projected = output_bytes
+                .saturating_add(rendered.len())
+                .saturating_add(SEARCH_STOP_MESSAGE.len())
+                .saturating_add(1);
+            if projected > MAX_SEARCH_OUTPUT_BYTES && !output_lines.is_empty() {
+                return true;
+            }
+            *output_bytes = output_bytes.saturating_add(rendered.len() + 1);
+            output_lines.push(rendered);
+            if *output_bytes >= MAX_SEARCH_OUTPUT_BYTES {
+                return true;
+            }
         }
     }
+
+    false
 }
 
 #[cfg(test)]
@@ -240,5 +287,43 @@ mod tests {
         // Should find match in text.rs but not crash on binary
         assert!(result.content.contains("text.rs"));
         assert!(!result.content.contains("binary.bin"));
+    }
+
+    #[test]
+    fn test_stops_after_output_budget() {
+        let dir = TempDir::new().unwrap();
+        let repeated = (0..500)
+            .map(|idx| format!("match line number {idx:04} with some extra text to grow output"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(dir.path().join("large.txt"), repeated).unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "match line number" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        assert!(result.truncated);
+        assert!(result.content.contains(SEARCH_STOP_MESSAGE));
+        assert!(result.content.len() <= MAX_SEARCH_OUTPUT_BYTES + SEARCH_STOP_MESSAGE.len() + 32);
+    }
+
+    #[test]
+    fn test_stops_before_scanning_later_files_once_budget_is_full() {
+        let dir = TempDir::new().unwrap();
+        let repeated = (0..500)
+            .map(|idx| format!("match line number {idx:04} with some extra text to grow output"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(dir.path().join("a-large.txt"), repeated).unwrap();
+        fs::write(dir.path().join("z-late.txt"), "match line number late\n").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "match line number" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        assert!(result.truncated);
+        assert!(!result.content.contains("z-late.txt"));
     }
 }

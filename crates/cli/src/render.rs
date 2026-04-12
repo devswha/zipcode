@@ -15,18 +15,11 @@ pub fn terminal_width() -> usize {
         .unwrap_or(80)
 }
 
-/// Truncate a string to fit within `max_width` visible characters.
-/// Appends "…" if the string was truncated.
+/// Truncate a string to fit within `max_width` display columns.
+/// Appends "…" if the string was truncated.  Uses Unicode display-width so
+/// CJK characters (2 columns each) are measured correctly.
 pub fn truncate_to_width(s: &str, max_width: usize) -> String {
-    if max_width < 2 {
-        return String::new();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max_width {
-        return s.to_string();
-    }
-    let truncated: String = chars[..max_width - 1].iter().collect();
-    format!("{truncated}…")
+    crate::width::truncate_display(s, max_width)
 }
 
 // ── Synchronized output ─────────────────────────────────────────────

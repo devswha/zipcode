@@ -1,5 +1,7 @@
 use std::io::{self, IsTerminal, Stdout, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -19,10 +21,15 @@ use crate::repl::{create_loop, help_text, parse_slash_command, run_interactive, 
 use crate::tui_composer::Composer;
 use crate::UiMode;
 
+/// Whether the TUI panic hook is currently installed.
+static TUI_PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+
 const HEADER_LINES: u16 = 2;
 const STATUS_LINES: u16 = 2;
 const HINT_LINES: u16 = 1;
 const MAX_COMPOSER_LINES: usize = 5;
+const STREAM_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
+const STREAM_REDRAW_MIN_BYTES: usize = 24;
 
 pub fn run_interactive_with_ui(
     model_path: Option<&Path>,
@@ -30,9 +37,12 @@ pub fn run_interactive_with_ui(
     backend_str: &str,
     ui_mode: UiMode,
 ) -> Result<()> {
-    let effective_ui = if matches!(ui_mode, UiMode::Fullscreen)
-        && !(io::stdin().is_terminal() && io::stdout().is_terminal())
-    {
+    let force_plain = std::env::var("ZIPCODE_NO_TUI").is_ok()
+        || std::env::var("TERM").as_deref() == Ok("dumb")
+        || !io::stdin().is_terminal()
+        || !io::stdout().is_terminal();
+
+    let effective_ui = if matches!(ui_mode, UiMode::Fullscreen) && force_plain {
         UiMode::Plain
     } else {
         ui_mode
@@ -113,6 +123,7 @@ struct Overlay {
 struct FullscreenUi {
     stdout: Stdout,
     transcript: Vec<TranscriptEntry>,
+    transcript_cache: TranscriptCache,
     composer: Composer,
     transcript_scroll: usize,
     status: String,
@@ -122,13 +133,34 @@ struct FullscreenUi {
     cwd: String,
     raw_enabled: bool,
     overlay: Option<Overlay>,
+    draw_drops: usize,
 }
 
 impl FullscreenUi {
     fn new(conv: &ConversationLoop, backend: String) -> Result<Self> {
+        // Install a panic hook that restores the terminal before printing the
+        // panic message.  Without this, a panic leaves the terminal in raw mode
+        // + alternate screen and the user sees a garbled shell.
+        if !TUI_PANIC_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                // Best-effort terminal restoration — ignore errors.
+                let _ = terminal::disable_raw_mode();
+                let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
+                prev_hook(info);
+            }));
+        }
+
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, Hide)?;
-        terminal::enable_raw_mode()?;
+        if let Err(e) = execute!(stdout, EnterAlternateScreen, Hide) {
+            clear_panic_hook_flag();
+            return Err(e.into());
+        }
+        if let Err(e) = terminal::enable_raw_mode() {
+            let _ = execute!(stdout, Show, LeaveAlternateScreen);
+            clear_panic_hook_flag();
+            return Err(e.into());
+        }
 
         let mut ui = Self {
             stdout,
@@ -139,6 +171,7 @@ impl FullscreenUi {
                     env!("CARGO_PKG_VERSION")
                 ),
             }],
+            transcript_cache: TranscriptCache::default(),
             composer: Composer::new(),
             transcript_scroll: 0,
             status: "Ready".to_string(),
@@ -148,6 +181,7 @@ impl FullscreenUi {
             cwd: conv.cwd.display().to_string(),
             raw_enabled: true,
             overlay: None,
+            draw_drops: 0,
         };
         ui.draw()?;
         Ok(ui)
@@ -323,6 +357,7 @@ impl FullscreenUi {
             SlashCommand::Clear => {
                 conv.session = Session::new();
                 self.transcript.clear();
+                self.transcript_cache = TranscriptCache::default();
                 self.push_entry(
                     EntryKind::Info,
                     "Conversation cleared. New session started.".to_string(),
@@ -361,8 +396,13 @@ impl FullscreenUi {
         self.status = "Thinking…".to_string();
         self.draw()?;
 
-        let mut cb = TuiCallback { ui: self };
+        let mut cb = TuiCallback {
+            ui: self,
+            last_stream_draw: None,
+            pending_stream_bytes: 0,
+        };
         let result = conv.run_turn(&input, &mut cb);
+        cb.flush_pending_stream_draw();
         cb.ui.session_id = conv.session.id.clone();
         cb.ui.status = if result.is_ok() {
             "Ready".to_string()
@@ -376,6 +416,10 @@ impl FullscreenUi {
     fn push_entry(&mut self, kind: EntryKind, content: String) {
         self.transcript.push(TranscriptEntry { kind, content });
         self.transcript_scroll = 0;
+        let Some(entry) = self.transcript.last() else {
+            return;
+        };
+        self.transcript_cache.append_entry(entry);
     }
 
     fn append_assistant_token(&mut self, token: &str) {
@@ -386,6 +430,7 @@ impl FullscreenUi {
             }) => content.push_str(token),
             _ => self.push_entry(EntryKind::Assistant, token.to_string()),
         }
+        self.refresh_last_transcript_cache_entry();
     }
 
     fn prompt_for_permission(&mut self, message: &str) -> Result<bool> {
@@ -407,7 +452,6 @@ impl FullscreenUi {
 
     fn draw(&mut self) -> Result<()> {
         let (width, height) = terminal::size()?;
-        let width_usize = width as usize;
         let transcript_top = HEADER_LINES;
         let composer_width = width.saturating_sub(4) as usize;
         let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
@@ -419,6 +463,8 @@ impl FullscreenUi {
         let hint_y = height.saturating_sub(1);
         let transcript_height = status_y.saturating_sub(transcript_top) as usize;
 
+        self.begin_sync_output();
+
         execute!(self.stdout, MoveTo(0, 0), Clear(ClearType::All))?;
         self.draw_header(width)?;
         self.draw_transcript(width, transcript_top, transcript_height)?;
@@ -428,8 +474,56 @@ impl FullscreenUi {
         } else {
             self.position_cursor(width, composer_top, composer_lines.len(), composer_visible)?;
         }
+
+        self.end_sync_output()?;
+        Ok(())
+    }
+
+    fn draw_stream_frame(&mut self) -> Result<()> {
+        if self.overlay.is_some() {
+            return self.draw();
+        }
+
+        let (width, height) = terminal::size()?;
+        let transcript_top = HEADER_LINES;
+        let composer_width = width.saturating_sub(4) as usize;
+        let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
+        let composer_visible = composer_lines.len().clamp(1, MAX_COMPOSER_LINES);
+        let composer_height = composer_visible as u16;
+        let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
+        let composer_label_y = status_y + 1;
+        let composer_top = composer_label_y + 1;
+        let hint_y = height.saturating_sub(1);
+        let transcript_height = status_y.saturating_sub(transcript_top) as usize;
+
+        self.begin_sync_output();
+        self.clear_region(transcript_top, transcript_height as u16)?;
+        self.clear_region(status_y, height.saturating_sub(status_y))?;
+        self.draw_transcript(width, transcript_top, transcript_height)?;
+        self.draw_footer(width, status_y, composer_top, composer_height, hint_y)?;
+        self.position_cursor(width, composer_top, composer_lines.len(), composer_visible)?;
+        self.end_sync_output()?;
+        Ok(())
+    }
+
+    fn clear_region(&mut self, top: u16, height: u16) -> Result<()> {
+        for row in 0..height {
+            execute!(
+                self.stdout,
+                MoveTo(0, top + row),
+                Clear(ClearType::CurrentLine)
+            )?;
+        }
+        Ok(())
+    }
+
+    fn begin_sync_output(&mut self) {
+        let _ = self.stdout.write_all(b"\x1b[?2026h");
+    }
+
+    fn end_sync_output(&mut self) -> Result<()> {
+        let _ = self.stdout.write_all(b"\x1b[?2026l");
         self.stdout.flush()?;
-        let _ = width_usize;
         Ok(())
     }
 
@@ -463,12 +557,9 @@ impl FullscreenUi {
 
     fn draw_transcript(&mut self, width: u16, top: u16, height: usize) -> Result<()> {
         let usable_width = width.saturating_sub(2) as usize;
-        let mut lines = Vec::new();
-        for entry in &self.transcript {
-            lines.extend(format_entry(entry, usable_width.max(8)));
-        }
+        self.ensure_transcript_cache(usable_width.max(8));
 
-        let visible = visible_tail(&lines, height, self.transcript_scroll);
+        let visible = visible_tail(&self.transcript_cache.lines, height, self.transcript_scroll);
         for (idx, line) in visible.iter().enumerate() {
             execute!(
                 self.stdout,
@@ -479,6 +570,23 @@ impl FullscreenUi {
             )?;
         }
         Ok(())
+    }
+
+    fn ensure_transcript_cache(&mut self, width: usize) {
+        if self.transcript_cache.width == Some(width)
+            && self.transcript_cache.entry_line_counts.len() == self.transcript.len()
+        {
+            return;
+        }
+        self.transcript_cache.rebuild(&self.transcript, width);
+    }
+
+    fn refresh_last_transcript_cache_entry(&mut self) {
+        let Some(entry) = self.transcript.last() else {
+            self.transcript_cache = TranscriptCache::default();
+            return;
+        };
+        self.transcript_cache.replace_last_entry(entry);
     }
 
     fn draw_footer(
@@ -639,18 +747,33 @@ impl FullscreenUi {
 impl Drop for FullscreenUi {
     fn drop(&mut self) {
         let _ = self.restore();
+        clear_panic_hook_flag();
     }
+}
+
+/// Mark the TUI panic hook as no longer needed.  The hook itself remains
+/// installed (it is harmless when the TUI is not active) but the flag is
+/// cleared so a future TUI session can re-install if needed.
+fn clear_panic_hook_flag() {
+    TUI_PANIC_HOOK_INSTALLED.store(false, Ordering::SeqCst);
 }
 
 struct TuiCallback<'a> {
     ui: &'a mut FullscreenUi,
+    last_stream_draw: Option<Instant>,
+    pending_stream_bytes: usize,
 }
 
 impl StreamCallback for TuiCallback<'_> {
     fn on_token(&mut self, text: &str) {
         self.ui.append_assistant_token(text);
         self.ui.status = "Responding…".to_string();
-        let _ = self.ui.draw();
+        self.pending_stream_bytes = self.pending_stream_bytes.saturating_add(text.len());
+        if self.should_draw_stream_update(text) {
+            self.try_draw();
+            self.last_stream_draw = Some(Instant::now());
+            self.pending_stream_bytes = 0;
+        }
     }
 
     fn on_tool_start(&mut self, name: &str, args: &Value) {
@@ -662,7 +785,9 @@ impl StreamCallback for TuiCallback<'_> {
             ),
         );
         self.ui.status = format!("Running {name}…");
-        let _ = self.ui.draw();
+        self.pending_stream_bytes = 0;
+        self.last_stream_draw = Some(Instant::now());
+        self.try_draw();
     }
 
     fn on_tool_result(&mut self, name: &str, result: &str) {
@@ -674,7 +799,9 @@ impl StreamCallback for TuiCallback<'_> {
             ),
         );
         self.ui.status = "Thinking…".to_string();
-        let _ = self.ui.draw();
+        self.pending_stream_bytes = 0;
+        self.last_stream_draw = Some(Instant::now());
+        self.try_draw();
     }
 
     fn on_permission_prompt(&mut self, message: &str) -> bool {
@@ -684,11 +811,164 @@ impl StreamCallback for TuiCallback<'_> {
     fn on_error(&mut self, error: &str) {
         self.ui.push_entry(EntryKind::Error, error.to_string());
         self.ui.status = "Error".to_string();
-        let _ = self.ui.draw();
+        self.pending_stream_bytes = 0;
+        self.last_stream_draw = Some(Instant::now());
+        self.try_draw();
     }
 }
 
-#[derive(Clone)]
+impl TuiCallback<'_> {
+    fn should_draw_stream_update(&self, text: &str) -> bool {
+        should_draw_stream_update(self.last_stream_draw, self.pending_stream_bytes, text)
+    }
+
+    fn flush_pending_stream_draw(&mut self) {
+        if self.pending_stream_bytes > 0 {
+            self.try_draw();
+            self.last_stream_draw = Some(Instant::now());
+            self.pending_stream_bytes = 0;
+        }
+    }
+
+    /// Attempt to redraw; on failure, record the drop in the status bar so the
+    /// user can see that frames are being lost.
+    fn try_draw(&mut self) {
+        if let Err(e) = self.ui.draw_stream_frame() {
+            self.ui.draw_drops += 1;
+            self.ui.status = format!("draw error (drop={}): {e}", self.ui.draw_drops);
+        }
+    }
+}
+
+fn should_draw_stream_update(
+    last_stream_draw: Option<Instant>,
+    pending_stream_bytes: usize,
+    text: &str,
+) -> bool {
+    if text.contains('\n') || pending_stream_bytes >= STREAM_REDRAW_MIN_BYTES {
+        return true;
+    }
+
+    match last_stream_draw {
+        None => true,
+        Some(last_draw) => last_draw.elapsed() >= STREAM_REDRAW_INTERVAL,
+    }
+}
+
+#[derive(Default)]
+struct TranscriptCache {
+    width: Option<usize>,
+    entry_line_counts: Vec<usize>,
+    lines: Vec<StyledLine>,
+}
+
+impl TranscriptCache {
+    fn rebuild(&mut self, entries: &[TranscriptEntry], width: usize) {
+        let mut lines = Vec::new();
+        let mut entry_line_counts = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let rendered = format_entry(entry, width);
+            entry_line_counts.push(rendered.len());
+            lines.extend(rendered);
+        }
+        self.width = Some(width);
+        self.entry_line_counts = entry_line_counts;
+        self.lines = lines;
+    }
+
+    fn append_entry(&mut self, entry: &TranscriptEntry) {
+        let Some(width) = self.width else {
+            return;
+        };
+        let rendered = format_entry(entry, width);
+        self.entry_line_counts.push(rendered.len());
+        self.lines.extend(rendered);
+    }
+
+    fn replace_last_entry(&mut self, entry: &TranscriptEntry) {
+        let Some(width) = self.width else {
+            return;
+        };
+        let rendered = format_entry(entry, width);
+        if let Some(previous_count) = self.entry_line_counts.last_mut() {
+            let keep = self.lines.len().saturating_sub(*previous_count);
+            self.lines.truncate(keep);
+            *previous_count = rendered.len();
+            self.lines.extend(rendered);
+        } else {
+            self.entry_line_counts.push(rendered.len());
+            self.lines.extend(rendered);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_redraw_policy_batches_small_tokens() {
+        assert!(!should_draw_stream_update(
+            Some(Instant::now()),
+            STREAM_REDRAW_MIN_BYTES - 1,
+            "a"
+        ));
+    }
+
+    #[test]
+    fn stream_redraw_policy_flushes_newlines() {
+        assert!(should_draw_stream_update(Some(Instant::now()), 1, "\n"));
+    }
+
+    #[test]
+    fn transcript_cache_append_matches_full_rebuild() {
+        let mut entries = vec![TranscriptEntry {
+            kind: EntryKind::User,
+            content: "hello".to_string(),
+        }];
+        let mut cache = TranscriptCache::default();
+        cache.rebuild(&entries, 8);
+
+        entries.push(TranscriptEntry {
+            kind: EntryKind::Assistant,
+            content: "world".to_string(),
+        });
+        cache.append_entry(entries.last().unwrap());
+
+        let mut rebuilt = TranscriptCache::default();
+        rebuilt.rebuild(&entries, 8);
+
+        assert_eq!(cache.entry_line_counts, rebuilt.entry_line_counts);
+        assert_eq!(cache.lines, rebuilt.lines);
+    }
+
+    #[test]
+    fn transcript_cache_updates_last_entry_without_rebuilding_history() {
+        let mut entries = vec![
+            TranscriptEntry {
+                kind: EntryKind::User,
+                content: "hello".to_string(),
+            },
+            TranscriptEntry {
+                kind: EntryKind::Assistant,
+                content: "안녕".to_string(),
+            },
+        ];
+        let mut cache = TranscriptCache::default();
+        cache.rebuild(&entries, 4);
+
+        entries[1].content.push_str("하세요");
+        cache.replace_last_entry(&entries[1]);
+
+        let mut rebuilt = TranscriptCache::default();
+        rebuilt.rebuild(&entries, 4);
+
+        assert_eq!(cache.entry_line_counts, rebuilt.entry_line_counts);
+        assert_eq!(cache.lines, rebuilt.lines);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct StyledLine {
     color: Color,
     text: String,
@@ -740,23 +1020,7 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
 }
 
 fn wrap_plain(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for ch in text.chars() {
-        if current.chars().count() >= width {
-            out.push(current);
-            current = String::new();
-        }
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
+    crate::width::wrap_display(text, width)
 }
 
 fn visible_tail<T>(items: &[T], max_len: usize, scroll_offset: usize) -> &[T] {

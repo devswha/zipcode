@@ -33,10 +33,14 @@ impl PermissionPolicy {
                 )),
             },
             PermissionMode::WorkspaceWrite => match tool_name {
-                "bash" | "repl" => PermissionCheck::NeedsApproval(
-                    "Bash execution requires approval in workspace-write mode".to_string(),
-                ),
-                _ => PermissionCheck::Allowed,
+                "read_file" | "glob_search" | "grep_search" | "tool_search" | "write_file"
+                | "edit_file" | "todo_write" => PermissionCheck::Allowed,
+                "bash" | "repl" => PermissionCheck::NeedsApproval(format!(
+                    "Tool '{tool_name}' requires approval in workspace-write mode"
+                )),
+                _ => PermissionCheck::Denied(format!(
+                    "Tool '{tool_name}' is not allowed in workspace-write mode"
+                )),
             },
         }
     }
@@ -121,9 +125,27 @@ mod tests {
     }
 
     #[test]
+    fn test_workspace_write_denies_agent() {
+        let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        match policy.check("agent", &serde_json::json!({})) {
+            PermissionCheck::Denied(_) => {}
+            other => panic!("Expected Denied, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_read_only_blocks_repl() {
         let policy = PermissionPolicy::new(PermissionMode::ReadOnly);
         match policy.check("repl", &serde_json::json!({})) {
+            PermissionCheck::Denied(_) => {}
+            other => panic!("Expected Denied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_workspace_write_denies_unknown_tools() {
+        let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        match policy.check("future_exec_tool", &serde_json::json!({})) {
             PermissionCheck::Denied(_) => {}
             other => panic!("Expected Denied, got {other:?}"),
         }

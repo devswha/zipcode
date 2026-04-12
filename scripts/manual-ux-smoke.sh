@@ -310,6 +310,71 @@ run_real_gemma4_case() {
   PASS_COUNT=$((PASS_COUNT + 1))
 }
 
+run_no_tui_env_var_case() {
+  local home_dir
+  home_dir="$(make_temp_home)"
+  echo
+  echo "===== ZIPCODE_NO_TUI forces plain REPL ====="
+  local output
+  output="$(env HOME="$home_dir" ZIPCODE_NO_TUI=1 "$BIN" 2>&1)" || true
+  printf '%s\n' "$output"
+  if [[ "$output" == *"fullscreen TUI"* ]]; then
+    echo "[FAIL] ZIPCODE_NO_TUI=1 should prevent fullscreen TUI"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    return 1
+  fi
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+run_term_dumb_case() {
+  local home_dir
+  home_dir="$(make_temp_home)"
+  echo
+  echo "===== TERM=dumb forces plain REPL ====="
+  local output
+  output="$(env HOME="$home_dir" TERM=dumb "$BIN" 2>&1)" || true
+  printf '%s\n' "$output"
+  if [[ "$output" == *"fullscreen TUI"* ]]; then
+    echo "[FAIL] TERM=dumb should prevent fullscreen TUI"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    return 1
+  fi
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+run_korean_tui_automation_case() {
+  if [ "$RUN_REAL_GEMMA4" != "1" ]; then
+    echo
+    echo "===== Korean TUI automation ====="
+    echo "[SKIP] set RUN_REAL_GEMMA4=1 to enable this check"
+    return 0
+  fi
+
+  if [ -z "$REAL_LLAMA_SERVER_BIN" ] || [ ! -x "$REAL_LLAMA_SERVER_BIN" ]; then
+    echo
+    echo "===== Korean TUI automation ====="
+    echo "[SKIP] ZIPCODE_LLAMA_SERVER_BIN is not set or not executable"
+    return 0
+  fi
+
+  if [ ! -f "$REAL_MODEL_PATH" ]; then
+    echo
+    echo "===== Korean TUI automation ====="
+    echo "[SKIP] model not found: $REAL_MODEL_PATH"
+    return 0
+  fi
+
+  echo
+  echo "===== Korean TUI automation ====="
+  local output
+  output="$(ZIPCODE_LLAMA_SERVER_BIN="$REAL_LLAMA_SERVER_BIN" \
+    ZIPCODE_TUI_AUTOMATION_SCRIPT="한국어 주석을 단 hello world를 print하는 Python 코드 작성
+/quit" \
+    "$BIN" --backend llama-server --model "$REAL_MODEL_PATH" 2>&1)"
+  printf '%s\n' "$output"
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+
 main() {
   build_bin_if_needed
   run_empty_home_case
@@ -318,6 +383,9 @@ main() {
   run_empty_env_case
   run_install_interview_case
   run_install_terminal_download_case
+  run_no_tui_env_var_case
+  run_term_dumb_case
+  run_korean_tui_automation_case
   run_real_gemma4_case
 
   echo

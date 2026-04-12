@@ -43,22 +43,6 @@ pub fn build_system_prompt(
         }
     }
 
-    // Git status
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["status", "--short"])
-        .current_dir(&project_root)
-        .output()
-    {
-        if output.status.success() {
-            let status = String::from_utf8_lossy(&output.stdout);
-            if !status.is_empty() {
-                prompt.push_str("\n\n# Git Status\n```\n");
-                prompt.push_str(&status);
-                prompt.push_str("```");
-            }
-        }
-    }
-
     // Build tool specs
     let tool_specs: Vec<ToolSpec> = registry
         .specs()
@@ -105,5 +89,17 @@ mod tests {
         let (prompt, _) = build_system_prompt(&nested, &registry, "workspace-write");
         assert!(prompt.contains("Root instructions"));
         assert!(prompt.contains(&nested.display().to_string()));
+    }
+
+    #[test]
+    fn test_prompt_omits_git_status_by_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join("dirty.txt"), "dirty").unwrap();
+
+        let registry = ToolRegistry::new();
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write");
+        assert!(!prompt.contains("# Git Status"));
+        assert!(!prompt.contains("dirty.txt"));
     }
 }
