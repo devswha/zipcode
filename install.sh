@@ -79,6 +79,12 @@ resolve_helper_source() {
         return 0
     fi
 
+    local installed_path="$(zipcode_install_bin_dir)/llama-server"
+    if [ -f "${installed_path}" ]; then
+        printf '%s\n' "${installed_path}"
+        return 0
+    fi
+
     if command -v llama-server >/dev/null 2>&1; then
         command -v llama-server
         return 0
@@ -318,10 +324,16 @@ EOF
 discover_model_assets() {
     local model_in_install=""
     local model_in_repo=""
+    local saved_model=""
+
+    saved_model="$(saved_model_from_config "${CONFIG_FILE}" || true)"
+    if [ -n "${saved_model}" ]; then
+        MODEL_SOURCE="${MODEL_SOURCE:-${saved_model}}"
+    fi
 
     model_in_install="$(discover_single_model "${MODEL_DIR}" || true)"
-    if [ -n "${model_in_install}" ]; then
-        MODEL_SOURCE="${MODEL_SOURCE:-${model_in_install}}"
+    if [ -n "${model_in_install}" ] && [ -z "${MODEL_SOURCE}" ]; then
+        MODEL_SOURCE="${model_in_install}"
     fi
 
     model_in_repo="$(discover_single_model "${SCRIPT_DIR}/models" || true)"

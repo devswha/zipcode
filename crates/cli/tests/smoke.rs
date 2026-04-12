@@ -660,6 +660,74 @@ fn root_install_script_bootstraps_clone_users_into_ready_state() {
 }
 
 #[test]
+fn root_install_script_reuses_existing_model_and_helper_without_prompt() {
+    let home = make_temp_dir("root-install-reuse-existing");
+    let model_dir = home.join(".zipcode/models");
+    let helper_dir = home.join(".zipcode/bin");
+    let install_script = repo_root().join("install.sh");
+
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&helper_dir).expect("create helper dir");
+    std::fs::write(model_dir.join("gemma-4-e2b-it-Q8_0.gguf"), b"gguf")
+        .expect("write gemma 4 model");
+    std::fs::write(model_dir.join("qwen2.5-0.5b-instruct-q4_k_m.gguf"), b"gguf")
+        .expect("write secondary model");
+    std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
+    write_executable(
+        &helper_dir.join("llama-server"),
+        "#!/bin/sh
+echo fake llama-server
+",
+    );
+    write_file(
+        &home.join(".zipcode/config.json"),
+        &format!(
+            r#"{{
+  "model_dir": "{}",
+  "model_file": "gemma-4-e2b-it-Q8_0.gguf",
+  "llama_server_bin": "{}",
+  "permission_mode": "workspace-write",
+  "gpu_layers": null,
+  "flash_attention": false
+}}"#,
+            model_dir.display(),
+            helper_dir.join("llama-server").display(),
+        ),
+    );
+
+    let output = Command::new("bash")
+        .arg(&install_script)
+        .args(["--binary", env!("CARGO_BIN_EXE_zipcode")])
+        .env("HOME", &home)
+        .env("CUDA_PATH", "/tmp/fake-cuda")
+        .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
+        .output()
+        .expect("failed to rerun root install.sh");
+
+    assert!(
+        output.status.success(),
+        "rerun install should succeed without prompts, got: {output:?}"
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !combined.contains("Model assets are still needed before zipcode can run the full setup."),
+        "existing model selection should suppress model prompts, got: {combined}"
+    );
+    assert!(
+        !combined
+            .contains("Gemma 4 compatibility helper is required for zipcode to run this model:"),
+        "existing helper should suppress helper prompts, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
 fn root_install_script_interviews_users_with_links_then_paths() {
     let home = make_temp_dir("root-install-interview");
     let asset_dir = make_temp_dir("root-install-interview-assets");
