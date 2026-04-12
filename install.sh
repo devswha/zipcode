@@ -634,7 +634,7 @@ if [ -n "${SETUP_MODEL}" ]; then
     esac
 fi
 
-write_default_config "${CONFIG_FILE}" "${MODEL_DIR}"
+write_default_config "${CONFIG_FILE}" "${MODEL_DIR}" "${SETUP_MODEL}" "${LLAMA_SERVER_INSTALLED}"
 write_setup_env "${SETUP_ENV}" "${INSTALL_BIN_DIR}" "${USER_BIN_DIR}" "${LLAMA_SERVER_INSTALLED}"
 USER_LAUNCHER_INSTALLED="$(ensure_user_launcher "${INSTALL_BIN_DIR}/zipcode" "${USER_BIN_DIR}")"
 

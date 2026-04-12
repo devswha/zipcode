@@ -167,6 +167,11 @@ pub fn setup(
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned);
     global_config.llama_server_bin = report.llama_server_bin.clone();
+    let perf_defaults = apply_recommended_performance_defaults(
+        &mut global_config,
+        &model,
+        report.llama_server_bin.as_deref(),
+    );
 
     let config_path = global_config.save_global()?;
     let wrapper_path = write_setup_wrapper()?;
@@ -182,6 +187,9 @@ pub fn setup(
     }
     if let Some(path) = &report.llama_server_bin {
         println!("Helper:         {}", path.display());
+    }
+    if !perf_defaults.is_empty() {
+        println!("Performance:    {}", perf_defaults.join(", "));
     }
     println!();
 
@@ -311,6 +319,40 @@ pub fn check_cuda() -> bool {
     }
 
     false
+}
+
+fn global_config_field_present(field: &str) -> bool {
+    let path = global_config_path();
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    json.get(field).is_some()
+}
+
+fn apply_recommended_performance_defaults(
+    config: &mut ZipcodeConfig,
+    model: &Path,
+    helper_path: Option<&Path>,
+) -> Vec<String> {
+    let mut applied = Vec::new();
+    if !is_probably_gemma4_model(model) || helper_path.is_none() {
+        return applied;
+    }
+
+    if !global_config_field_present("gpu_layers") && check_cuda() {
+        config.gpu_layers = Some(999);
+        applied.push("gpu_layers=999".to_string());
+    }
+
+    if !global_config_field_present("flash_attention") && check_cuda() {
+        config.flash_attention = true;
+        applied.push("flash_attention=true".to_string());
+    }
+
+    applied
 }
 
 fn load_config_with_warning(cwd: &Path) -> ConfigLoad {

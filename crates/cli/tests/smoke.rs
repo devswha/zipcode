@@ -451,6 +451,7 @@ fn setup_writes_config_and_wrapper_when_smoke_skipped() {
         .args(["setup", "--skip-smoke"])
         .env("HOME", &home)
         .env("PATH", &isolated_path)
+        .env("CUDA_PATH", "/tmp/fake-cuda")
         .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
         .env_remove("LLAMA_SERVER_BIN")
         .output()
@@ -471,6 +472,14 @@ fn setup_writes_config_and_wrapper_when_smoke_skipped() {
     assert!(
         config.contains("llama-server"),
         "setup should persist the discovered llama-server path, got: {config}"
+    );
+    assert!(
+        config.contains("\"gpu_layers\": 999"),
+        "setup should persist the recommended gpu_layers default, got: {config}"
+    );
+    assert!(
+        config.contains("\"flash_attention\": true"),
+        "setup should persist the recommended flash_attention default, got: {config}"
     );
     assert!(wrapper_path.is_file(), "setup should create wrapper shim");
 
@@ -590,6 +599,7 @@ fn root_install_script_bootstraps_clone_users_into_ready_state() {
         .arg("--llama-server")
         .arg(&helper)
         .env("HOME", &home)
+        .env("CUDA_PATH", "/tmp/fake-cuda")
         .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
         .output()
         .expect("failed to run root install.sh");
@@ -603,6 +613,17 @@ fn root_install_script_bootstraps_clone_users_into_ready_state() {
     assert!(
         launcher.is_file(),
         "install should create ~/.local/bin/zipcode"
+    );
+
+    let config =
+        std::fs::read_to_string(home.join(".zipcode/config.json")).expect("read installed config");
+    assert!(
+        config.contains("\"gpu_layers\": 999"),
+        "install should persist the recommended gpu_layers default, got: {config}"
+    );
+    assert!(
+        config.contains("\"flash_attention\": true"),
+        "install should persist the recommended flash_attention default, got: {config}"
     );
 
     let doctor = Command::new(&launcher)

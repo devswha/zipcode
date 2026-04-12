@@ -111,7 +111,7 @@ if [ -n "${LLAMA_SERVER_SOURCE}" ]; then
     LLAMA_SERVER_INSTALLED="${INSTALL_BIN_DIR}/llama-server"
 fi
 
-write_default_config
+write_default_config "${CONFIG_FILE}" "${MODEL_DIR}" "" "${LLAMA_SERVER_INSTALLED}"
 write_setup_env "${SETUP_ENV}" "${INSTALL_BIN_DIR}" "${USER_BIN_DIR}" "${LLAMA_SERVER_INSTALLED}"
 USER_LAUNCHER_INSTALLED="$(ensure_user_launcher "${INSTALL_BIN_DIR}/zipcode" "${USER_BIN_DIR}")"
 SYSTEM_LAUNCHER_INSTALLED=""
