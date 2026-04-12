@@ -19,6 +19,12 @@ use zipcode_tools::{
 
 use crate::render::{print_tool_result, print_tool_start, Spinner};
 
+pub struct LoopLaunch {
+    pub conv: ConversationLoop,
+    pub effective_backend: Backend,
+    pub startup_notices: Vec<String>,
+}
+
 /// CLI callback that renders streaming tokens and tool events.
 ///
 /// Manages a background spinner during model inference and between
@@ -220,12 +226,84 @@ pub(crate) fn has_nonempty_parent(path: &Path) -> bool {
         .is_some_and(|parent| !parent.as_os_str().is_empty())
 }
 
-/// Build and return a ConversationLoop ready for use.
-pub fn create_loop(
+pub(crate) fn resolve_requested_backend(backend_override: Option<&str>) -> Result<Option<Backend>> {
+    backend_override.map(Backend::parse).transpose()
+}
+
+pub(crate) fn resolve_effective_backend(
+    requested_backend: Option<Backend>,
+    model_path: &Path,
+    helper_path: Option<&Path>,
+) -> Backend {
+    match requested_backend {
+        Some(backend) => backend,
+        None if is_probably_gemma4_model(model_path) && helper_path.is_some() => {
+            Backend::LlamaServer
+        }
+        None => Backend::LlamaCpp,
+    }
+}
+
+pub(crate) fn discover_helper_path(config: &ZipcodeConfig) -> Option<PathBuf> {
+    if let Some(path) = &config.llama_server_bin {
+        if path.is_file() {
+            return Some(path.clone());
+        }
+    }
+
+    for key in ["ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"] {
+        if let Ok(value) = std::env::var(key) {
+            let path = PathBuf::from(value);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
+fn build_startup_notices(
+    requested_backend: Option<Backend>,
+    effective_backend: Backend,
+    model_path: &Path,
+    server_options: &ServerOptions,
+) -> Vec<String> {
+    let mut notices = Vec::new();
+
+    if requested_backend.is_none()
+        && matches!(effective_backend, Backend::LlamaServer)
+        && is_probably_gemma4_model(model_path)
+    {
+        notices.push(
+            "Using llama-server directly for Gemma 4 to avoid slow native fallback.".to_string(),
+        );
+    }
+
+    if matches!(effective_backend, Backend::LlamaServer) {
+        if server_options.gpu_layers.unwrap_or(0) <= 0 {
+            notices.push(
+                "Slow setting: GPU layer offload is not configured; set ZIPCODE_GPU_LAYERS or gpu_layers for faster replies."
+                    .to_string(),
+            );
+        }
+        if !server_options.flash_attention {
+            notices.push(
+                "Slow setting: flash attention is off; enable ZIPCODE_FLASH_ATTENTION=1 or flash_attention=true if your helper supports it."
+                    .to_string(),
+            );
+        }
+    }
+
+    notices
+}
+
+/// Build and return a ConversationLoop plus launch metadata.
+pub fn prepare_loop(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
-    backend_str: &str,
-) -> Result<ConversationLoop> {
+    backend_override: Option<&str>,
+) -> Result<LoopLaunch> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let project_root = find_project_root(&cwd);
 
@@ -258,7 +336,8 @@ pub fn create_loop(
         gen_config.max_tokens = m;
     }
 
-    if let Some(path) = &config.llama_server_bin {
+    let helper_path = discover_helper_path(&config);
+    if let Some(path) = helper_path.as_deref() {
         std::env::set_var("ZIPCODE_LLAMA_SERVER_BIN", path);
     }
 
@@ -277,34 +356,30 @@ pub fn create_loop(
             .unwrap_or(8192),
     };
 
-    let backend = Backend::parse(backend_str)?;
+    let requested_backend = resolve_requested_backend(backend_override)?;
+    let effective_backend =
+        resolve_effective_backend(requested_backend, &model_file, helper_path.as_deref());
+    let startup_notices = build_startup_notices(
+        requested_backend,
+        effective_backend,
+        &model_file,
+        &server_options,
+    );
+
+    if matches!(effective_backend, Backend::LlamaCpp) && is_probably_gemma4_model(&model_file) {
+        anyhow::bail!(
+            "Gemma 4 is not supported by the native llama-cpp backend in this build. Run with `--backend llama-server` or configure a helper and let zipcode choose it automatically."
+        );
+    }
+
     let engine = match create_engine(
-        backend,
+        effective_backend,
         &model_file,
         &tokenizer_path,
         gen_config.clone(),
         server_options.clone(),
     ) {
         Ok(engine) => engine,
-        Err(native_error)
-            if matches!(backend, Backend::LlamaCpp) && is_probably_gemma4_model(&model_file) =>
-        {
-            eprintln!(
-                "\x1b[33mWarning: native llama-cpp backend could not load Gemma 4; trying llama-server fallback.\x1b[0m"
-            );
-            create_engine(
-                Backend::LlamaServer,
-                &model_file,
-                &tokenizer_path,
-                gen_config,
-                server_options,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to load inference engine via native llama-cpp ({native_error}) or llama-server fallback"
-                )
-            })?
-        }
         Err(error) => return Err(error).context("Failed to load inference engine"),
     };
 
@@ -318,14 +393,18 @@ pub fn create_loop(
     let session = Session::new();
     let permission = PermissionPolicy::new(effective_permission);
 
-    Ok(ConversationLoop {
-        engine,
-        tools: registry,
-        session,
-        permission,
-        system_prompt,
-        tool_specs,
-        cwd,
+    Ok(LoopLaunch {
+        conv: ConversationLoop {
+            engine,
+            tools: registry,
+            session,
+            permission,
+            system_prompt,
+            tool_specs,
+            cwd,
+        },
+        effective_backend,
+        startup_notices,
     })
 }
 
@@ -334,9 +413,13 @@ pub fn run_oneshot(
     text: &str,
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
-    backend_str: &str,
+    backend_override: Option<&str>,
 ) -> Result<()> {
-    let mut conv = create_loop(model_path, permission_mode, backend_str)?;
+    let launch = prepare_loop(model_path, permission_mode, backend_override)?;
+    for notice in &launch.startup_notices {
+        eprintln!("\x1b[33m[notice]\x1b[0m {notice}");
+    }
+    let mut conv = launch.conv;
     let mut cb = CliCallback::new();
     cb.start_turn();
     conv.run_turn(text, &mut cb)?;
@@ -359,14 +442,18 @@ pub(crate) fn parse_slash_command(input: &str) -> Option<SlashCommand> {
 pub fn run_interactive(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
-    backend_str: &str,
+    backend_override: Option<&str>,
 ) -> Result<()> {
     println!(
         "zipcode v{} — type /help for commands, Ctrl+D to exit",
         env!("CARGO_PKG_VERSION")
     );
 
-    let mut conv = create_loop(model_path, permission_mode, backend_str)?;
+    let launch = prepare_loop(model_path, permission_mode, backend_override)?;
+    for notice in &launch.startup_notices {
+        println!("\x1b[33m[notice]\x1b[0m {notice}");
+    }
+    let mut conv = launch.conv;
     let mut cb = CliCallback::new();
 
     let mut rl = DefaultEditor::new().context("Failed to initialize line editor")?;
@@ -559,5 +646,48 @@ mod tests {
             parse_slash_command("\"/home/devswha/workspace/test_zipcode\" 레포 분석해봐"),
             None
         );
+    }
+
+    #[test]
+    fn auto_backend_prefers_llama_server_for_gemma4_when_helper_exists() {
+        let backend = resolve_effective_backend(
+            None,
+            Path::new("/tmp/gemma-4-e2b-it-q8_0.gguf"),
+            Some(Path::new("/tmp/llama-server")),
+        );
+        assert!(matches!(backend, Backend::LlamaServer));
+    }
+
+    #[test]
+    fn auto_backend_stays_on_llama_cpp_without_helper() {
+        let backend = resolve_effective_backend(None, Path::new("/tmp/codeqwen.gguf"), None);
+        assert!(matches!(backend, Backend::LlamaCpp));
+    }
+
+    #[test]
+    fn explicit_backend_is_respected_for_gemma4() {
+        let backend = resolve_effective_backend(
+            Some(Backend::LlamaCpp),
+            Path::new("/tmp/gemma-4-e2b-it-q8_0.gguf"),
+            Some(Path::new("/tmp/llama-server")),
+        );
+        assert!(matches!(backend, Backend::LlamaCpp));
+    }
+
+    #[test]
+    fn startup_notices_flag_slow_llama_server_settings() {
+        let notices = build_startup_notices(
+            None,
+            Backend::LlamaServer,
+            Path::new("/tmp/gemma-4-e2b-it-q8_0.gguf"),
+            &ServerOptions::default(),
+        );
+        assert!(notices
+            .iter()
+            .any(|line| line.contains("avoid slow native fallback")));
+        assert!(notices
+            .iter()
+            .any(|line| line.contains("GPU layer offload")));
+        assert!(notices.iter().any(|line| line.contains("flash attention")));
     }
 }

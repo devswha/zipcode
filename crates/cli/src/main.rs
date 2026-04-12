@@ -21,9 +21,9 @@ struct Cli {
     #[arg(long, value_name = "MODE", global = true)]
     permission_mode: Option<String>,
 
-    /// Inference backend: llama-cpp (default), llama-server, or candle
-    #[arg(long, default_value = "llama-cpp", global = true)]
-    backend: String,
+    /// Inference backend override: llama-cpp, llama-server, or candle (auto-selects when omitted)
+    #[arg(long, value_name = "BACKEND", global = true)]
+    backend: Option<String>,
 
     /// UI mode for interactive sessions
     #[arg(long, value_enum, default_value_t = UiMode::Fullscreen, global = true)]
@@ -74,7 +74,7 @@ fn main() -> Result<()> {
 
     let model_path = cli.model.as_deref();
     let permission_mode = cli.permission_mode.as_deref();
-    let backend = cli.backend.as_str();
+    let backend = cli.backend.as_deref();
 
     match cli.command {
         Some(Commands::Repl) => {

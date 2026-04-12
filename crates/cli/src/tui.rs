@@ -17,7 +17,7 @@ use termimad::crossterm::terminal::{
 use zipcode_runtime::{ConversationLoop, Session, StreamCallback};
 
 use crate::render::{terminal_width, truncate_to_width};
-use crate::repl::{create_loop, help_text, parse_slash_command, run_interactive, SlashCommand};
+use crate::repl::{help_text, parse_slash_command, prepare_loop, run_interactive, SlashCommand};
 use crate::tui_composer::Composer;
 use crate::UiMode;
 
@@ -34,7 +34,7 @@ const STREAM_REDRAW_MIN_BYTES: usize = 24;
 pub fn run_interactive_with_ui(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
-    backend_str: &str,
+    backend_override: Option<&str>,
     ui_mode: UiMode,
 ) -> Result<()> {
     let force_plain = std::env::var("ZIPCODE_NO_TUI").is_ok()
@@ -49,18 +49,26 @@ pub fn run_interactive_with_ui(
     };
 
     match effective_ui {
-        UiMode::Plain => run_interactive(model_path, permission_mode, backend_str),
-        UiMode::Fullscreen => run_interactive_fullscreen(model_path, permission_mode, backend_str),
+        UiMode::Plain => run_interactive(model_path, permission_mode, backend_override),
+        UiMode::Fullscreen => {
+            run_interactive_fullscreen(model_path, permission_mode, backend_override)
+        }
     }
 }
 
 fn run_interactive_fullscreen(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
-    backend_str: &str,
+    backend_override: Option<&str>,
 ) -> Result<()> {
-    let mut conv = create_loop(model_path, permission_mode, backend_str)?;
-    let mut ui = FullscreenUi::new(&conv, backend_str.to_string())?;
+    let launch = prepare_loop(model_path, permission_mode, backend_override)?;
+    let backend = match launch.effective_backend {
+        zipcode_inference::Backend::LlamaCpp => "llama-cpp",
+        zipcode_inference::Backend::LlamaServer => "llama-server",
+        zipcode_inference::Backend::Candle => "candle",
+    };
+    let mut conv = launch.conv;
+    let mut ui = FullscreenUi::new(&conv, backend.to_string(), &launch.startup_notices)?;
     ui.draw()?;
 
     if !run_automation_script_from_env(&mut ui, &mut conv)? {
@@ -137,7 +145,7 @@ struct FullscreenUi {
 }
 
 impl FullscreenUi {
-    fn new(conv: &ConversationLoop, backend: String) -> Result<Self> {
+    fn new(conv: &ConversationLoop, backend: String, startup_notices: &[String]) -> Result<Self> {
         // Install a panic hook that restores the terminal before printing the
         // panic message.  Without this, a panic leaves the terminal in raw mode
         // + alternate screen and the user sees a garbled shell.
@@ -183,6 +191,12 @@ impl FullscreenUi {
             overlay: None,
             draw_drops: 0,
         };
+        for notice in startup_notices {
+            ui.push_entry(EntryKind::Info, format!("[notice] {notice}"));
+        }
+        if !startup_notices.is_empty() {
+            ui.status = "Check startup notices".to_string();
+        }
         ui.draw()?;
         Ok(ui)
     }

@@ -8,7 +8,10 @@ use zipcode_runtime::config::{
 };
 use zipcode_runtime::ZipcodeConfig;
 
-use crate::repl::{has_nonempty_parent, is_probably_gemma4_model, resolve_model_path, run_oneshot};
+use crate::repl::{
+    has_nonempty_parent, is_probably_gemma4_model, resolve_effective_backend, resolve_model_path,
+    resolve_requested_backend, run_oneshot,
+};
 use crate::tui::run_interactive_with_ui;
 use crate::UiMode;
 
@@ -81,18 +84,17 @@ struct LlamaServerDiscovery {
 pub fn run_default(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
-    backend_str: &str,
+    backend_override: Option<&str>,
     ui_mode: UiMode,
 ) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let config_load = load_config_with_warning(&cwd);
-    let backend = Backend::parse(backend_str)?;
-    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend);
+    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend_override)?;
     let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
 
     match readiness {
         UserReadiness::Ready => {
-            run_interactive_with_ui(model_path, permission_mode, backend_str, ui_mode)
+            run_interactive_with_ui(model_path, permission_mode, backend_override, ui_mode)
         }
         state => {
             print_startup_guidance(state, &report, config_load.warning.as_deref());
@@ -102,11 +104,10 @@ pub fn run_default(
 }
 
 /// Run the doctor command: check version, GPU support, local AI files, and fallback readiness.
-pub fn doctor(model_path: Option<&Path>, backend_str: &str) -> Result<()> {
+pub fn doctor(model_path: Option<&Path>, backend_override: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let config_load = load_config_with_warning(&cwd);
-    let backend = Backend::parse(backend_str)?;
-    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend);
+    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend_override)?;
     let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
 
     println!("zipcode doctor\n");
@@ -132,11 +133,14 @@ pub fn doctor(model_path: Option<&Path>, backend_str: &str) -> Result<()> {
 }
 
 /// Discover local prerequisites, write global config + launcher, and optionally run a smoke prompt.
-pub fn setup(model_path: Option<&Path>, backend_str: &str, skip_smoke: bool) -> Result<()> {
+pub fn setup(
+    model_path: Option<&Path>,
+    backend_override: Option<&str>,
+    skip_smoke: bool,
+) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let config_load = load_config_with_warning(&cwd);
-    let backend = Backend::parse(backend_str)?;
-    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend);
+    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend_override)?;
     let readiness = classify_user_readiness(&report, None);
 
     let model = report
@@ -193,7 +197,7 @@ pub fn setup(model_path: Option<&Path>, backend_str: &str, skip_smoke: bool) -> 
         "Reply with READY only.",
         Some(&model),
         Some("read-only"),
-        backend_name(report.backend),
+        Some(backend_name(report.backend)),
     )?;
     println!("Smoke: PASS");
     Ok(())
@@ -248,8 +252,8 @@ fn build_readiness_report(
     cwd: &Path,
     config: &ZipcodeConfig,
     explicit_model_path: Option<&Path>,
-    backend: Backend,
-) -> ReadinessReport {
+    backend_override: Option<&str>,
+) -> Result<ReadinessReport> {
     let project_root = find_project_root(cwd);
     let model_resolution = resolve_model_path(explicit_model_path, config, cwd, &project_root);
     let (model, model_issue) = match model_resolution {
@@ -259,6 +263,13 @@ fn build_readiness_report(
     let model_search = model_search_locations(explicit_model_path, config, cwd, &project_root);
     let model_issue_is_misconfigured = explicit_model_path.is_some() || config.model_file.is_some();
     let llama_server = discover_llama_server_bin(config);
+    let requested_backend = resolve_requested_backend(backend_override)?;
+    let backend = model
+        .as_deref()
+        .map(|model_path| {
+            resolve_effective_backend(requested_backend, model_path, llama_server.path.as_deref())
+        })
+        .unwrap_or(requested_backend.unwrap_or(Backend::LlamaCpp));
     let tokenizer_required = tokenizer_is_required(backend, model.as_deref());
 
     let tokenizer = tokenizer_required
@@ -286,7 +297,7 @@ fn build_readiness_report(
         llama_server.path.as_deref(),
     );
 
-    ReadinessReport {
+    Ok(ReadinessReport {
         status,
         backend,
         model,
@@ -298,7 +309,7 @@ fn build_readiness_report(
         llama_server_bin: llama_server.path,
         llama_server_issue: llama_server.issue,
         llama_server_issue_is_misconfigured: llama_server.issue_is_misconfigured,
-    }
+    })
 }
 
 fn classify_user_readiness(

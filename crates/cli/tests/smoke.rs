@@ -353,6 +353,41 @@ fn doctor_allows_llama_server_without_tokenizer() {
 }
 
 #[test]
+fn doctor_auto_selects_llama_server_for_gemma4_when_helper_exists() {
+    let home = make_temp_dir("doctor-auto-helper");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_executable(
+        &zipcode_bin_dir.join("llama-server"),
+        "#!/bin/sh\necho fake llama-server\n",
+    );
+
+    let output = zipcode_bin()
+        .arg("doctor")
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+
+    assert!(output.status.success(), "doctor should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Engine: compatibility helper (llama-server)")
+            && stdout.contains("Status: Ready"),
+        "doctor should auto-select llama-server for Gemma 4 when helper exists, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
 fn doctor_resolves_tilde_project_model_dir() {
     let home = make_temp_dir("doctor-tilde-home");
     let project = make_temp_dir("doctor-tilde-project");
