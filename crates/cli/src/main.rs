@@ -56,6 +56,15 @@ enum Commands {
         #[arg(long)]
         skip_smoke: bool,
     },
+    /// Check for updates or fast-forward this checkout and rebuild zipcode
+    Update {
+        /// Only inspect update status; do not pull or rebuild
+        #[arg(long)]
+        check: bool,
+        /// Rebuild even when the checkout is already up to date
+        #[arg(long)]
+        rebuild: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -85,6 +94,9 @@ fn main() -> Result<()> {
         }
         Some(Commands::Setup { skip_smoke }) => {
             commands::setup(model_path, backend, skip_smoke)?;
+        }
+        Some(Commands::Update { check, rebuild }) => {
+            commands::update(check, rebuild)?;
         }
         Some(Commands::Prompt { text }) => {
             repl::run_oneshot(&text, model_path, permission_mode, backend)?;

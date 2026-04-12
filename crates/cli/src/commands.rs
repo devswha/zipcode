@@ -1,5 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 use zipcode_inference::Backend;
@@ -78,6 +79,18 @@ struct LlamaServerDiscovery {
     path: Option<PathBuf>,
     issue: Option<String>,
     issue_is_misconfigured: bool,
+}
+
+#[derive(Debug, Clone)]
+struct UpdateStatus {
+    repo_root: PathBuf,
+    branch: String,
+    local_head: String,
+    remote_ref: String,
+    remote_head: String,
+    ahead: usize,
+    behind: usize,
+    dirty: bool,
 }
 
 /// Default zipcode entrypoint: start the REPL when ready, otherwise guide setup/repair.
@@ -203,6 +216,71 @@ pub fn setup(
     Ok(())
 }
 
+/// Check for updates or fast-forward the current checkout and rebuild zipcode.
+pub fn update(check_only: bool, rebuild: bool) -> Result<()> {
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let status = inspect_update_status(&cwd)?;
+
+    println!("zipcode update\n");
+    println!("Repo:         {}", status.repo_root.display());
+    println!("Branch:       {}", status.branch);
+    println!("Local HEAD:   {}", status.local_head);
+    println!(
+        "Remote HEAD:  {} ({})",
+        status.remote_head, status.remote_ref
+    );
+    println!("Ahead/behind: {}/{}", status.ahead, status.behind);
+    println!(
+        "Working tree: {}",
+        if status.dirty { "dirty" } else { "clean" }
+    );
+    println!();
+
+    if check_only {
+        print_update_check_summary(&status);
+        return Ok(());
+    }
+
+    ensure_update_is_safe(&status)?;
+
+    let mut changed = false;
+    if status.behind > 0 {
+        run_checked(
+            &status.repo_root,
+            "git",
+            &["pull", "--ff-only", "origin", &status.branch],
+            "fast-forward the checkout",
+        )?;
+        changed = true;
+    } else {
+        println!("Already up to date.");
+    }
+
+    if changed || rebuild {
+        println!();
+        println!("Rebuilding zipcode...");
+        run_checked(
+            &status.repo_root,
+            "cargo",
+            &["build", "-p", "zipcode"],
+            "rebuild zipcode",
+        )?;
+    }
+
+    println!();
+    println!("Verifying with doctor...");
+    run_checked(
+        &status.repo_root,
+        "cargo",
+        &["run", "--quiet", "-p", "zipcode", "--", "doctor"],
+        "run doctor after update",
+    )?;
+
+    println!();
+    println!("Update complete.");
+    Ok(())
+}
+
 /// Check if CUDA is available by looking for libcuda.so or CUDA_PATH env var.
 pub fn check_cuda() -> bool {
     if std::env::var("CUDA_PATH").is_ok() {
@@ -246,6 +324,148 @@ fn load_config_with_warning(cwd: &Path) -> ConfigLoad {
             warning: Some(error.to_string()),
         },
     }
+}
+
+fn inspect_update_status(cwd: &Path) -> Result<UpdateStatus> {
+    let repo_root = git_stdout(cwd, &["rev-parse", "--show-toplevel"], "find git repo root")?;
+    let repo_root = PathBuf::from(repo_root.trim());
+    let branch = git_stdout(
+        &repo_root,
+        &["branch", "--show-current"],
+        "read current branch",
+    )?;
+    let branch = branch.trim().to_string();
+    if branch.is_empty() {
+        anyhow::bail!("zipcode update requires a named branch checkout");
+    }
+
+    let dirty = !git_stdout(&repo_root, &["status", "--short"], "read git status")?
+        .trim()
+        .is_empty();
+
+    run_checked(&repo_root, "git", &["fetch", "origin"], "fetch origin")?;
+
+    let local_head = git_stdout(
+        &repo_root,
+        &["rev-parse", "--short", "HEAD"],
+        "read local HEAD",
+    )?;
+    let local_head = local_head.trim().to_string();
+    let remote_ref = format!("origin/{branch}");
+    let remote_head = git_stdout(
+        &repo_root,
+        &["rev-parse", "--short", &remote_ref],
+        "read remote HEAD",
+    )?;
+    let remote_head = remote_head.trim().to_string();
+    let counts = git_stdout(
+        &repo_root,
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{remote_ref}...HEAD"),
+        ],
+        "compare local and remote history",
+    )?;
+    let mut parts = counts.split_whitespace();
+    let behind = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing behind count from git rev-list output"))?
+        .parse::<usize>()
+        .context("parse behind count")?;
+    let ahead = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing ahead count from git rev-list output"))?
+        .parse::<usize>()
+        .context("parse ahead count")?;
+
+    Ok(UpdateStatus {
+        repo_root,
+        branch,
+        local_head,
+        remote_ref,
+        remote_head,
+        ahead,
+        behind,
+        dirty,
+    })
+}
+
+fn print_update_check_summary(status: &UpdateStatus) {
+    if status.dirty {
+        println!("Update check: blocked by local modifications.");
+        println!("Clean, commit, or stash changes before applying updates.");
+        return;
+    }
+
+    match (status.ahead, status.behind) {
+        (0, 0) => println!("Update check: already up to date."),
+        (0, behind) => println!("Update check: {behind} commit(s) available to pull."),
+        (ahead, 0) => println!(
+            "Update check: local checkout is {ahead} commit(s) ahead of {}.",
+            status.remote_ref
+        ),
+        (ahead, behind) => println!(
+            "Update check: local and remote have diverged ({ahead} ahead, {behind} behind)."
+        ),
+    }
+}
+
+fn ensure_update_is_safe(status: &UpdateStatus) -> Result<()> {
+    if status.dirty {
+        anyhow::bail!(
+            "Refusing to update with local modifications present. Commit, stash, or clean the working tree first."
+        );
+    }
+
+    if status.ahead > 0 && status.behind > 0 {
+        anyhow::bail!(
+            "Refusing to auto-update because this checkout has diverged from {} (ahead {}, behind {}).",
+            status.remote_ref,
+            status.ahead,
+            status.behind
+        );
+    }
+
+    if status.ahead > 0 {
+        anyhow::bail!(
+            "Refusing to auto-update because this checkout is {} commit(s) ahead of {}.",
+            status.ahead,
+            status.remote_ref
+        );
+    }
+
+    Ok(())
+}
+
+fn git_stdout(cwd: &Path, args: &[&str], action: &str) -> Result<String> {
+    command_stdout(cwd, "git", args, action)
+}
+
+fn command_stdout(cwd: &Path, program: &str, args: &[&str], action: &str) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("Failed to {action}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to {action}: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn run_checked(cwd: &Path, program: &str, args: &[&str], action: &str) -> Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .with_context(|| format!("Failed to {action}"))?;
+    if !status.success() {
+        anyhow::bail!("Failed to {action} (exit status: {status})");
+    }
+    Ok(())
 }
 
 fn build_readiness_report(
@@ -854,6 +1074,19 @@ mod tests {
         }
     }
 
+    fn sample_update_status() -> UpdateStatus {
+        UpdateStatus {
+            repo_root: PathBuf::from("/tmp/zipcode"),
+            branch: "main".to_string(),
+            local_head: "abc1234".to_string(),
+            remote_ref: "origin/main".to_string(),
+            remote_head: "def5678".to_string(),
+            ahead: 0,
+            behind: 0,
+            dirty: false,
+        }
+    }
+
     #[test]
     fn classify_missing_model_when_no_model_is_found() {
         let status = classify_readiness(Backend::LlamaCpp, None, None, None);
@@ -959,5 +1192,30 @@ mod tests {
             classify_user_readiness(&report, Some("invalid json")),
             UserReadiness::NeedsRepair
         );
+    }
+
+    #[test]
+    fn update_refuses_dirty_checkout() {
+        let mut status = sample_update_status();
+        status.dirty = true;
+        let error = ensure_update_is_safe(&status).unwrap_err().to_string();
+        assert!(error.contains("local modifications"));
+    }
+
+    #[test]
+    fn update_refuses_diverged_checkout() {
+        let mut status = sample_update_status();
+        status.ahead = 2;
+        status.behind = 3;
+        let error = ensure_update_is_safe(&status).unwrap_err().to_string();
+        assert!(error.contains("diverged"));
+    }
+
+    #[test]
+    fn update_refuses_ahead_checkout() {
+        let mut status = sample_update_status();
+        status.ahead = 1;
+        let error = ensure_update_is_safe(&status).unwrap_err().to_string();
+        assert!(error.contains("ahead"));
     }
 }

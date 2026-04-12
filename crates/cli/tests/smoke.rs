@@ -141,7 +141,7 @@ fn help_lists_explicit_power_user_flows() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for command in ["repl", "prompt", "doctor", "setup"] {
+    for command in ["repl", "prompt", "doctor", "setup", "update"] {
         assert!(
             stdout.contains(command),
             "root help should list `{command}`, got: {stdout}"
