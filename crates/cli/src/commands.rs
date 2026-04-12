@@ -321,15 +321,32 @@ pub fn check_cuda() -> bool {
     false
 }
 
-fn global_config_field_present(field: &str) -> bool {
+fn read_global_config_json() -> Option<serde_json::Value> {
     let path = global_config_path();
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&content).ok()
+}
+
+fn config_field_missing_or_null(raw: Option<&serde_json::Value>, field: &str) -> bool {
+    match raw.and_then(|json| json.get(field)) {
+        None => true,
+        Some(value) => value.is_null(),
+    }
+}
+
+fn should_upgrade_flash_attention(config: &ZipcodeConfig, raw: Option<&serde_json::Value>) -> bool {
+    if config.flash_attention {
         return false;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return false;
-    };
-    json.get(field).is_some()
+    }
+
+    match raw.and_then(|json| json.get("flash_attention")) {
+        None => true,
+        Some(value) if value.is_null() => true,
+        Some(value) if value.as_bool() == Some(false) => {
+            config_field_missing_or_null(raw, "gpu_layers")
+        }
+        _ => false,
+    }
 }
 
 fn apply_recommended_performance_defaults(
@@ -338,16 +355,19 @@ fn apply_recommended_performance_defaults(
     helper_path: Option<&Path>,
 ) -> Vec<String> {
     let mut applied = Vec::new();
-    if !is_probably_gemma4_model(model) || helper_path.is_none() {
+    if !is_probably_gemma4_model(model) || helper_path.is_none() || !check_cuda() {
         return applied;
     }
 
-    if !global_config_field_present("gpu_layers") && check_cuda() {
+    let raw_config = read_global_config_json();
+    let raw_config = raw_config.as_ref();
+
+    if config.gpu_layers.is_none() && config_field_missing_or_null(raw_config, "gpu_layers") {
         config.gpu_layers = Some(999);
         applied.push("gpu_layers=999".to_string());
     }
 
-    if !global_config_field_present("flash_attention") && check_cuda() {
+    if should_upgrade_flash_attention(config, raw_config) {
         config.flash_attention = true;
         applied.push("flash_attention=true".to_string());
     }
@@ -1234,6 +1254,33 @@ mod tests {
             classify_user_readiness(&report, Some("invalid json")),
             UserReadiness::NeedsRepair
         );
+    }
+
+    #[test]
+    fn flash_attention_upgrade_accepts_stale_default_config() {
+        let config = ZipcodeConfig {
+            flash_attention: false,
+            ..ZipcodeConfig::default()
+        };
+        let raw = serde_json::json!({
+            "gpu_layers": null,
+            "flash_attention": false
+        });
+        assert!(should_upgrade_flash_attention(&config, Some(&raw)));
+    }
+
+    #[test]
+    fn flash_attention_upgrade_preserves_explicit_false_when_gpu_layers_are_set() {
+        let config = ZipcodeConfig {
+            gpu_layers: Some(64),
+            flash_attention: false,
+            ..ZipcodeConfig::default()
+        };
+        let raw = serde_json::json!({
+            "gpu_layers": 64,
+            "flash_attention": false
+        });
+        assert!(!should_upgrade_flash_attention(&config, Some(&raw)));
     }
 
     #[test]
