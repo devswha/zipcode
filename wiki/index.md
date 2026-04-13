@@ -42,6 +42,7 @@ cli ──▶ runtime ──▶ inference
 | [llama-server](pages/llama-server.md) | Subprocess lifecycle, `/health`, SSE streaming, GPU offload env vars |
 | [gotchas](pages/gotchas.md) | Non-obvious couplings, hardcoded invariants, silent failure modes |
 | [recipes](pages/recipes.md) | "How do I..." playbook: add a tool, swap chat template, tune GPU offload |
+| [project-direction](pages/project-direction.md) | Current backend strategy, product priorities, and why `llama-server` is the practical Gemma 4 path |
 
 ---
 
@@ -68,6 +69,7 @@ The highest-degree concepts — almost every code path touches one of these. Rea
 | Change the tool output size limit | `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:209` |
 | Add a config field | [config › Fields](pages/config.md#fields) → `crates/runtime/src/config.rs` |
 | Tune GPU offload | [llama-server › GPU offload](pages/llama-server.md#gpu-offload) — env vars or config |
+| Understand the intended backend roadmap | [project-direction](pages/project-direction.md) |
 | Change permission tiers | [permissions](pages/permissions.md) → `crates/runtime/src/permission.rs:24` |
 | Change what's injected into the system prompt | `crates/runtime/src/prompt.rs:37` (`.zipcode.md`) + `:46` (`git status`) |
 

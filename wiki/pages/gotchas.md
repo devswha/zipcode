@@ -16,7 +16,7 @@ The workspace ships with 3 inference backends, but **only one is production-viab
 | `llama-cpp` | ❌ Blocked upstream | `llama_cpp_backend.rs` | `llama-cpp-rs` 0.1.141 bundles an old llama.cpp without Gemma 4 arch support |
 | `candle` (default feature) | ❌ Placeholder only | `engine.rs:1-4` | candle 0.8 has no `quantized_gemma` module — uses `quantized_llama` as stand-in; compiles but won't correctly load real Gemma GGUF |
 
-**What this means practically:** `cargo build --release` produces a binary whose default `--backend` (`llama-cpp` after feature shuffling) won't load Gemma 4. Users must pass `--backend llama-server` AND have a recent external `llama-server` binary on PATH.
+**What this means practically:** current CLI startup now tries to auto-select `llama-server` for Gemma 4 when a helper is available, but the practical production path is still helper-backed execution rather than native `llama-cpp`. If no helper is available, Gemma 4 remains blocked. See [project-direction](project-direction.md).
 
 ---
 
