@@ -57,25 +57,54 @@ pub fn format_conversation(messages: &[ChatMessage], tools: &[ToolSpec]) -> Stri
 
 /// Parse tool calls from model output text.
 /// Extracts all `<tool_call>...</tool_call>` blocks and parses their JSON.
+/// Handles nested `</tool_call>` within JSON strings by trying progressively
+/// larger slices until valid JSON is found.
 pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
     let mut calls = Vec::new();
     let mut search_from = 0;
 
     while let Some(start_offset) = output[search_from..].find("<tool_call>") {
         let json_start = search_from + start_offset + "<tool_call>".len();
-        if let Some(end_offset) = output[json_start..].find("</tool_call>") {
-            let json_str = output[json_start..json_start + end_offset].trim();
+
+        // Find closing tag, but if JSON is invalid, try the next </tool_call>
+        // to handle cases where </tool_call> appears inside JSON string values.
+        let mut inner_search = 0;
+        let mut found = false;
+
+        while let Some(end_offset) = output[json_start + inner_search..].find("</tool_call>") {
+            let actual_end = inner_search + end_offset;
+            let json_str = output[json_start..json_start + actual_end].trim();
+
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
                 let name = parsed["name"].as_str().unwrap_or("").to_string();
+                if name.is_empty() {
+                    tracing::warn!("Tool call has empty name, skipping");
+                    search_from = json_start + actual_end + "</tool_call>".len();
+                    found = true;
+                    break;
+                }
                 let arguments = parsed["arguments"].clone();
                 calls.push(ToolCallParsed {
                     id: format!("call_{}", calls.len()),
                     name,
                     arguments,
                 });
+                search_from = json_start + actual_end + "</tool_call>".len();
+                found = true;
+                break;
             }
-            search_from = json_start + end_offset + "</tool_call>".len();
-        } else {
+
+            // JSON invalid — try the next </tool_call> occurrence
+            tracing::debug!(
+                "Tool call JSON invalid at offset {actual_end}, trying next closing tag"
+            );
+            inner_search = actual_end + "</tool_call>".len();
+        }
+
+        if !found {
+            tracing::warn!(
+                "Malformed tool call block: no valid JSON found between <tool_call> tags (offset {json_start})"
+            );
             break;
         }
     }
@@ -84,17 +113,33 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
 }
 
 /// Extract plain text from model output, stripping all `<tool_call>` blocks.
+/// Handles nested `</tool_call>` within JSON strings by validating JSON before stripping.
 pub fn extract_text_content(output: &str) -> String {
     let mut result = output.to_string();
-    while let Some(start) = result.find("<tool_call>") {
-        if let Some(end_offset) = result[start..].find("</tool_call>") {
-            result = format!(
-                "{}{}",
-                &result[..start],
-                &result[start + end_offset + "</tool_call>".len()..]
-            );
-        } else {
+    loop {
+        let Some(start) = result.find("<tool_call>") else {
             break;
+        };
+        let after_tag = start + "<tool_call>".len();
+        let mut inner_search = 0;
+        let mut found = false;
+
+        while let Some(end_offset) = result[after_tag + inner_search..].find("</tool_call>") {
+            let actual_end = inner_search + end_offset;
+            let json_str = result[after_tag..after_tag + actual_end].trim();
+
+            // Accept either valid JSON or skip to the next closing tag
+            if json_str.is_empty() || serde_json::from_str::<serde_json::Value>(json_str).is_ok() {
+                let block_end = after_tag + actual_end + "</tool_call>".len();
+                result = format!("{}{}", &result[..start], &result[block_end..]);
+                found = true;
+                break;
+            }
+            inner_search = actual_end + "</tool_call>".len();
+        }
+
+        if !found {
+            break; // Unclosed tag — leave as-is
         }
     }
     result.trim().to_string()
@@ -176,5 +221,61 @@ mod tests {
         let output = "Hello <tool_call>{\"name\": \"bash\", \"arguments\": {}}</tool_call> world";
         let text = extract_text_content(output);
         assert_eq!(text, "Hello  world");
+    }
+
+    #[test]
+    fn test_parse_nested_tool_call_in_json_string() {
+        // Model asks bash to echo a string containing </tool_call>
+        let output = "<tool_call>\n{\"name\": \"bash\", \"arguments\": {\"command\": \"echo '</tool_call>'\"}}\n</tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "bash");
+        assert_eq!(
+            parsed[0].arguments["command"].as_str().unwrap(),
+            "echo '</tool_call>'"
+        );
+    }
+
+    #[test]
+    fn test_extract_text_with_nested_closing_tag() {
+        let output =
+            "Hello <tool_call>{\"name\": \"bash\", \"arguments\": {\"command\": \"echo '</tool_call>'\"}}</tool_call> world";
+        let text = extract_text_content(output);
+        assert_eq!(text, "Hello  world");
+    }
+
+    #[test]
+    fn test_parse_malformed_json_skipped_with_warning() {
+        let output = "<tool_call>\nnot valid json\n</tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_parse_empty_name_skipped() {
+        let output = "<tool_call>\n{\"arguments\": {\"foo\": \"bar\"}}\n</tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_parse_unclosed_tool_call_tag() {
+        let output = "<tool_call>\n{\"name\": \"bash\", \"arguments\": {}}";
+        let parsed = parse_tool_calls(output);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_parse_empty_tool_call() {
+        let output = "<tool_call></tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_extract_text_preserves_unclosed_tag() {
+        let output = "Hello <tool_call>partial content";
+        let text = extract_text_content(output);
+        assert_eq!(text, "Hello <tool_call>partial content");
     }
 }
