@@ -1359,6 +1359,7 @@ exit 0
             "PATH",
             format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap()),
         )
+        .env("CUDACXX", fake_bin.join("nvcc"))
         .env("ZIPCODE_LLAMA_SERVER_WORKDIR", &workdir)
         .output()
         .expect("run build_llama_server.sh");
@@ -1500,6 +1501,7 @@ exit 0
             "PATH",
             format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap()),
         )
+        .env("CUDACXX", fake_bin.join("nvcc"))
         .env("ZIPCODE_LLAMA_SERVER_WORKDIR", &workdir)
         .output()
         .expect("run build_llama_server.sh");

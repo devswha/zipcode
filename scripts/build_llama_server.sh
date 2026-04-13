@@ -12,8 +12,35 @@ JOBS="${ZIPCODE_LLAMA_SERVER_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || ec
 INSTALL_HELPER="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/install_llama_server.sh"
 cleanup_workdir=0
 
+detect_nvcc_binary() {
+    local candidate=""
+
+    if [ -n "${CUDACXX:-}" ] && [ -x "${CUDACXX}" ]; then
+        printf '%s\n' "${CUDACXX}"
+        return 0
+    fi
+
+    if [ -n "${CUDA_HOME:-}" ] && [ -x "${CUDA_HOME}/bin/nvcc" ]; then
+        printf '%s\n' "${CUDA_HOME}/bin/nvcc"
+        return 0
+    fi
+
+    for candidate in /usr/local/cuda/bin/nvcc /usr/local/cuda-*/bin/nvcc; do
+        if [ -x "${candidate}" ]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+
+    command -v nvcc 2>/dev/null || return 1
+}
+
 detect_nvcc_release() {
-    nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p' | tail -n 1
+    local nvcc_bin="${CUDACXX:-$(command -v nvcc 2>/dev/null || true)}"
+    [ -n "${nvcc_bin}" ] || return 1
+    "${nvcc_bin}" --version 2>/dev/null \
+        | sed -n 's/.*release \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p' \
+        | tail -n 1
 }
 
 compiler_major_version() {
@@ -110,9 +137,11 @@ echo "Configuring llama-server build..."
 
 # Auto-detect CUDA (requires nvcc from CUDA Toolkit, not just the driver)
 cuda_available=0
-if command -v nvcc >/dev/null 2>&1; then
+NVCC_BIN="$(detect_nvcc_binary || true)"
+if [ -n "${NVCC_BIN}" ]; then
     cuda_available=1
-    echo "CUDA Toolkit detected (nvcc found), enabling GPU support."
+    export CUDACXX="${NVCC_BIN}"
+    echo "CUDA Toolkit detected (${NVCC_BIN}), enabling GPU support."
 elif command -v nvidia-smi >/dev/null 2>&1; then
     echo "Warning: NVIDIA GPU detected but CUDA Toolkit (nvcc) not found."
     echo "  Install CUDA Toolkit for GPU-accelerated builds:"

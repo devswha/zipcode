@@ -37,6 +37,43 @@ impl Default for ServerOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlashAttentionMode {
+    LegacyFlagOnly,
+    ExplicitOnValue,
+}
+
+fn flash_attention_mode_from_help(help: &str) -> FlashAttentionMode {
+    if help.contains("[on|off|auto]") || help.contains("set Flash Attention use") {
+        FlashAttentionMode::ExplicitOnValue
+    } else {
+        FlashAttentionMode::LegacyFlagOnly
+    }
+}
+
+fn flash_attention_args(binary: &Path, enabled: bool) -> Vec<&'static str> {
+    if !enabled {
+        return Vec::new();
+    }
+
+    let help_output = Command::new(binary).arg("--help").output().ok();
+    let help_text = help_output
+        .as_ref()
+        .map(|output| {
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })
+        .unwrap_or_default();
+
+    match flash_attention_mode_from_help(&help_text) {
+        FlashAttentionMode::LegacyFlagOnly => vec!["-fa"],
+        FlashAttentionMode::ExplicitOnValue => vec!["-fa", "on"],
+    }
+}
+
 pub struct LlamaServerProvider {
     child: Child,
     port: u16,
@@ -74,8 +111,8 @@ impl LlamaServerProvider {
         if let Some(layers) = options.gpu_layers {
             command.arg("-ngl").arg(layers.to_string());
         }
-        if options.flash_attention {
-            command.arg("--flash-attn").arg("on");
+        for arg in flash_attention_args(&binary, options.flash_attention) {
+            command.arg(arg);
         }
 
         let cache_dir = std::env::var_os("HOME")
@@ -678,6 +715,22 @@ mod tests {
         assert_eq!(opts.gpu_layers, None);
         assert!(!opts.flash_attention);
         assert_eq!(opts.context_size, DEFAULT_CONTEXT_SIZE);
+    }
+
+    #[test]
+    fn flash_attention_uses_legacy_compatible_flag() {
+        assert_eq!(
+            flash_attention_mode_from_help(
+                "-fa, --flash-attn                     enable Flash Attention (default: disabled)"
+            ),
+            FlashAttentionMode::LegacyFlagOnly
+        );
+        assert_eq!(
+            flash_attention_mode_from_help(
+                "-fa, --flash-attn [on|off|auto]       set Flash Attention use"
+            ),
+            FlashAttentionMode::ExplicitOnValue
+        );
     }
 
     #[test]
