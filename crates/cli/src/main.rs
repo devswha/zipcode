@@ -29,6 +29,10 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = UiMode::Fullscreen, global = true)]
     ui: UiMode,
 
+    /// Resume a saved session by id
+    #[arg(long, value_name = "SESSION_ID", global = true)]
+    session: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -84,10 +88,11 @@ fn main() -> Result<()> {
     let model_path = cli.model.as_deref();
     let permission_mode = cli.permission_mode.as_deref();
     let backend = cli.backend.as_deref();
+    let session_id = cli.session.as_deref();
 
     match cli.command {
         Some(Commands::Repl) => {
-            tui::run_interactive_with_ui(model_path, permission_mode, backend, cli.ui)?;
+            tui::run_interactive_with_ui(model_path, permission_mode, backend, session_id, cli.ui)?;
         }
         Some(Commands::Doctor) => {
             commands::doctor(model_path, backend)?;
@@ -99,10 +104,10 @@ fn main() -> Result<()> {
             commands::update(check, rebuild)?;
         }
         Some(Commands::Prompt { text }) => {
-            repl::run_oneshot(&text, model_path, permission_mode, backend)?;
+            repl::run_oneshot(&text, model_path, permission_mode, backend, session_id)?;
         }
         None => {
-            commands::run_default(model_path, permission_mode, backend, cli.ui)?;
+            commands::run_default(model_path, permission_mode, backend, session_id, cli.ui)?;
         }
     }
 

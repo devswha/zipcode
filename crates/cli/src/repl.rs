@@ -8,7 +8,8 @@ use zipcode_inference::{create_engine, Backend, GenerationConfig, ServerOptions}
 use zipcode_runtime::config::{expand_user_path, find_project_root, resolve_project_path};
 use zipcode_runtime::prompt::build_system_prompt;
 use zipcode_runtime::{
-    parse_permission_mode, ConversationLoop, PermissionPolicy, Session, ZipcodeConfig,
+    parse_permission_mode, CompactPolicy, CompactResult, ConversationLoop, PermissionPolicy,
+    Session, ZipcodeConfig,
 };
 use zipcode_tools::{
     agent::AgentTool, bash::BashTool, edit_file::EditFileTool, glob_search::GlobSearchTool,
@@ -39,6 +40,16 @@ pub(crate) enum SlashCommand {
     Quit,
     Clear,
     Status,
+    Compact,
+    SessionShow,
+    SessionLoad,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParsedSlashCommand {
+    Command(SlashCommand, Option<String>),
+    NotCommand,
+    Error(String),
 }
 
 impl CliCallback {
@@ -303,6 +314,7 @@ pub fn prepare_loop(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
     backend_override: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<LoopLaunch> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let project_root = find_project_root(&cwd);
@@ -314,6 +326,21 @@ pub fn prepare_loop(
             eprintln!("\x1b[33mWarning: Failed to load config: {e}\x1b[0m");
             ZipcodeConfig::default()
         }
+    };
+
+    let mut startup_notices = Vec::new();
+    let session = match session_id {
+        Some(id) => {
+            let session =
+                Session::load(id).with_context(|| format!("Failed to load session `{id}`"))?;
+            startup_notices.push(format!(
+                "Resumed session {} ({} messages).",
+                session.id,
+                session.messages.len()
+            ));
+            session
+        }
+        None => Session::new(),
     };
 
     // Resolve model file
@@ -359,12 +386,12 @@ pub fn prepare_loop(
     let requested_backend = resolve_requested_backend(backend_override)?;
     let effective_backend =
         resolve_effective_backend(requested_backend, &model_file, helper_path.as_deref());
-    let startup_notices = build_startup_notices(
+    startup_notices.extend(build_startup_notices(
         requested_backend,
         effective_backend,
         &model_file,
         &server_options,
-    );
+    ));
 
     if matches!(effective_backend, Backend::LlamaCpp) && is_probably_gemma4_model(&model_file) {
         anyhow::bail!(
@@ -390,7 +417,6 @@ pub fn prepare_loop(
     let permission_str = resolved_permission_mode.to_string();
     let (system_prompt, tool_specs) = build_system_prompt(&cwd, &registry, &permission_str);
 
-    let session = Session::new();
     let permission = PermissionPolicy::new(effective_permission);
 
     Ok(LoopLaunch {
@@ -414,8 +440,9 @@ pub fn run_oneshot(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
     backend_override: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<()> {
-    let launch = prepare_loop(model_path, permission_mode, backend_override)?;
+    let launch = prepare_loop(model_path, permission_mode, backend_override, session_id)?;
     for notice in &launch.startup_notices {
         eprintln!("\x1b[33m[notice]\x1b[0m {notice}");
     }
@@ -428,13 +455,25 @@ pub fn run_oneshot(
     Ok(())
 }
 
-pub(crate) fn parse_slash_command(input: &str) -> Option<SlashCommand> {
+pub(crate) fn parse_slash_command(input: &str) -> ParsedSlashCommand {
     match input {
-        "/help" => Some(SlashCommand::Help),
-        "/quit" | "/exit" => Some(SlashCommand::Quit),
-        "/clear" => Some(SlashCommand::Clear),
-        "/status" => Some(SlashCommand::Status),
-        _ => None,
+        "/help" => ParsedSlashCommand::Command(SlashCommand::Help, None),
+        "/quit" | "/exit" => ParsedSlashCommand::Command(SlashCommand::Quit, None),
+        "/clear" => ParsedSlashCommand::Command(SlashCommand::Clear, None),
+        "/status" => ParsedSlashCommand::Command(SlashCommand::Status, None),
+        "/compact" => ParsedSlashCommand::Command(SlashCommand::Compact, None),
+        "/session" => ParsedSlashCommand::Command(SlashCommand::SessionShow, None),
+        _ => {
+            if let Some(rest) = input.strip_prefix("/session ") {
+                if rest.split_whitespace().count() == 1 {
+                    ParsedSlashCommand::Command(SlashCommand::SessionLoad, Some(rest.to_string()))
+                } else {
+                    ParsedSlashCommand::Error("Usage: /session [SESSION_ID]".to_string())
+                }
+            } else {
+                ParsedSlashCommand::NotCommand
+            }
+        }
     }
 }
 
@@ -443,13 +482,14 @@ pub fn run_interactive(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
     backend_override: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<()> {
     println!(
         "zipcode v{} — type /help for commands, Ctrl+D to exit",
         env!("CARGO_PKG_VERSION")
     );
 
-    let launch = prepare_loop(model_path, permission_mode, backend_override)?;
+    let launch = prepare_loop(model_path, permission_mode, backend_override, session_id)?;
     for notice in &launch.startup_notices {
         println!("\x1b[33m[notice]\x1b[0m {notice}");
     }
@@ -470,20 +510,41 @@ pub fn run_interactive(
                 let _ = rl.add_history_entry(&input);
 
                 // Handle slash commands
-                if let Some(command) = parse_slash_command(&input) {
-                    match command {
-                        SlashCommand::Help => print_help(),
-                        SlashCommand::Quit => {
-                            println!("Goodbye.");
-                            break;
+                match parse_slash_command(&input) {
+                    ParsedSlashCommand::Command(command, argument) => {
+                        match command {
+                            SlashCommand::Help => print_help(),
+                            SlashCommand::Quit => {
+                                println!("Goodbye.");
+                                break;
+                            }
+                            SlashCommand::Clear => {
+                                conv.session = Session::new();
+                                println!(
+                                    "Conversation cleared. New session started: {}",
+                                    conv.session.id
+                                );
+                            }
+                            SlashCommand::Status => print_status(&conv),
+                            SlashCommand::Compact => println!("{}", compact_session(&mut conv)?),
+                            SlashCommand::SessionShow => print_session_status(&conv),
+                            SlashCommand::SessionLoad => {
+                                println!(
+                                    "{}",
+                                    load_session_into_loop(
+                                        &mut conv,
+                                        argument.as_deref().expect("session id must exist"),
+                                    )?
+                                );
+                            }
                         }
-                        SlashCommand::Clear => {
-                            conv.session = Session::new();
-                            println!("Conversation cleared.");
-                        }
-                        SlashCommand::Status => print_status(&conv),
+                        continue;
                     }
-                    continue;
+                    ParsedSlashCommand::Error(message) => {
+                        println!("{message}");
+                        continue;
+                    }
+                    ParsedSlashCommand::NotCommand => {}
                 }
 
                 // Regular user input — run a turn
@@ -524,8 +585,64 @@ fn print_status(conv: &ConversationLoop) {
     println!("Working dir: {}", conv.cwd.display());
 }
 
+pub(crate) fn session_status_lines(conv: &ConversationLoop) -> Vec<String> {
+    vec![
+        format!("Session ID:   {}", conv.session.id),
+        format!("Session path: {}", conv.session.path().display()),
+        format!("Messages:     {}", conv.session.messages.len()),
+        format!("Created at:   {}", conv.session.created_at),
+        format!("Updated at:   {}", conv.session.updated_at),
+    ]
+}
+
+fn print_session_status(conv: &ConversationLoop) {
+    for line in session_status_lines(conv) {
+        println!("{line}");
+    }
+}
+
+pub(crate) fn compact_session(conv: &mut ConversationLoop) -> Result<String> {
+    let result = conv.session.compact(CompactPolicy::default());
+    if result.changed {
+        conv.session.save()?;
+        Ok(format_compact_result(&conv.session, result))
+    } else {
+        Ok(format!(
+            "Compaction skipped for session {}: not enough history to compact.",
+            conv.session.id
+        ))
+    }
+}
+
+pub(crate) fn load_session_into_loop(
+    conv: &mut ConversationLoop,
+    session_id: &str,
+) -> Result<String> {
+    let loaded = Session::load(session_id)
+        .with_context(|| format!("Failed to load session `{session_id}`"))?;
+    let loaded_id = loaded.id.clone();
+    let message_count = loaded.messages.len();
+    let path = loaded.path();
+    conv.session = loaded;
+    Ok(format!(
+        "Loaded session {loaded_id} ({message_count} messages) from {}",
+        path.display()
+    ))
+}
+
+fn format_compact_result(session: &Session, result: CompactResult) -> String {
+    format!(
+        "Compacted session {}: {} -> {} messages (pruned {}, retained {}).",
+        session.id,
+        result.before_messages,
+        result.after_messages,
+        result.pruned_messages,
+        result.retained_messages
+    )
+}
+
 pub(crate) fn help_text() -> &'static str {
-    "Available commands:\n  /help    — show this help\n  /status  — show session info and model\n  /clear   — clear conversation history\n  /quit    — exit zipcode\n\n  Ctrl+C   — cancel current input (continues)\n  Ctrl+D   — exit zipcode"
+    "Available commands:\n  /help              — show this help\n  /status            — show session info and model\n  /session           — show active session metadata\n  /session <id>      — load an existing session by id\n  /compact           — compact older session history\n  /clear             — clear conversation history\n  /quit, /exit       — exit zipcode\n\n  Ctrl+C             — cancel current input (continues)\n  Ctrl+D             — exit zipcode"
 }
 
 #[cfg(test)]
@@ -628,24 +745,86 @@ mod tests {
 
     #[test]
     fn parse_slash_command_accepts_known_commands_only() {
-        assert_eq!(parse_slash_command("/help"), Some(SlashCommand::Help));
-        assert_eq!(parse_slash_command("/status"), Some(SlashCommand::Status));
-        assert_eq!(parse_slash_command("/clear"), Some(SlashCommand::Clear));
-        assert_eq!(parse_slash_command("/quit"), Some(SlashCommand::Quit));
-        assert_eq!(parse_slash_command("/exit"), Some(SlashCommand::Quit));
+        assert_eq!(
+            parse_slash_command("/help"),
+            ParsedSlashCommand::Command(SlashCommand::Help, None)
+        );
+        assert_eq!(
+            parse_slash_command("/status"),
+            ParsedSlashCommand::Command(SlashCommand::Status, None)
+        );
+        assert_eq!(
+            parse_slash_command("/clear"),
+            ParsedSlashCommand::Command(SlashCommand::Clear, None)
+        );
+        assert_eq!(
+            parse_slash_command("/quit"),
+            ParsedSlashCommand::Command(SlashCommand::Quit, None)
+        );
+        assert_eq!(
+            parse_slash_command("/exit"),
+            ParsedSlashCommand::Command(SlashCommand::Quit, None)
+        );
+        assert_eq!(
+            parse_slash_command("/compact"),
+            ParsedSlashCommand::Command(SlashCommand::Compact, None)
+        );
+        assert_eq!(
+            parse_slash_command("/session"),
+            ParsedSlashCommand::Command(SlashCommand::SessionShow, None)
+        );
+        assert_eq!(
+            parse_slash_command("/session abc"),
+            ParsedSlashCommand::Command(SlashCommand::SessionLoad, Some("abc".to_string()))
+        );
     }
 
     #[test]
     fn parse_slash_command_treats_paths_and_unknown_slashes_as_regular_input() {
         assert_eq!(
             parse_slash_command("/home/devswha/workspace/test_zipcode"),
-            None
+            ParsedSlashCommand::NotCommand
         );
-        assert_eq!(parse_slash_command("/unknown"), None);
+        assert_eq!(
+            parse_slash_command("/unknown"),
+            ParsedSlashCommand::NotCommand
+        );
         assert_eq!(
             parse_slash_command("\"/home/devswha/workspace/test_zipcode\" 레포 분석해봐"),
-            None
+            ParsedSlashCommand::NotCommand
         );
+    }
+
+    #[test]
+    fn parse_slash_command_rejects_malformed_session_usage() {
+        assert_eq!(
+            parse_slash_command("/session abc def"),
+            ParsedSlashCommand::Error("Usage: /session [SESSION_ID]".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_slash_command_keeps_session_prefix_variants_as_regular_input() {
+        assert_eq!(
+            parse_slash_command("/sessionfoo"),
+            ParsedSlashCommand::NotCommand
+        );
+        assert_eq!(
+            parse_slash_command("/session/abc"),
+            ParsedSlashCommand::NotCommand
+        );
+        assert_eq!(
+            parse_slash_command("/session-status"),
+            ParsedSlashCommand::NotCommand
+        );
+    }
+
+    #[test]
+    fn help_text_documents_session_and_compact_commands() {
+        let help = help_text();
+        assert!(help.contains("/session"));
+        assert!(help.contains("/compact"));
+        assert!(help.contains("/quit, /exit"));
     }
 
     #[test]

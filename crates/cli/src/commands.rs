@@ -98,6 +98,7 @@ pub fn run_default(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
     backend_override: Option<&str>,
+    session_id: Option<&str>,
     ui_mode: UiMode,
 ) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
@@ -106,9 +107,13 @@ pub fn run_default(
     let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
 
     match readiness {
-        UserReadiness::Ready => {
-            run_interactive_with_ui(model_path, permission_mode, backend_override, ui_mode)
-        }
+        UserReadiness::Ready => run_interactive_with_ui(
+            model_path,
+            permission_mode,
+            backend_override,
+            session_id,
+            ui_mode,
+        ),
         state => {
             print_startup_guidance(state, &report, config_load.warning.as_deref());
             Ok(())
@@ -219,6 +224,7 @@ pub fn setup(
         Some(&model),
         Some("read-only"),
         Some(backend_name(report.backend)),
+        None,
     )?;
     println!("Smoke: PASS");
     Ok(())

@@ -1,6 +1,11 @@
 use tempfile::TempDir;
-use zipcode_inference::{MockInferenceProvider, MockResponse, ToolSpec};
-use zipcode_runtime::{ConversationLoop, PermissionPolicy, Session, StreamCallback};
+use zipcode_inference::{
+    ChatMessage, MockInferenceProvider, MockResponse, Role, ToolCallParsed, ToolSpec,
+};
+use zipcode_runtime::{
+    CompactPolicy, ConversationLoop, PermissionPolicy, Session, StreamCallback,
+    COMPACTED_SUMMARY_MARKER,
+};
 use zipcode_tools::PermissionMode;
 
 // ---------------------------------------------------------------------------
@@ -316,4 +321,111 @@ fn path_traversal_blocked() {
         "expected 'outside the workspace' error in callback results or session messages.\ncallback results: {:?}",
         cb.tool_results
     );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: resumed sessions do not duplicate the system prompt
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resumed_session_does_not_duplicate_system_prompt() {
+    let dir = TempDir::new().unwrap();
+    let mock = MockInferenceProvider::new(vec![MockResponse::Text("resumed".to_string())]);
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    conv.session.messages = vec![
+        ChatMessage::system("saved system prompt"),
+        ChatMessage::user("earlier"),
+        ChatMessage::assistant("earlier response"),
+    ];
+    let mut cb = TestCallback::new();
+
+    conv.run_turn("continue", &mut cb).unwrap();
+
+    let system_count = conv
+        .session
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::System)
+        .count();
+    assert_eq!(system_count, 1, "system prompt should not be duplicated");
+    assert_eq!(conv.session.messages[0].content, "saved system prompt");
+    assert!(
+        cb.all_tokens().contains("resumed"),
+        "expected resumed response, got {:?}",
+        cb.tokens
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: compacted sessions roundtrip and continue correctly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compacted_session_roundtrip_can_continue_turns() {
+    let dir = TempDir::new().unwrap();
+    let tool_call = ToolCallParsed {
+        id: "call_1".to_string(),
+        name: "read_file".to_string(),
+        arguments: serde_json::json!({"file_path":"src/main.rs"}),
+    };
+    let mut session = Session::new();
+    let session_path = session.path();
+    session.messages = vec![
+        ChatMessage::system("saved system prompt"),
+        ChatMessage::user("first"),
+        ChatMessage::assistant("first response"),
+        ChatMessage::user("second"),
+        ChatMessage::assistant_with_tool_calls("checking", vec![tool_call]),
+        ChatMessage::tool_result("call_1", "fn main() {}"),
+        ChatMessage::assistant("second response"),
+        ChatMessage::user("third"),
+        ChatMessage::assistant("third response"),
+    ];
+
+    let compact_result = session.compact(CompactPolicy {
+        retain_user_turns: 2,
+        ..CompactPolicy::default()
+    });
+    assert!(compact_result.changed);
+    session.save().unwrap();
+
+    let loaded = Session::load(&session.id).unwrap();
+    assert!(loaded
+        .messages
+        .iter()
+        .any(|message| message.content.starts_with(COMPACTED_SUMMARY_MARKER)));
+    assert_eq!(
+        loaded
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .count(),
+        1
+    );
+
+    let mock = MockInferenceProvider::new(vec![MockResponse::Text("continued".to_string())]);
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    conv.session = loaded;
+    let mut cb = TestCallback::new();
+    conv.run_turn("after compact", &mut cb).unwrap();
+
+    let system_count = conv
+        .session
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::System)
+        .count();
+    assert_eq!(system_count, 1);
+    assert!(conv
+        .session
+        .messages
+        .iter()
+        .any(|message| message.content.starts_with(COMPACTED_SUMMARY_MARKER)));
+    assert!(
+        cb.all_tokens().contains("continued"),
+        "expected continued response after compaction, got {:?}",
+        cb.tokens
+    );
+
+    std::fs::remove_file(session_path).ok();
 }

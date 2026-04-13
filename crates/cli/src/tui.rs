@@ -14,11 +14,15 @@ use termimad::crossterm::style::{
 use termimad::crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use zipcode_inference::Role;
 use zipcode_runtime::{ConversationLoop, Session, StreamCallback};
 use zipcode_tools::PermissionMode;
 
 use crate::render::{terminal_width, truncate_to_width};
-use crate::repl::{help_text, parse_slash_command, prepare_loop, run_interactive, SlashCommand};
+use crate::repl::{
+    compact_session, help_text, load_session_into_loop, parse_slash_command, prepare_loop,
+    run_interactive, session_status_lines, ParsedSlashCommand, SlashCommand,
+};
 use crate::tui_composer::Composer;
 use crate::UiMode;
 
@@ -32,10 +36,17 @@ const MAX_COMPOSER_LINES: usize = 5;
 const STREAM_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
 const STREAM_REDRAW_MIN_BYTES: usize = 24;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TranscriptViewport {
+    width: usize,
+    height: usize,
+}
+
 pub fn run_interactive_with_ui(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
     backend_override: Option<&str>,
+    session_id: Option<&str>,
     ui_mode: UiMode,
 ) -> Result<()> {
     let force_plain = std::env::var("ZIPCODE_NO_TUI").is_ok()
@@ -50,9 +61,9 @@ pub fn run_interactive_with_ui(
     };
 
     match effective_ui {
-        UiMode::Plain => run_interactive(model_path, permission_mode, backend_override),
+        UiMode::Plain => run_interactive(model_path, permission_mode, backend_override, session_id),
         UiMode::Fullscreen => {
-            run_interactive_fullscreen(model_path, permission_mode, backend_override)
+            run_interactive_fullscreen(model_path, permission_mode, backend_override, session_id)
         }
     }
 }
@@ -61,8 +72,9 @@ fn run_interactive_fullscreen(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
     backend_override: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<()> {
-    let launch = prepare_loop(model_path, permission_mode, backend_override)?;
+    let launch = prepare_loop(model_path, permission_mode, backend_override, session_id)?;
     let backend = match launch.effective_backend {
         zipcode_inference::Backend::LlamaCpp => "llama-cpp",
         zipcode_inference::Backend::LlamaServer => "llama-server",
@@ -174,13 +186,7 @@ impl FullscreenUi {
 
         let mut ui = Self {
             stdout,
-            transcript: vec![TranscriptEntry {
-                kind: EntryKind::Info,
-                content: format!(
-                    "zipcode v{} — fullscreen TUI (Codex-style MVP+) ready",
-                    env!("CARGO_PKG_VERSION")
-                ),
-            }],
+            transcript: initial_transcript_entries(&conv.session),
             transcript_cache: TranscriptCache::default(),
             composer: Composer::new(),
             transcript_scroll: 0,
@@ -285,15 +291,47 @@ impl FullscreenUi {
                 code: KeyCode::PageUp,
                 ..
             } => {
-                self.transcript_scroll = self.transcript_scroll.saturating_add(5);
-                self.status = format!("Scrolled up ({})", self.transcript_scroll);
+                let moved = self.scroll_transcript_by_page(ScrollDirection::Older)?;
+                self.status = if moved == 0 {
+                    "Already at the oldest visible history".to_string()
+                } else {
+                    format!("Scrolled up {} line(s)", moved)
+                };
             }
             KeyEvent {
                 code: KeyCode::PageDown,
                 ..
             } => {
-                self.transcript_scroll = self.transcript_scroll.saturating_sub(5);
-                self.status = "Scrolled down".to_string();
+                let moved = self.scroll_transcript_by_page(ScrollDirection::Newer)?;
+                self.status = if self.transcript_scroll == 0 {
+                    "Back to latest output".to_string()
+                } else {
+                    format!("Scrolled down {} line(s)", moved)
+                };
+            }
+            KeyEvent {
+                code: KeyCode::Home,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                let moved = self.jump_to_oldest_transcript()?;
+                self.status = if moved == 0 {
+                    "Already at the oldest visible history".to_string()
+                } else {
+                    "Jumped to oldest visible history".to_string()
+                };
+            }
+            KeyEvent {
+                code: KeyCode::End,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                let moved = self.jump_to_latest_transcript();
+                self.status = if moved == 0 {
+                    "Already at latest output".to_string()
+                } else {
+                    "Jumped to latest output".to_string()
+                };
             }
             KeyEvent {
                 code: KeyCode::Left,
@@ -382,18 +420,30 @@ impl FullscreenUi {
         self.transcript_scroll = 0;
         if input.trim().is_empty() {
             self.status = "Ready".to_string();
-        } else if let Some(command) = parse_slash_command(input.trim()) {
-            if !self.handle_slash_command(command, conv) {
-                return Ok(false);
-            }
         } else {
-            self.run_turn(input, conv)?;
+            match parse_slash_command(input.trim()) {
+                ParsedSlashCommand::Command(command, argument) => {
+                    if !self.handle_slash_command(command, argument.as_deref(), conv)? {
+                        return Ok(false);
+                    }
+                }
+                ParsedSlashCommand::Error(message) => {
+                    self.push_entry(EntryKind::Error, message);
+                    self.status = "Command error".to_string();
+                }
+                ParsedSlashCommand::NotCommand => self.run_turn(input, conv)?,
+            }
         }
         self.draw()?;
         Ok(true)
     }
 
-    fn handle_slash_command(&mut self, command: SlashCommand, conv: &mut ConversationLoop) -> bool {
+    fn handle_slash_command(
+        &mut self,
+        command: SlashCommand,
+        argument: Option<&str>,
+        conv: &mut ConversationLoop,
+    ) -> Result<bool> {
         match command {
             SlashCommand::Help => self.open_help_overlay(),
             SlashCommand::Status => {
@@ -413,6 +463,37 @@ impl FullscreenUi {
                 });
                 self.status = "Status opened".to_string();
             }
+            SlashCommand::SessionShow => {
+                for line in session_status_lines(conv) {
+                    self.push_entry(EntryKind::Info, line);
+                }
+                self.status = "Session details shown".to_string();
+            }
+            SlashCommand::SessionLoad => {
+                match load_session_into_loop(conv, argument.expect("session load requires an id")) {
+                    Ok(message) => {
+                        self.set_transcript_from_session(&conv.session);
+                        self.push_entry(EntryKind::Info, message);
+                        self.session_id = conv.session.id.clone();
+                        self.status = "Session loaded".to_string();
+                    }
+                    Err(error) => {
+                        self.push_entry(EntryKind::Error, error.to_string());
+                        self.status = "Session load failed".to_string();
+                    }
+                }
+            }
+            SlashCommand::Compact => match compact_session(conv) {
+                Ok(message) => {
+                    self.set_transcript_from_session(&conv.session);
+                    self.push_entry(EntryKind::Info, message);
+                    self.status = "Compaction complete".to_string();
+                }
+                Err(error) => {
+                    self.push_entry(EntryKind::Error, error.to_string());
+                    self.status = "Compaction failed".to_string();
+                }
+            },
             SlashCommand::Clear => {
                 conv.session = Session::new();
                 self.transcript.clear();
@@ -424,10 +505,10 @@ impl FullscreenUi {
                 self.session_id = conv.session.id.clone();
                 self.status = "Conversation cleared".to_string();
             }
-            SlashCommand::Quit => return false,
+            SlashCommand::Quit => return Ok(false),
         }
 
-        true
+        Ok(true)
     }
 
     fn open_help_overlay(&mut self) {
@@ -441,14 +522,16 @@ impl FullscreenUi {
             "  Shift+Enter newline".to_string(),
             "  Option+Enter newline".to_string(),
             "  Arrow keys  move cursor / recall history".to_string(),
-            "  PgUp/PgDn   scroll transcript".to_string(),
+            "  PgUp/PgDn   scroll transcript by page".to_string(),
+            "  Ctrl+Home   jump to oldest visible history".to_string(),
+            "  Ctrl+End    jump to latest output".to_string(),
             "  Shift+Tab   cycle permission mode".to_string(),
             "  F1          help".to_string(),
             "  Esc Esc     edit previous message".to_string(),
             "  Esc         clear input / close overlay".to_string(),
             "  Ctrl+L      refresh screen".to_string(),
             "  Ctrl+C      cancel input".to_string(),
-            "  Ctrl+D      exit".to_string(),
+            "  Ctrl+D      exit (same as /quit or /exit)".to_string(),
         ]);
         self.overlay = Some(Overlay {
             title: "Help".to_string(),
@@ -497,6 +580,62 @@ impl FullscreenUi {
             _ => self.push_entry(EntryKind::Assistant, token.to_string()),
         }
         self.refresh_last_transcript_cache_entry();
+    }
+
+    fn transcript_viewport(&mut self) -> Result<TranscriptViewport> {
+        let (width, height) = terminal::size()?;
+        let usable_width = width.saturating_sub(2) as usize;
+        let composer_width = width.saturating_sub(4) as usize;
+        let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
+        let composer_visible = composer_lines.len().clamp(1, MAX_COMPOSER_LINES);
+        let composer_height = composer_visible as u16;
+        let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
+        let transcript_height = status_y.saturating_sub(HEADER_LINES) as usize;
+        let viewport = TranscriptViewport {
+            width: usable_width.max(8),
+            height: transcript_height.max(1),
+        };
+        self.ensure_transcript_cache(viewport.width);
+        Ok(viewport)
+    }
+
+    fn max_transcript_scroll(&mut self) -> Result<usize> {
+        let viewport = self.transcript_viewport()?;
+        Ok(self
+            .transcript_cache
+            .lines
+            .len()
+            .saturating_sub(viewport.height))
+    }
+
+    fn scroll_transcript_by_page(&mut self, direction: ScrollDirection) -> Result<usize> {
+        let viewport = self.transcript_viewport()?;
+        let page = viewport.height.saturating_sub(2).max(1);
+        let previous = self.transcript_scroll;
+        let max_scroll = self.max_transcript_scroll()?;
+        self.transcript_scroll = match direction {
+            ScrollDirection::Older => previous.saturating_add(page).min(max_scroll),
+            ScrollDirection::Newer => previous.saturating_sub(page),
+        };
+        Ok(previous.abs_diff(self.transcript_scroll))
+    }
+
+    fn jump_to_oldest_transcript(&mut self) -> Result<usize> {
+        let previous = self.transcript_scroll;
+        self.transcript_scroll = self.max_transcript_scroll()?;
+        Ok(previous.abs_diff(self.transcript_scroll))
+    }
+
+    fn jump_to_latest_transcript(&mut self) -> usize {
+        let previous = self.transcript_scroll;
+        self.transcript_scroll = 0;
+        previous
+    }
+
+    fn set_transcript_from_session(&mut self, session: &Session) {
+        self.transcript = initial_transcript_entries(session);
+        self.transcript_cache = TranscriptCache::default();
+        self.transcript_scroll = 0;
     }
 
     fn prompt_for_permission(&mut self, message: &str) -> Result<bool> {
@@ -673,9 +812,9 @@ impl FullscreenUi {
             SetForegroundColor(Color::Yellow),
             Print(truncate_to_width(
                 &format!(
-                    " {}  •  scroll:{}  •  composer:{} line(s)",
+                    " {}  •  {}  •  composer:{} line(s)",
                     self.status,
-                    self.transcript_scroll,
+                    scroll_status_label(self.transcript_scroll),
                     self.composer
                         .wrapped_lines(width.saturating_sub(4) as usize)
                         .len()
@@ -718,7 +857,7 @@ impl FullscreenUi {
             MoveTo(0, hint_y),
             SetForegroundColor(Color::DarkGrey),
             Print(truncate_to_width(
-                " /help • /status • /clear • /quit • PgUp/PgDn transcript • Esc clear input ",
+                " /help • /status • /session • /compact • /clear • /quit (/exit) • Ctrl+D exit • PgUp/PgDn page • Ctrl+Home/End top/latest ",
                 width as usize,
             )),
             ResetColor,
@@ -1016,6 +1155,7 @@ impl TranscriptCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zipcode_runtime::Session;
 
     #[test]
     fn stream_redraw_policy_batches_small_tokens() {
@@ -1114,6 +1254,43 @@ mod tests {
             PermissionMode::ReadOnly
         );
     }
+
+    #[test]
+    fn transcript_entries_from_session_rehydrates_saved_history() {
+        let mut session = Session::new();
+        session.messages = vec![
+            zipcode_inference::ChatMessage::system("system prompt"),
+            zipcode_inference::ChatMessage::user("hello"),
+            zipcode_inference::ChatMessage::assistant("world"),
+            zipcode_inference::ChatMessage::tool_result("call_1", "tool output"),
+        ];
+
+        let entries = transcript_entries_from_session(&session);
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].kind, EntryKind::Info);
+        assert!(entries[0].content.contains("saved system prompt"));
+        assert_eq!(entries[1].kind, EntryKind::User);
+        assert_eq!(entries[1].content, "hello");
+        assert_eq!(entries[2].kind, EntryKind::Assistant);
+        assert_eq!(entries[2].content, "world");
+        assert_eq!(entries[3].kind, EntryKind::ToolResult);
+        assert_eq!(entries[3].content, "tool output");
+    }
+
+    #[test]
+    fn scroll_status_label_is_human_friendly() {
+        assert_eq!(scroll_status_label(0), "latest");
+        assert_eq!(scroll_status_label(1), "1 line above latest");
+        assert_eq!(scroll_status_label(12), "12 lines above latest");
+    }
+
+    #[test]
+    fn visible_tail_clamps_scroll_without_empty_overscroll() {
+        let items = vec![1, 2, 3, 4, 5];
+        assert_eq!(visible_tail(&items, 3, 0), &[3, 4, 5]);
+        assert_eq!(visible_tail(&items, 3, 1), &[2, 3, 4]);
+        assert_eq!(visible_tail(&items, 3, 999), &[1, 2, 3]);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1171,11 +1348,72 @@ fn wrap_plain(text: &str, width: usize) -> Vec<String> {
     crate::width::wrap_display(text, width)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrollDirection {
+    Older,
+    Newer,
+}
+
+fn scroll_status_label(offset: usize) -> String {
+    match offset {
+        0 => "latest".to_string(),
+        1 => "1 line above latest".to_string(),
+        value => format!("{value} lines above latest"),
+    }
+}
+
+fn initial_transcript_entries(session: &Session) -> Vec<TranscriptEntry> {
+    let mut entries = vec![TranscriptEntry {
+        kind: EntryKind::Info,
+        content: format!(
+            "zipcode v{} — fullscreen TUI (Codex-style MVP+) ready",
+            env!("CARGO_PKG_VERSION")
+        ),
+    }];
+    entries.extend(transcript_entries_from_session(session));
+    entries
+}
+
+fn transcript_entries_from_session(session: &Session) -> Vec<TranscriptEntry> {
+    let mut entries = Vec::new();
+    let mut system_prompt_reported = false;
+
+    for message in &session.messages {
+        match message.role {
+            Role::System => {
+                if !system_prompt_reported {
+                    entries.push(TranscriptEntry {
+                        kind: EntryKind::Info,
+                        content: "Resumed with saved system prompt.".to_string(),
+                    });
+                    system_prompt_reported = true;
+                }
+            }
+            Role::User => entries.push(TranscriptEntry {
+                kind: EntryKind::User,
+                content: message.content.clone(),
+            }),
+            Role::Model => entries.push(TranscriptEntry {
+                kind: EntryKind::Assistant,
+                content: message.content.clone(),
+            }),
+            Role::Tool => entries.push(TranscriptEntry {
+                kind: EntryKind::ToolResult,
+                content: message.content.clone(),
+            }),
+        }
+    }
+
+    entries
+}
+
 fn visible_tail<T>(items: &[T], max_len: usize, scroll_offset: usize) -> &[T] {
     if items.len() <= max_len {
         return items;
     }
-    let end = items.len().saturating_sub(scroll_offset);
+    let max_scroll = items.len().saturating_sub(max_len);
+    let clamped_scroll = scroll_offset.min(max_scroll);
+    let end = items.len().saturating_sub(clamped_scroll);
     let start = end.saturating_sub(max_len);
     &items[start..end]
 }
