@@ -43,11 +43,30 @@ impl Tool for ReadFileTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing required parameter: path"))?;
 
-        let path = crate::resolve_and_validate_path(path_str, &ctx.cwd)
+        let requested_path = crate::resolve_and_validate_path(path_str, &ctx.cwd)
             .with_context(|| format!("failed to resolve path: {path_str}"))?;
-
-        let metadata = fs::metadata(&path)
-            .with_context(|| format!("failed to stat file: {}", path.display()))?;
+        let mut corrected_from = None;
+        let (path, metadata) = match fs::metadata(&requested_path) {
+            Ok(metadata) => (requested_path, metadata),
+            Err(original_error) => {
+                if let Some((repaired_relative, repaired_absolute)) =
+                    crate::recover_duplicated_workspace_prefix(path_str, &ctx.cwd)
+                {
+                    let metadata = fs::metadata(&repaired_absolute).with_context(|| {
+                        format!(
+                            "failed to stat file after path recovery: {}",
+                            repaired_absolute.display()
+                        )
+                    })?;
+                    corrected_from = Some((path_str.to_string(), repaired_relative));
+                    (repaired_absolute, metadata)
+                } else {
+                    return Err(original_error).with_context(|| {
+                        format!("failed to stat file: {}", requested_path.display())
+                    });
+                }
+            }
+        };
 
         let file_size = metadata.len();
         if file_size > MAX_READ_SIZE {
@@ -81,6 +100,10 @@ impl Tool for ReadFileTool {
             None => total,
         };
 
+        let auto_correct_note = corrected_from
+            .as_ref()
+            .map(|(from, to)| format!("[auto-corrected path: {from} -> {to}]"));
+
         let header = if total == 0 {
             format!("[file: {}, empty file]", path.display())
         } else if start >= total {
@@ -98,6 +121,10 @@ impl Tool for ReadFileTool {
                 end,
                 total
             )
+        };
+        let header = match auto_correct_note {
+            Some(note) => format!("{note}\n{header}"),
+            None => header,
         };
 
         let numbered: String = lines[start..end]
@@ -228,6 +255,27 @@ mod tests {
         let args = serde_json::json!({ "path": f.path().to_str().unwrap(), "offset": 500 });
         let result = tool.execute(args, &ctx()).unwrap();
         assert!(result.content.contains("exceeds"));
+    }
+
+    #[test]
+    fn test_read_auto_corrects_duplicated_workspace_prefix() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let workspace = dir.path().join("zipcode");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("README.md"), "hello from readme").unwrap();
+
+        let ctx = ToolContext {
+            cwd: workspace.clone(),
+            permission: PermissionMode::FullAccess,
+            session_id: "test".to_string(),
+        };
+
+        let tool = ReadFileTool;
+        let args = serde_json::json!({ "path": "zipcode/README.md" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        assert!(result.content.contains("auto-corrected path"));
+        assert!(result.content.contains("hello from readme"));
     }
 
     #[test]

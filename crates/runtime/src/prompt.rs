@@ -20,6 +20,8 @@ Key rules:
 - **Prefer edit_file over write_file** when modifying existing files — edit_file does targeted replacement and is safer for large files; write_file overwrites the entire file and risks losing content if the rewrite is incomplete
 - **Use `**/*` glob patterns** for project-wide searches — `*` only matches files in the current directory and will miss files in subdirectories (e.g. use `**/*.rs` not `*.rs` to find all Rust files)
 - **When asked to analyze a repository or project path**, start by inspecting its README and primary manifest/build files (for example `Cargo.toml`, `package.json`, `pyproject.toml`) before asking follow-up questions, unless the user already asked for a narrower focus
+- **Prefer paths relative to the current working directory** — if the working directory is already the repo root, use `README.md` not `repo-name/README.md`
+- **If a file read or search fails because the path redundantly prefixes the current workspace name**, retry once without that leading repo-name segment before giving up
 - **If a search fails**, retry with a broader pattern or inspect likely files directly before asking the user for the file location"#;
 
 pub fn build_system_prompt(
@@ -68,6 +70,7 @@ mod tests {
         assert!(prompt.contains("zipcode"));
         assert!(prompt.contains("workspace-write"));
         assert!(prompt.contains("analyze a repository or project path"));
+        assert!(prompt.contains("Prefer paths relative to the current working directory"));
     }
 
     #[test]

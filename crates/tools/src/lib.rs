@@ -33,6 +33,37 @@ pub fn resolve_and_validate_path(
     Ok(canonical)
 }
 
+pub fn recover_duplicated_workspace_prefix(
+    file_path: &str,
+    cwd: &std::path::Path,
+) -> Option<(String, PathBuf)> {
+    let requested = std::path::Path::new(file_path);
+    if requested.is_absolute() {
+        return None;
+    }
+
+    let cwd_name = cwd.file_name()?;
+    let mut components = requested.components();
+    let first = components.next()?;
+    let Component::Normal(first_segment) = first else {
+        return None;
+    };
+    if first_segment != cwd_name {
+        return None;
+    }
+
+    let remainder = components.as_path();
+    if remainder.as_os_str().is_empty() {
+        return None;
+    }
+
+    let repaired_relative = remainder.to_string_lossy().to_string();
+    let repaired_absolute = cwd.join(remainder);
+    repaired_absolute
+        .exists()
+        .then_some((repaired_relative, repaired_absolute))
+}
+
 fn canonicalize_even_if_missing(path: &std::path::Path) -> anyhow::Result<PathBuf> {
     if path.exists() {
         return path.canonicalize().map_err(Into::into);
@@ -328,5 +359,25 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let result = resolve_and_validate_path("nested/dir/new.txt", dir.path()).unwrap();
         assert_eq!(result, dir.path().join("nested/dir/new.txt"));
+    }
+
+    #[test]
+    fn test_recover_duplicated_workspace_prefix_finds_existing_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let workspace = dir.path().join("zipcode");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("README.md"), "hello").unwrap();
+
+        let recovered =
+            recover_duplicated_workspace_prefix("zipcode/README.md", &workspace).unwrap();
+        assert_eq!(recovered.0, "README.md");
+        assert_eq!(recovered.1, workspace.join("README.md"));
+    }
+
+    #[test]
+    fn test_recover_duplicated_workspace_prefix_ignores_unrelated_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(recover_duplicated_workspace_prefix("README.md", dir.path()).is_none());
+        assert!(recover_duplicated_workspace_prefix("../README.md", dir.path()).is_none());
     }
 }
