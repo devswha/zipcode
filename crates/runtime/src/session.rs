@@ -149,19 +149,22 @@ impl Default for Session {
     }
 }
 
+fn validate_session_id(id: &str) -> Result<()> {
+    let is_valid = !id.is_empty()
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+    if is_valid {
+        Ok(())
+    } else {
+        anyhow::bail!("Invalid session id: {id}")
+    }
+}
+
 fn session_path(id: &str) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(format!(".zipcode/sessions/{id}.json"))
-}
-
-fn validate_session_id(id: &str) -> Result<()> {
-    let is_valid = !id.is_empty() && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-');
-    if is_valid {
-        Ok(())
-    } else {
-        anyhow::bail!("Invalid session id: {id}");
-    }
 }
 
 fn timestamp_now() -> String {
@@ -407,5 +410,47 @@ mod tests {
                 .map(|message| message.content.clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_session_id_path_traversal_blocked() {
+        assert!(Session::load("../../etc/passwd").is_err());
+        assert!(Session::load("../escape").is_err());
+        assert!(Session::load("valid/../../../etc/shadow").is_err());
+    }
+
+    #[test]
+    fn test_session_id_slash_blocked() {
+        assert!(Session::load("foo/bar").is_err());
+        assert!(Session::load("/absolute/path").is_err());
+    }
+
+    #[test]
+    fn test_session_id_null_byte_blocked() {
+        assert!(Session::load("valid\0evil").is_err());
+    }
+
+    #[test]
+    fn test_session_id_empty_blocked() {
+        assert!(Session::load("").is_err());
+    }
+
+    #[test]
+    fn test_session_id_backslash_blocked() {
+        assert!(Session::load("foo\\bar").is_err());
+    }
+
+    #[test]
+    fn test_save_with_malicious_id_blocked() {
+        let mut session = Session::new();
+        session.id = "../../etc/cron.d/evil".to_string();
+        assert!(session.save().is_err());
+    }
+
+    #[test]
+    fn test_valid_uuid_session_id_accepted() {
+        assert!(validate_session_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(validate_session_id("simple-id").is_ok());
+        assert!(validate_session_id("test_session_123").is_ok());
     }
 }
