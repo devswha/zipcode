@@ -15,6 +15,7 @@ use termimad::crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use zipcode_runtime::{ConversationLoop, Session, StreamCallback};
+use zipcode_tools::PermissionMode;
 
 use crate::render::{terminal_width, truncate_to_width};
 use crate::repl::{help_text, parse_slash_command, prepare_loop, run_interactive, SlashCommand};
@@ -142,6 +143,7 @@ struct FullscreenUi {
     raw_enabled: bool,
     overlay: Option<Overlay>,
     draw_drops: usize,
+    esc_armed: bool,
 }
 
 impl FullscreenUi {
@@ -190,6 +192,7 @@ impl FullscreenUi {
             raw_enabled: true,
             overlay: None,
             draw_drops: 0,
+            esc_armed: false,
         };
         for notice in startup_notices {
             ui.push_entry(EntryKind::Info, format!("[notice] {notice}"));
@@ -224,6 +227,10 @@ impl FullscreenUi {
             }
         }
 
+        if !matches!(key.code, KeyCode::Esc) {
+            self.esc_armed = false;
+        }
+
         match key {
             KeyEvent {
                 code: KeyCode::Char('d'),
@@ -231,20 +238,49 @@ impl FullscreenUi {
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => return Ok(false),
             KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.clear();
+                self.status = "Input cancelled".to_string();
+            }
+            KeyEvent {
                 code: KeyCode::Char('l'),
                 modifiers,
                 ..
-            } if modifiers.contains(KeyModifiers::CONTROL) => {}
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.status = "Screen refreshed".to_string();
+            }
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
-                self.composer.clear();
-                self.status = "Input cleared".to_string();
+                if self.composer.is_empty() {
+                    match handle_empty_composer_escape(&mut self.composer, &mut self.esc_armed) {
+                        EscapeOutcome::Armed => {
+                            self.status = "Press Esc again to edit previous message".to_string();
+                        }
+                        EscapeOutcome::LoadedPrevious => {
+                            self.status = "Editing previous message".to_string();
+                        }
+                        EscapeOutcome::NoPreviousMessage => {
+                            self.status = "No previous message to edit".to_string();
+                        }
+                    }
+                } else {
+                    self.composer.clear();
+                    self.esc_armed = false;
+                    self.status = "Input cleared".to_string();
+                }
             }
             KeyEvent {
                 code: KeyCode::F(1),
                 ..
             } => self.open_help_overlay(),
+            KeyEvent {
+                code: KeyCode::BackTab,
+                ..
+            } => cycle_permission_mode(self, conv),
             KeyEvent {
                 code: KeyCode::PageUp,
                 ..
@@ -316,6 +352,11 @@ impl FullscreenUi {
                 code: KeyCode::Enter,
                 ..
             } => {
+                if self.composer.try_escape_newline() {
+                    self.status = "Inserted newline".to_string();
+                    self.draw()?;
+                    return Ok(true);
+                }
                 let submitted = self.composer.submit();
                 return self.handle_submitted_input(submitted, conv);
             }
@@ -363,6 +404,10 @@ impl FullscreenUi {
                         format!("Messages: {}", conv.session.messages.len()),
                         format!("Tools: {}", conv.tools.names().len()),
                         format!("Backend: {}", self.backend),
+                        format!(
+                            "Permission mode: {}",
+                            permission_mode_label(conv.permission.mode())
+                        ),
                         format!("Working dir: {}", conv.cwd.display()),
                     ],
                 });
@@ -391,11 +436,18 @@ impl FullscreenUi {
             "".to_string(),
             "Fullscreen keys:".to_string(),
             "  Enter      submit".to_string(),
+            "  \\ + Enter  newline (Claude Code quick escape)".to_string(),
             "  Ctrl+J      newline".to_string(),
+            "  Shift+Enter newline".to_string(),
+            "  Option+Enter newline".to_string(),
             "  Arrow keys  move cursor / recall history".to_string(),
             "  PgUp/PgDn   scroll transcript".to_string(),
+            "  Shift+Tab   cycle permission mode".to_string(),
             "  F1          help".to_string(),
+            "  Esc Esc     edit previous message".to_string(),
             "  Esc         clear input / close overlay".to_string(),
+            "  Ctrl+L      refresh screen".to_string(),
+            "  Ctrl+C      cancel input".to_string(),
             "  Ctrl+D      exit".to_string(),
         ]);
         self.overlay = Some(Overlay {
@@ -869,6 +921,51 @@ fn should_draw_stream_update(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscapeOutcome {
+    Armed,
+    LoadedPrevious,
+    NoPreviousMessage,
+}
+
+fn handle_empty_composer_escape(composer: &mut Composer, esc_armed: &mut bool) -> EscapeOutcome {
+    if *esc_armed {
+        *esc_armed = false;
+        if composer.history_previous() {
+            EscapeOutcome::LoadedPrevious
+        } else {
+            EscapeOutcome::NoPreviousMessage
+        }
+    } else {
+        *esc_armed = true;
+        EscapeOutcome::Armed
+    }
+}
+
+fn next_permission_mode(mode: PermissionMode) -> PermissionMode {
+    match mode {
+        PermissionMode::ReadOnly => PermissionMode::WorkspaceWrite,
+        PermissionMode::WorkspaceWrite => PermissionMode::FullAccess,
+        PermissionMode::FullAccess => PermissionMode::ReadOnly,
+    }
+}
+
+fn permission_mode_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::ReadOnly => "read-only",
+        PermissionMode::WorkspaceWrite => "workspace-write",
+        PermissionMode::FullAccess => "full-access",
+    }
+}
+
+fn cycle_permission_mode(ui: &mut FullscreenUi, conv: &mut ConversationLoop) {
+    let next = next_permission_mode(conv.permission.mode());
+    conv.permission.set_mode(next);
+    let message = format!("Permission mode changed to {}", permission_mode_label(next));
+    ui.push_entry(EntryKind::Info, message.clone());
+    ui.status = message;
+}
+
 #[derive(Default)]
 struct TranscriptCache {
     width: Option<usize>,
@@ -979,6 +1076,43 @@ mod tests {
 
         assert_eq!(cache.entry_line_counts, rebuilt.entry_line_counts);
         assert_eq!(cache.lines, rebuilt.lines);
+    }
+
+    #[test]
+    fn empty_composer_escape_requires_double_press_to_recall_history() {
+        let mut composer = Composer::new();
+        for ch in "previous".chars() {
+            composer.insert_char(ch);
+        }
+        let _ = composer.submit();
+
+        let mut esc_armed = false;
+        assert_eq!(
+            handle_empty_composer_escape(&mut composer, &mut esc_armed),
+            EscapeOutcome::Armed
+        );
+        assert!(esc_armed);
+        assert_eq!(
+            handle_empty_composer_escape(&mut composer, &mut esc_armed),
+            EscapeOutcome::LoadedPrevious
+        );
+        assert_eq!(composer.text(), "previous");
+    }
+
+    #[test]
+    fn shift_tab_cycles_permission_modes() {
+        assert_eq!(
+            next_permission_mode(PermissionMode::ReadOnly),
+            PermissionMode::WorkspaceWrite
+        );
+        assert_eq!(
+            next_permission_mode(PermissionMode::WorkspaceWrite),
+            PermissionMode::FullAccess
+        );
+        assert_eq!(
+            next_permission_mode(PermissionMode::FullAccess),
+            PermissionMode::ReadOnly
+        );
     }
 }
 

@@ -24,6 +24,10 @@ impl Composer {
         self.history_index = None;
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
     pub(crate) fn insert_char(&mut self, ch: char) {
         self.buffer.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
@@ -33,6 +37,22 @@ impl Composer {
 
     pub(crate) fn insert_newline(&mut self) {
         self.insert_char('\n');
+    }
+
+    pub(crate) fn try_escape_newline(&mut self) -> bool {
+        if self.cursor != self.buffer.len() || self.cursor == 0 {
+            return false;
+        }
+
+        let prev = prev_boundary(&self.buffer, self.cursor);
+        if &self.buffer[prev..self.cursor] != "\\" {
+            return false;
+        }
+
+        self.buffer.drain(prev..self.cursor);
+        self.cursor = prev;
+        self.insert_newline();
+        true
     }
 
     pub(crate) fn backspace(&mut self) {
@@ -374,5 +394,16 @@ mod tests {
         composer.insert_char('한');
 
         assert_eq!(composer.cursor_visual_position(1), (1, 0));
+    }
+
+    #[test]
+    fn trailing_backslash_then_enter_inserts_newline() {
+        let mut composer = Composer::new();
+        for ch in "hello\\".chars() {
+            composer.insert_char(ch);
+        }
+
+        assert!(composer.try_escape_newline());
+        assert_eq!(composer.text(), "hello\n");
     }
 }

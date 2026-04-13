@@ -21,6 +21,10 @@ impl PermissionPolicy {
         self.mode
     }
 
+    pub fn set_mode(&mut self, mode: PermissionMode) {
+        self.mode = mode;
+    }
+
     pub fn check(&self, tool_name: &str, _args: &serde_json::Value) -> PermissionCheck {
         match self.mode {
             PermissionMode::FullAccess => PermissionCheck::Allowed,
