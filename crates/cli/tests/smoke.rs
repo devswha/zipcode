@@ -728,6 +728,82 @@ echo fake llama-server
 }
 
 #[test]
+fn root_install_script_reuses_installed_helper_wrapper_safely() {
+    let home = make_temp_dir("root-install-reuse-wrapper");
+    let asset_dir = make_temp_dir("root-install-reuse-wrapper-assets");
+    let model = asset_dir.join("gemma-4-test.gguf");
+    let tokenizer = asset_dir.join("tokenizer.json");
+    let helper = asset_dir.join("llama-server");
+    let install_script = repo_root().join("install.sh");
+
+    std::fs::write(&model, b"gguf").expect("write fake gguf");
+    std::fs::write(&tokenizer, b"{}").expect("write fake tokenizer");
+    write_executable(
+        &helper,
+        "#!/bin/sh
+echo fake llama-server
+",
+    );
+
+    let first = Command::new("bash")
+        .arg(&install_script)
+        .args(["--binary", env!("CARGO_BIN_EXE_zipcode")])
+        .arg("--model")
+        .arg(&model)
+        .arg("--tokenizer")
+        .arg(&tokenizer)
+        .arg("--llama-server")
+        .arg(&helper)
+        .env("HOME", &home)
+        .env("CUDA_PATH", "/tmp/fake-cuda")
+        .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
+        .output()
+        .expect("failed to run first install.sh");
+    assert!(
+        first.status.success(),
+        "first install should succeed, got: {first:?}"
+    );
+
+    let installed_wrapper = home.join(".zipcode/bin/llama-server");
+    let second = Command::new("bash")
+        .arg(&install_script)
+        .args(["--binary", env!("CARGO_BIN_EXE_zipcode")])
+        .arg("--model")
+        .arg(&model)
+        .arg("--tokenizer")
+        .arg(&tokenizer)
+        .arg("--llama-server")
+        .arg(&installed_wrapper)
+        .env("HOME", &home)
+        .env("CUDA_PATH", "/tmp/fake-cuda")
+        .env("ZIPCODE_INSTALL_SKIP_SYSTEM_BIN", "1")
+        .output()
+        .expect("failed to run second install.sh");
+    assert!(
+        second.status.success(),
+        "second install should succeed, got: {second:?}"
+    );
+
+    let helper_run = Command::new(&installed_wrapper)
+        .arg("--help")
+        .env("HOME", &home)
+        .output()
+        .expect("run installed helper wrapper");
+    assert!(
+        helper_run.status.success(),
+        "reused helper wrapper should stay executable, got: {helper_run:?}"
+    );
+    let stdout = String::from_utf8_lossy(&helper_run.stdout);
+    assert!(
+        stdout.contains("fake llama-server"),
+        "helper wrapper should still delegate to the real helper, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+    std::fs::remove_dir_all(asset_dir).expect("cleanup asset dir");
+}
+
+#[test]
 fn root_install_script_interviews_users_with_links_then_paths() {
     let home = make_temp_dir("root-install-interview");
     let asset_dir = make_temp_dir("root-install-interview-assets");

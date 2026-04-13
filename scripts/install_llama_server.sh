@@ -46,6 +46,23 @@ SOURCE_BIN="$(resolve_source "${1:-}")"
 TARGET_BIN="${INSTALL_BIN_DIR}/llama-server"
 TARGET_REAL_BIN="${INSTALL_LIB_DIR}/llama-server-real"
 
+normalize_source_bin() {
+    local source_bin="$1"
+    local sibling_real=""
+
+    sibling_real="$(cd -- "$(dirname -- "${source_bin}")" && pwd)/../lib/llama-server/llama-server-real"
+    if [ -f "${sibling_real}" ] && grep -q 'BIN="${LIB_DIR}/llama-server-real"' "${source_bin}" 2>/dev/null; then
+        printf '%s
+' "${sibling_real}"
+        return 0
+    fi
+
+    printf '%s
+' "${source_bin}"
+}
+
+SOURCE_BIN="$(normalize_source_bin "${SOURCE_BIN}")"
+
 copy_runtime_libs() {
     local source_bin="$1"
     local root1 root2 root3 root
@@ -103,8 +120,12 @@ EOF
 }
 
 mkdir -p "${INSTALL_BIN_DIR}" "${INSTALL_LIB_DIR}"
-cp -L "${SOURCE_BIN}" "${TARGET_REAL_BIN}"
-chmod 755 "${TARGET_REAL_BIN}"
+if [ -e "${TARGET_REAL_BIN}" ] && [ "${SOURCE_BIN}" -ef "${TARGET_REAL_BIN}" ]; then
+    chmod 755 "${TARGET_REAL_BIN}"
+else
+    cp -L "${SOURCE_BIN}" "${TARGET_REAL_BIN}"
+    chmod 755 "${TARGET_REAL_BIN}"
+fi
 copy_runtime_libs "${SOURCE_BIN}" >/dev/null || true
 write_wrapper
 
