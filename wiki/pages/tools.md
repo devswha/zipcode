@@ -108,13 +108,13 @@ Method `truncate(max_bytes)` (lines 129-149) finds a safe UTF-8 char boundary, t
 
 | # | Name | File | Behavior (short) |
 |---|------|------|------------------|
-| 1 | `BashTool` | `bash.rs` | `bash -c <command>` with cwd; 120 s timeout via `wait_timeout`; captures stdout/stderr; preserves exit code; timeout cleanup walks `/proc` and kills descendant processes too |
+| 1 | `BashTool` | `bash.rs` | `bash -c <command>` with cwd; 120 s timeout; captures stdout/stderr concurrently so large output does not false-timeout; timeout cleanup walks `/proc` and kills descendant processes too |
 | 2 | `ReadFileTool` | `read_file.rs` | Offset/limit, line numbering, 10 MB `MAX_READ_SIZE`, binary detection |
 | 3 | `WriteFileTool` | `write_file.rs` | Creates parent dirs; path traversal blocked |
 | 4 | `EditFileTool` | `edit_file.rs` | Exact string replacement; **fails if 0 or >1 match** (enforced uniqueness) |
 | 5 | `GlobSearchTool` | `glob_search.rs` | `glob::glob()` sorted, filters to files, rejects absolute / `..` escape patterns, and re-validates each match against workspace boundaries |
 | 6 | `GrepSearchTool` | `grep_search.rs` | `grep-regex` + `grep-searcher`, optional glob filter, rejects absolute / `..` traversal globs, re-validates matched files against the workspace, `file:line` output |
-| 7 | `ReplTool` | `repl.rs` | Spawns `python3 -c` or `node -e`; captures stdout/stderr; timeout cleanup kills descendant interpreters/processes too |
+| 7 | `ReplTool` | `repl.rs` | Spawns `python3 -c` or `node -e`; captures stdout/stderr concurrently so large output does not false-timeout; timeout cleanup kills descendant interpreters/processes too |
 | 8 | `TodoWriteTool` | `todo_write.rs` | Writes JSON to `.zipcode-todos.json` in cwd |
 | 9 | `ToolSearchTool` | `tool_search.rs` | Case-insensitive search over registered `ToolSpec`s |
 | 10 | `AgentTool` | `agent.rs` | **STUB** — returns "not yet implemented" |
@@ -151,17 +151,23 @@ Algorithm:
 
 ## Tests
 
-**EXTRACTED** — ~40 unit tests across the crate.
+**EXTRACTED** — 63 unit tests total in `zipcode-tools` (`cargo test -p zipcode-tools -- --list` on 2026-04-14).
 
-| File | Tests | Covers |
-|------|-------|--------|
-| `lib.rs` | 8 | registry ops, specs, truncation, path traversal (blocked + allowed + missing parent) |
-| `bash.rs` | 4 | echo, stderr capture, nonzero exit, cwd usage |
-| `read_file.rs` | ~8 | offset, limit, binary detection, too large |
-| `write_file.rs` | 2 | new file, nested dirs |
-| `edit_file.rs` | ~6 | unique replacement, multi-match error, missing string |
-| `glob_search.rs` | ~3 | pattern match, no matches |
-| `grep_search.rs` | ~4 | regex, glob filter, no matches |
+Recent regression coverage that materially changed the crate since the previous wiki snapshot includes:
+
+- `bash` timeout descendant cleanup and large-stdout false-timeout protection. `crates/tools/src/bash.rs:133`, `crates/tools/src/bash.rs:163`
+- `repl` timeout descendant cleanup and large-stdout false-timeout protection. `crates/tools/src/repl.rs:206`, `crates/tools/src/repl.rs:240`
+- `glob_search` rejects absolute and parent-directory escape patterns. `crates/tools/src/glob_search.rs:192`, `crates/tools/src/glob_search.rs:208`
+- `grep_search` rejects absolute and parent-directory traversal globs and stops scanning once the output budget is full. `crates/tools/src/grep_search.rs:339`, `crates/tools/src/grep_search.rs:358`, `crates/tools/src/grep_search.rs:375`
+
+The rest of the crate still has broad per-tool coverage for:
+
+| Area | Example coverage anchors |
+|------|---------------------------|
+| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:305`, `crates/tools/src/lib.rs:318`, `crates/tools/src/lib.rs:342` |
+| File readers / writers / editor behaviors | `crates/tools/src/read_file.rs`, `crates/tools/src/write_file.rs`, `crates/tools/src/edit_file.rs` |
+| Search behavior and budget limits | `crates/tools/src/glob_search.rs`, `crates/tools/src/grep_search.rs` |
+| Execution tools (`bash`, `repl`) | `crates/tools/src/bash.rs`, `crates/tools/src/repl.rs` |
 
 ---
 

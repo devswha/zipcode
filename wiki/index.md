@@ -3,7 +3,7 @@
 Developer reference for the `crates/` workspace. Structured as a knowledge graph — navigate by **community** (a tightly-related module cluster) and jump between pages via **god node** links.
 
 **Scope:** `/home/devswha/workspace/zipcode/crates/` only.
-**Snapshot:** extracted from code on 2026-04-09.
+**Snapshot:** extracted from code on 2026-04-14.
 **Provenance rule:** every factual claim below carries a `file:line` reference.
 
 > Graphify-inspired layout. Start at [god nodes](#god-nodes) if you're new to the codebase — that's where everything else hangs off.

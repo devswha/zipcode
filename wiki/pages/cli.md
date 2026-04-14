@@ -92,6 +92,8 @@ Reports:
 
 Used by `install.sh` to bootstrap a fresh machine.
 
+**INFERRED:** the root installer now only writes aggressive Gemma 4 helper GPU defaults when the helper can answer a quick capability probe, which keeps install-time defaults aligned with later readiness checks. `scripts/lib/install_common.sh:99`, `scripts/lib/install_common.sh:106`, `scripts/lib/install_common.sh:111`
+
 ---
 
 ## `update`
@@ -116,7 +118,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 6. Call `create_engine(backend, model_path, tokenizer_path, config, server_options)` — returns `Box<dyn InferenceProvider>`.
 7. Build `ToolRegistry` with all 10 tools from `zipcode-tools`.
 8. Build system prompt via `prompt::build(...)` — see [conversation-loop › run_turn](conversation-loop.md#run_turn-flow) for how it's consumed.
-9. Create `Session::new()`.
+9. Create `Session::new()` and persist it immediately so `/session` can resume a fresh startup session without waiting for the first model turn.
 10. Construct [`ConversationLoop`](conversation-loop.md).
 11. Enter TUI (`tui.rs`) or plain REPL depending on `--ui`.
 
@@ -142,16 +144,21 @@ Used by `install.sh` to bootstrap a fresh machine.
 
 ## Tests
 
-**EXTRACTED** — `crates/cli/tests/smoke.rs`, ~40 integration tests:
+**EXTRACTED** — `crates/cli/tests/smoke.rs` currently exposes 40 smoke tests (`cargo test -p zipcode --test smoke -- --list` on 2026-04-14).
 
-| Covers | Approx tests |
-|--------|--------------|
-| `doctor`, `--help`, `--version`, `prompt` with no model (graceful error) | ~6 |
-| `setup` flow: config write, wrapper creation | ~4 |
-| Bare `zipcode` invocation routes to setup/repair guidance | ~3 |
-| `install.sh` bootstrap: terminal download, model discovery | ~5 |
-| Fullscreen TUI e2e with mocked `llama-server` | ~8 |
-| `build_llama_server.sh` helper: CUDA fallback, `gcc-10` detection (commit `52a7717`) | ~4 |
+Notable newer regression guards added since the earlier snapshot include:
+
+| Area | Example tests |
+|------|---------------|
+| Dirty-tree update gating before any fetch | `crates/cli/tests/smoke.rs:521`, `crates/cli/tests/smoke.rs:558` |
+| Missing-model startup guidance for explicit `prompt` / `repl` subcommands | `crates/cli/tests/smoke.rs:628`, `crates/cli/tests/smoke.rs:712` |
+| Stale helper-path fallback discovery | `crates/cli/tests/smoke.rs:905` |
+| Unrunnable helper GPU-offload config surfaced in `doctor` and bare startup | `crates/cli/tests/smoke.rs:1018`, `crates/cli/tests/smoke.rs:1064` |
+| Project-local config parse errors point to the right file | `crates/cli/tests/smoke.rs:1208` |
+| Root installer remains `Ready` when multiple existing models are available | `crates/cli/tests/smoke.rs:1840` |
+| Plain REPL session-load failures stay inline instead of exiting | `crates/cli/tests/smoke.rs:2070` |
+| `/clear` persists the new session immediately | `crates/cli/tests/smoke.rs:2113` |
+| Fullscreen `/compact` reports skipped/no-op honestly | `crates/cli/tests/smoke.rs:2194` |
 
 All tests use temp `HOME` directories to avoid side effects.
 

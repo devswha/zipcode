@@ -98,15 +98,22 @@ Implemented by the CLI's REPL / TUI to pipe events to the terminal. `on_permissi
 
 **EXTRACTED** — integration tests in `crates/runtime/tests/integration.rs`.
 
-Drive `ConversationLoop` with a `MockInferenceProvider` that queues predetermined responses:
+Drive `ConversationLoop` with a `MockInferenceProvider` (and one custom event-stream provider) that covers the success and failure edges in `crates/runtime/tests/integration.rs`.
 
-1. Plain text response → loop exits after one iteration.
-2. Tool call → tool execution → result → model re-invocation → plain text.
-3. Permission-denied path: `read_only` mode tries `bash`.
-4. Iteration cap: model keeps requesting tools; loop returns error after 25.
-5. Path traversal: `read_file` on `../../etc/passwd` rejected.
+Current named coverage includes:
 
-6 integration tests total (**EXTRACTED** — counted from explorer output).
+1. `text_only_response` — single natural-language turn exits after one iteration. `crates/runtime/tests/integration.rs:147`
+2. `single_tool_call` — tool call → tool execution → model follow-up → final answer. `crates/runtime/tests/integration.rs:175`
+3. `multi_tool_turn` — more than one tool call in the same turn. `crates/runtime/tests/integration.rs:210`
+4. `permission_denied` — `read_only` mode blocks `bash`. `crates/runtime/tests/integration.rs:256`
+5. `tool_call_loop_cap` — repeated tool requests hit the 25-iteration guard. `crates/runtime/tests/integration.rs:295`
+6. `path_traversal_blocked` — `read_file ../../etc/passwd` is rejected by tool path validation. `crates/runtime/tests/integration.rs:329`
+7. `failed_turn_is_saved_to_session_file` — inference errors still persist the attempted turn. `crates/runtime/tests/integration.rs:368`
+8. `tool_call_turn_strips_raw_markup_from_saved_assistant_content` — raw `<tool_call>` markup is stripped before assistant history is saved. `crates/runtime/tests/integration.rs:408`
+9. `resumed_session_does_not_duplicate_system_prompt` — resume path keeps the prompt boundary stable. `crates/runtime/tests/integration.rs:452`
+10. `compacted_session_roundtrip_can_continue_turns` — compacted sessions still resume correctly. `crates/runtime/tests/integration.rs:485`
+
+10 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-04-14).
 
 ---
 
