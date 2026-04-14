@@ -390,52 +390,55 @@ enum SseEvent {
     Done,
 }
 
-fn parse_sse_line(line: &str) -> Option<SseEvent> {
-    let data = line.strip_prefix("data: ")?;
+fn parse_sse_events(line: &str) -> Vec<SseEvent> {
+    let Some(data) = line.strip_prefix("data: ") else {
+        return Vec::new();
+    };
     let data = data.trim();
     if data.is_empty() {
-        return None;
+        return Vec::new();
     }
     if data == "[DONE]" {
-        return Some(SseEvent::Done);
+        return vec![SseEvent::Done];
     }
 
-    let json: Value = serde_json::from_str(data).ok()?;
-    let choice = json["choices"].get(0)?;
+    let Ok(json) = serde_json::from_str::<Value>(data) else {
+        return Vec::new();
+    };
+    let Some(choice) = json["choices"].get(0) else {
+        return Vec::new();
+    };
 
-    // Check finish_reason
     if let Some(reason) = choice["finish_reason"].as_str() {
         if reason != "null" {
-            return Some(SseEvent::FinishReason(reason.to_string()));
+            return vec![SseEvent::FinishReason(reason.to_string())];
         }
     }
 
     let delta = &choice["delta"];
 
-    // Tool call deltas
     if let Some(tool_calls) = delta["tool_calls"].as_array() {
-        if let Some(tc) = tool_calls.first() {
-            let index = tc["index"].as_u64().unwrap_or(0) as usize;
-            let id = tc["id"].as_str().map(String::from);
-            let name = tc["function"]["name"].as_str().map(String::from);
-            let arguments = tc["function"]["arguments"].as_str().map(String::from);
-            return Some(SseEvent::ToolCallDelta {
-                index,
-                id,
-                name,
-                arguments,
-            });
+        let events = tool_calls
+            .iter()
+            .map(|tc| SseEvent::ToolCallDelta {
+                index: tc["index"].as_u64().unwrap_or(0) as usize,
+                id: tc["id"].as_str().map(String::from),
+                name: tc["function"]["name"].as_str().map(String::from),
+                arguments: tc["function"]["arguments"].as_str().map(String::from),
+            })
+            .collect::<Vec<_>>();
+        if !events.is_empty() {
+            return events;
         }
     }
 
-    // Content token
     if let Some(content) = delta["content"].as_str() {
         if !content.is_empty() {
-            return Some(SseEvent::Token(content.to_string()));
+            return vec![SseEvent::Token(content.to_string())];
         }
     }
 
-    None
+    Vec::new()
 }
 
 #[derive(Default)]
@@ -505,14 +508,25 @@ fn stream_sse_events(port: u16, request: &Value, tx: &mpsc::Sender<TokenEvent>) 
     // Read SSE events
     let mut tool_call_accum: Vec<ToolCallAccumulator> = Vec::new();
     let mut finish_reason = FinishReason::Stop;
+    let mut saw_done = false;
+    let mut stream_error = None;
 
-    loop {
+    'sse: loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
-            Ok(0) => break,
+            Ok(0) => {
+                stream_error = Some("llama-server SSE stream ended before [DONE]".to_string());
+                break;
+            }
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                stream_error = Some("llama-server SSE stream timed out before [DONE]".to_string());
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                stream_error = Some("llama-server SSE stream stalled before [DONE]".to_string());
+                break;
+            }
             Err(e) => return Err(e.into()),
         }
 
@@ -522,52 +536,68 @@ fn stream_sse_events(port: u16, request: &Value, tx: &mpsc::Sender<TokenEvent>) 
             continue;
         }
 
-        let Some(event) = parse_sse_line(line) else {
-            continue;
-        };
-
-        match event {
-            SseEvent::Token(text) => {
-                if tx.send(TokenEvent::Token(text)).is_err() {
-                    return Ok(());
+        for event in parse_sse_events(line) {
+            match event {
+                SseEvent::Token(text) => {
+                    if tx.send(TokenEvent::Token(text)).is_err() {
+                        return Ok(());
+                    }
+                }
+                SseEvent::ToolCallDelta {
+                    index,
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    while tool_call_accum.len() <= index {
+                        tool_call_accum.push(ToolCallAccumulator::default());
+                    }
+                    let acc = &mut tool_call_accum[index];
+                    if let Some(id) = id {
+                        acc.id = id;
+                    }
+                    if let Some(name) = name {
+                        acc.name = name;
+                    }
+                    if let Some(args) = arguments {
+                        acc.arguments.push_str(&args);
+                    }
+                }
+                SseEvent::FinishReason(reason) => {
+                    finish_reason = match reason.as_str() {
+                        "length" => FinishReason::MaxTokens,
+                        "tool_calls" => FinishReason::ToolUse,
+                        _ => FinishReason::Stop,
+                    };
+                }
+                SseEvent::Done => {
+                    saw_done = true;
+                    break 'sse;
                 }
             }
-            SseEvent::ToolCallDelta {
-                index,
-                id,
-                name,
-                arguments,
-            } => {
-                while tool_call_accum.len() <= index {
-                    tool_call_accum.push(ToolCallAccumulator::default());
-                }
-                let acc = &mut tool_call_accum[index];
-                if let Some(id) = id {
-                    acc.id = id;
-                }
-                if let Some(name) = name {
-                    acc.name = name;
-                }
-                if let Some(args) = arguments {
-                    acc.arguments.push_str(&args);
-                }
-            }
-            SseEvent::FinishReason(reason) => {
-                finish_reason = match reason.as_str() {
-                    "length" => FinishReason::MaxTokens,
-                    "tool_calls" => FinishReason::ToolUse,
-                    _ => FinishReason::Stop,
-                };
-            }
-            SseEvent::Done => break,
         }
+    }
+
+    if let Some(error) = stream_error {
+        return Err(anyhow::anyhow!(error));
+    }
+
+    if !saw_done {
+        return Err(anyhow::anyhow!(
+            "llama-server SSE stream ended before a terminal event"
+        ));
     }
 
     // Emit accumulated tool calls
     if !tool_call_accum.is_empty() {
         for acc in tool_call_accum {
             let arguments: serde_json::Value =
-                serde_json::from_str(&acc.arguments).unwrap_or_else(|_| json!({}));
+                serde_json::from_str(&acc.arguments).with_context(|| {
+                    format!(
+                        "llama-server returned an incomplete tool call for `{}`",
+                        acc.name
+                    )
+                })?;
             let _ = tx.send(TokenEvent::ToolCall(ToolCallParsed {
                 id: acc.id,
                 name: acc.name,
@@ -626,33 +656,161 @@ fn parse_response_tool_calls(message: &Value) -> Vec<ToolCallParsed> {
 mod tests {
     use super::*;
     use crate::chat_template::ToolSpec;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
 
     #[test]
     fn parse_sse_data_line_extracts_token() {
         let line = r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
-        let event = parse_sse_line(line);
-        assert!(matches!(event, Some(SseEvent::Token(ref t)) if t == "hello"));
+        let events = parse_sse_events(line);
+        assert!(matches!(events.as_slice(), [SseEvent::Token(t)] if t == "hello"));
     }
 
     #[test]
     fn parse_sse_data_line_detects_done() {
         let line = "data: [DONE]";
-        let event = parse_sse_line(line);
-        assert!(matches!(event, Some(SseEvent::Done)));
+        let events = parse_sse_events(line);
+        assert!(matches!(events.as_slice(), [SseEvent::Done]));
     }
 
     #[test]
     fn parse_sse_data_line_extracts_tool_call_chunks() {
         let line = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":"}}]}}]}"#;
-        let event = parse_sse_line(line);
-        assert!(matches!(event, Some(SseEvent::ToolCallDelta { .. })));
+        let events = parse_sse_events(line);
+        assert!(matches!(
+            events.as_slice(),
+            [SseEvent::ToolCallDelta { .. }]
+        ));
+    }
+
+    #[test]
+    fn parse_sse_data_line_extracts_multiple_tool_call_chunks() {
+        let line = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_0","function":{"name":"read_file","arguments":"{\"path\":"}},{"index":1,"id":"call_1","function":{"name":"tool_search","arguments":"{\"query\":"}}]}}]}"#;
+        let events = parse_sse_events(line);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                SseEvent::ToolCallDelta { index: 0, id: Some(id0), name: Some(name0), arguments: Some(args0) },
+                SseEvent::ToolCallDelta { index: 1, id: Some(id1), name: Some(name1), arguments: Some(args1) },
+            ] if id0 == "call_0"
+                && name0 == "read_file"
+                && args0 == "{\"path\":"
+                && id1 == "call_1"
+                && name1 == "tool_search"
+                && args1 == "{\"query\":"
+        ));
     }
 
     #[test]
     fn parse_sse_data_line_ignores_empty() {
-        assert!(parse_sse_line("").is_none());
-        assert!(parse_sse_line(": comment").is_none());
-        assert!(parse_sse_line("data: ").is_none());
+        assert!(parse_sse_events("").is_empty());
+        assert!(parse_sse_events(": comment").is_empty());
+        assert!(parse_sse_events("data: ").is_empty());
+    }
+
+    fn serve_sse_response(body: &'static str) -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+        port
+    }
+
+    #[test]
+    fn stream_sse_events_emits_multiple_tool_calls_from_one_chunk() {
+        let port = serve_sse_response(
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[",
+                "{\"index\":0,\"id\":\"call_0\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}},",
+                "{\"index\":1,\"id\":\"call_1\",\"function\":{\"name\":\"tool_search\",\"arguments\":\"{\\\"query\\\":\\\"read_file\\\"}\"}}",
+                "]}}]}\n\n",
+                "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+        );
+        let request = json!({"stream": true});
+        let (tx, rx) = mpsc::channel();
+
+        stream_sse_events(port, &request, &tx).unwrap();
+        drop(tx);
+
+        let events: Vec<_> = rx.into_iter().collect();
+        let tool_calls: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                TokenEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0].id, "call_0");
+        assert_eq!(tool_calls[0].name, "read_file");
+        assert_eq!(tool_calls[0].arguments["path"], "README.md");
+        assert_eq!(tool_calls[1].id, "call_1");
+        assert_eq!(tool_calls[1].name, "tool_search");
+        assert_eq!(tool_calls[1].arguments["query"], "read_file");
+        assert!(matches!(
+            events.last(),
+            Some(TokenEvent::Done(FinishReason::ToolUse))
+        ));
+    }
+
+    #[test]
+    fn stream_sse_events_stops_after_done() {
+        let port = serve_sse_response(concat!(
+            "data: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n"
+        ));
+        let request = json!({"stream": true});
+        let (tx, rx) = mpsc::channel();
+
+        stream_sse_events(port, &request, &tx).unwrap();
+        drop(tx);
+
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(matches!(
+            events.as_slice(),
+            [TokenEvent::Done(FinishReason::Stop)]
+        ));
+    }
+
+    #[test]
+    fn stream_sse_events_errors_on_truncated_tool_call_stream() {
+        let port = serve_sse_response(concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[",
+            "{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\"}}",
+            "]}}]}\n\n"
+        ));
+        let request = json!({"stream": true});
+        let (tx, rx) = mpsc::channel();
+
+        let error = stream_sse_events(port, &request, &tx)
+            .unwrap_err()
+            .to_string();
+        drop(tx);
+
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(
+            events.is_empty(),
+            "truncated stream should not emit tool calls"
+        );
+        assert!(
+            error.contains("before [DONE]"),
+            "unexpected error for truncated SSE stream: {error}"
+        );
     }
 
     #[test]

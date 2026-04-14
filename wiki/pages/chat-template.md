@@ -38,7 +38,7 @@ Single-message wrapper. Handles per-role rendering and attaches `<tool_call>` JS
 
 **EXTRACTED** `chat_template.rs:60-84`
 
-The model is expected to emit JSON wrapped in `<tool_call>...</tool_call>` blocks. `parse_tool_calls()` extracts them via regex:
+The model is expected to emit JSON wrapped in `<tool_call>...</tool_call>` blocks. `parse_tool_calls()` scans for the start tag, then tries successive closing tags until it finds valid JSON:
 
 ```
 <tool_call>
@@ -47,6 +47,8 @@ The model is expected to emit JSON wrapped in `<tool_call>...</tool_call>` block
 ```
 
 Produces a `Vec<ToolCallParsed>`. Each parsed call gets a generated `id` for tracking through the conversation loop.
+
+**Recovery behavior that matters:** malformed or unclosed `<tool_call>` blocks are skipped without discarding later valid blocks in the same model turn. This lets the conversation loop keep tool use that appears after a broken block instead of losing the whole turn's tool-call set.
 
 ### `extract_text_content()` (lines 87-101)
 

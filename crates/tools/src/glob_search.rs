@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::path::{Component, Path};
 
 use crate::{Tool, ToolContext, ToolResult};
 
@@ -35,6 +36,7 @@ impl Tool for GlobSearchTool {
         let pattern = args["pattern"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: pattern"))?;
+        validate_glob_pattern(pattern)?;
 
         let base = if let Some(p) = args["path"].as_str() {
             crate::resolve_and_validate_path(p, &ctx.cwd)?
@@ -50,7 +52,12 @@ impl Tool for GlobSearchTool {
             .context("Invalid glob pattern")?
             .filter_map(|entry| entry.ok())
             .filter(|p| p.is_file())
-            .map(|p| p.to_string_lossy().into_owned())
+            .filter_map(|p| {
+                let display = p.to_string_lossy().into_owned();
+                crate::resolve_and_validate_path(&display, &ctx.cwd)
+                    .ok()
+                    .map(|_| display)
+            })
             .collect();
 
         if matches.is_empty() {
@@ -60,6 +67,24 @@ impl Tool for GlobSearchTool {
         matches.sort();
         Ok(ToolResult::new(matches.join("\n")))
     }
+}
+
+fn validate_glob_pattern(pattern: &str) -> Result<()> {
+    let path = Path::new(pattern);
+    if path.is_absolute() {
+        anyhow::bail!("Glob pattern must stay within the workspace");
+    }
+
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Glob pattern must not escape the workspace");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -161,5 +186,44 @@ mod tests {
         let mut sorted = lines.clone();
         sorted.sort();
         assert_eq!(lines, sorted);
+    }
+
+    #[test]
+    fn test_absolute_pattern_cannot_escape_workspace() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("escape.rs"), "").unwrap();
+
+        let tool = GlobSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({
+            "pattern": format!("{}/*.rs", outside.path().display())
+        });
+
+        let error = tool.execute(args, &ctx).unwrap_err().to_string();
+        assert!(error.contains("workspace") || error.contains("escape"));
+    }
+
+    #[test]
+    fn test_parent_dir_pattern_cannot_escape_workspace() {
+        let dir = TempDir::new().unwrap();
+        let outside_parent = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join("glob-search-escape-parent");
+        fs::create_dir_all(&outside_parent).unwrap();
+        fs::write(outside_parent.join("escape.rs"), "").unwrap();
+
+        let tool = GlobSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({
+            "pattern": "../glob-search-escape-parent/*.rs"
+        });
+
+        let error = tool.execute(args, &ctx).unwrap_err().to_string();
+        assert!(error.contains("workspace") || error.contains("escape"));
+
+        fs::remove_dir_all(&outside_parent).unwrap();
     }
 }

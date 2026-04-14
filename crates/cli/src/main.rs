@@ -92,7 +92,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Repl) => {
-            tui::run_interactive_with_ui(model_path, permission_mode, backend, session_id, cli.ui)?;
+            commands::run_repl_command(model_path, permission_mode, backend, session_id, cli.ui)?;
         }
         Some(Commands::Doctor) => {
             commands::doctor(model_path, backend)?;
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
             commands::update(check, rebuild)?;
         }
         Some(Commands::Prompt { text }) => {
-            repl::run_oneshot(&text, model_path, permission_mode, backend, session_id)?;
+            commands::run_prompt_command(&text, model_path, permission_mode, backend, session_id)?;
         }
         None => {
             commands::run_default(model_path, permission_mode, backend, session_id, cli.ui)?;

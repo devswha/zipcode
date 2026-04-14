@@ -1,4 +1,7 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use rustyline::error::ReadlineError;
@@ -26,6 +29,13 @@ pub struct LoopLaunch {
     pub startup_notices: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct HelperDiscovery {
+    pub path: Option<PathBuf>,
+    pub issue: Option<String>,
+    pub issue_is_blocking: bool,
+}
+
 /// CLI callback that renders streaming tokens and tool events.
 ///
 /// Manages a background spinner during model inference and between
@@ -50,6 +60,20 @@ pub(crate) enum ParsedSlashCommand {
     Command(SlashCommand, Option<String>),
     NotCommand,
     Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompactFeedback {
+    Compacted(String),
+    Skipped(String),
+}
+
+impl CompactFeedback {
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Compacted(message) | Self::Skipped(message) => message,
+        }
+    }
 }
 
 impl CliCallback {
@@ -255,18 +279,296 @@ pub(crate) fn resolve_effective_backend(
     }
 }
 
-pub(crate) fn discover_helper_path(config: &ZipcodeConfig) -> Option<PathBuf> {
-    if let Some(path) = &config.llama_server_bin {
-        if path.is_file() {
-            return Some(path.clone());
+fn is_runnable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|meta| meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn which_runnable_in_path(binary: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(binary);
+        if is_runnable_file(&candidate) {
+            return Some(candidate);
         }
+    }
+    None
+}
+
+pub(crate) fn discover_helper(config: &ZipcodeConfig) -> HelperDiscovery {
+    let mut issue = None;
+
+    if let Some(path) = &config.llama_server_bin {
+        if is_runnable_file(path) {
+            return HelperDiscovery {
+                path: Some(path.clone()),
+                issue: None,
+                issue_is_blocking: false,
+            };
+        }
+
+        issue = Some(format!(
+            "saved helper path could not be used at {}",
+            path.display()
+        ));
     }
 
     for key in ["ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"] {
         if let Ok(value) = std::env::var(key) {
+            if value.trim().is_empty() {
+                continue;
+            }
             let path = PathBuf::from(value);
-            if path.is_file() {
-                return Some(path);
+            if is_runnable_file(&path) {
+                return HelperDiscovery {
+                    path: Some(path),
+                    issue,
+                    issue_is_blocking: false,
+                };
+            }
+
+            if issue.is_none() {
+                issue = Some(format!(
+                    "{key} points to {} but that file could not be used",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let bundled = home.join(".zipcode/bin/llama-server");
+        if is_runnable_file(&bundled) {
+            return HelperDiscovery {
+                path: Some(bundled),
+                issue,
+                issue_is_blocking: false,
+            };
+        }
+    }
+
+    if let Some(path) = which_runnable_in_path("llama-server") {
+        return HelperDiscovery {
+            path: Some(path),
+            issue,
+            issue_is_blocking: false,
+        };
+    }
+
+    HelperDiscovery {
+        path: None,
+        issue_is_blocking: issue.is_some(),
+        issue,
+    }
+}
+
+fn helper_devices_support_acceleration(output: &str) -> bool {
+    let lowered = output.to_ascii_lowercase();
+    ["cuda", "metal", "vulkan", "rocm", "gpu"]
+        .iter()
+        .any(|needle| lowered.contains(needle))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HelperDeviceProbe {
+    Devices(String),
+    Unsupported,
+    TimedOut,
+}
+
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) | Err(_) => return false,
+        }
+    }
+}
+
+fn read_child_pids(pid: u32) -> Vec<u32> {
+    let path = format!("/proc/{pid}/task/{pid}/children");
+    let Ok(children) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+
+    children
+        .split_whitespace()
+        .filter_map(|value| value.parse::<u32>().ok())
+        .collect()
+}
+
+fn process_tree_pids(root_pid: u32) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    let mut stack = vec![root_pid];
+    let mut ordered = Vec::new();
+
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        ordered.push(pid);
+        stack.extend(read_child_pids(pid));
+    }
+
+    ordered.reverse();
+    ordered
+}
+
+fn send_signal_to_process_tree(root_pid: u32, signal: &str) {
+    let pids = process_tree_pids(root_pid);
+    if pids.is_empty() {
+        return;
+    }
+
+    let kill_bin = ["/bin/kill", "/usr/bin/kill"]
+        .into_iter()
+        .map(Path::new)
+        .find(|path| path.is_file());
+
+    if let Some(kill_bin) = kill_bin {
+        let mut args = Vec::with_capacity(pids.len() + 1);
+        args.push(signal.to_string());
+        args.extend(pids.iter().map(u32::to_string));
+        let _ = Command::new(kill_bin).args(&args).status();
+    }
+}
+
+fn terminate_child_tree(child: &mut Child) {
+    let root_pid = child.id();
+
+    for signal in ["-TERM", "-KILL"] {
+        send_signal_to_process_tree(root_pid, signal);
+
+        if wait_for_exit(child, Duration::from_millis(250)) {
+            return;
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn probe_helper_devices(helper_path: &Path) -> HelperDeviceProbe {
+    const HELPER_DEVICE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+    let mut child = match Command::new(helper_path)
+        .arg("--list-devices")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return HelperDeviceProbe::Unsupported,
+    };
+
+    if !wait_for_exit(&mut child, HELPER_DEVICE_PROBE_TIMEOUT) {
+        terminate_child_tree(&mut child);
+        return HelperDeviceProbe::TimedOut;
+    }
+
+    let Ok(output) = child.wait_with_output() else {
+        return HelperDeviceProbe::Unsupported;
+    };
+    if !output.status.success() {
+        return HelperDeviceProbe::Unsupported;
+    }
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lowered = combined.to_ascii_lowercase();
+    if !(lowered.contains("device")
+        || lowered.contains("cuda")
+        || lowered.contains("metal")
+        || lowered.contains("vulkan")
+        || lowered.contains("rocm")
+        || lowered.contains("cpu"))
+    {
+        return HelperDeviceProbe::Unsupported;
+    }
+
+    HelperDeviceProbe::Devices(combined)
+}
+
+pub(crate) fn server_options_from_config(config: &ZipcodeConfig) -> ServerOptions {
+    ServerOptions {
+        gpu_layers: std::env::var("ZIPCODE_GPU_LAYERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or(config.gpu_layers),
+        flash_attention: std::env::var("ZIPCODE_FLASH_ATTENTION")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(config.flash_attention),
+        context_size: std::env::var("ZIPCODE_LLAMA_SERVER_CTX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8192),
+    }
+}
+
+pub(crate) fn validate_backend_configuration(
+    requested_backend: Option<Backend>,
+    effective_backend: Backend,
+    model_path: &Path,
+    helper_path: Option<&Path>,
+    server_options: &ServerOptions,
+) -> Option<String> {
+    if is_probably_gemma4_model(model_path) {
+        match requested_backend.unwrap_or(effective_backend) {
+            Backend::Candle => {
+                return Some(
+                    "Gemma 4 is not ready with the candle backend yet. Use `--backend llama-server` or remove the backend override so zipcode can choose the helper automatically.".to_string(),
+                )
+            }
+            Backend::LlamaCpp if requested_backend.is_some() => {
+                return Some(
+                    "Gemma 4 is not supported by the native llama-cpp backend in this build. Use `--backend llama-server` or remove the backend override so zipcode can choose the helper automatically.".to_string(),
+                )
+            }
+            _ => {}
+        }
+    }
+
+    if matches!(effective_backend, Backend::LlamaServer) {
+        let gpu_layers = server_options.gpu_layers.unwrap_or(0);
+        if gpu_layers > 0 {
+            if let Some(path) = helper_path {
+                match probe_helper_devices(path) {
+                    HelperDeviceProbe::Devices(devices) => {
+                        if !helper_devices_support_acceleration(&devices) {
+                            return Some(format!(
+                                "gpu_layers={gpu_layers} requests GPU offload, but the compatibility helper at {} reported no GPU devices.",
+                                path.display()
+                            ));
+                        }
+                    }
+                    HelperDeviceProbe::TimedOut => {
+                        return Some(format!(
+                            "gpu_layers={gpu_layers} requests GPU offload, but the compatibility helper probe at {} timed out before reporting available devices.",
+                            path.display()
+                        ));
+                    }
+                    HelperDeviceProbe::Unsupported => {}
+                }
             }
         }
     }
@@ -363,25 +665,19 @@ pub fn prepare_loop(
         gen_config.max_tokens = m;
     }
 
-    let helper_path = discover_helper_path(&config);
+    let helper = discover_helper(&config);
+    let helper_issue = helper.issue.clone();
+    let helper_path = helper.path;
     if let Some(path) = helper_path.as_deref() {
         std::env::set_var("ZIPCODE_LLAMA_SERVER_BIN", path);
     }
+    if helper_path.is_some() {
+        if let Some(issue) = helper_issue {
+            startup_notices.push(format!("Compatibility helper note: {issue}"));
+        }
+    }
 
-    let server_options = ServerOptions {
-        gpu_layers: std::env::var("ZIPCODE_GPU_LAYERS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .or(config.gpu_layers),
-        flash_attention: std::env::var("ZIPCODE_FLASH_ATTENTION")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(config.flash_attention),
-        context_size: std::env::var("ZIPCODE_LLAMA_SERVER_CTX")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(8192),
-    };
+    let server_options = server_options_from_config(&config);
 
     let requested_backend = resolve_requested_backend(backend_override)?;
     let effective_backend =
@@ -393,10 +689,14 @@ pub fn prepare_loop(
         &server_options,
     ));
 
-    if matches!(effective_backend, Backend::LlamaCpp) && is_probably_gemma4_model(&model_file) {
-        anyhow::bail!(
-            "Gemma 4 is not supported by the native llama-cpp backend in this build. Run with `--backend llama-server` or configure a helper and let zipcode choose it automatically."
-        );
+    if let Some(issue) = validate_backend_configuration(
+        requested_backend,
+        effective_backend,
+        &model_file,
+        helper_path.as_deref(),
+        &server_options,
+    ) {
+        anyhow::bail!("{issue}");
     }
 
     let engine = match create_engine(
@@ -456,24 +756,61 @@ pub fn run_oneshot(
 }
 
 pub(crate) fn parse_slash_command(input: &str) -> ParsedSlashCommand {
-    match input {
-        "/help" => ParsedSlashCommand::Command(SlashCommand::Help, None),
-        "/quit" | "/exit" => ParsedSlashCommand::Command(SlashCommand::Quit, None),
-        "/clear" => ParsedSlashCommand::Command(SlashCommand::Clear, None),
-        "/status" => ParsedSlashCommand::Command(SlashCommand::Status, None),
-        "/compact" => ParsedSlashCommand::Command(SlashCommand::Compact, None),
-        "/session" => ParsedSlashCommand::Command(SlashCommand::SessionShow, None),
-        _ => {
-            if let Some(rest) = input.strip_prefix("/session ") {
-                if rest.split_whitespace().count() == 1 {
-                    ParsedSlashCommand::Command(SlashCommand::SessionLoad, Some(rest.to_string()))
-                } else {
-                    ParsedSlashCommand::Error("Usage: /session [SESSION_ID]".to_string())
-                }
+    let trimmed = input.trim();
+    let mut parts = trimmed.split_whitespace();
+    let Some(command) = parts.next() else {
+        return ParsedSlashCommand::NotCommand;
+    };
+    let args = parts.collect::<Vec<_>>();
+
+    let reject_extra_args =
+        || ParsedSlashCommand::Error(format!("Unknown slash command usage: {trimmed}"));
+
+    match command {
+        "/help" => {
+            if args.is_empty() {
+                ParsedSlashCommand::Command(SlashCommand::Help, None)
             } else {
-                ParsedSlashCommand::NotCommand
+                reject_extra_args()
             }
         }
+        "/quit" | "/exit" => {
+            if args.is_empty() {
+                ParsedSlashCommand::Command(SlashCommand::Quit, None)
+            } else {
+                reject_extra_args()
+            }
+        }
+        "/clear" => {
+            if args.is_empty() {
+                ParsedSlashCommand::Command(SlashCommand::Clear, None)
+            } else {
+                reject_extra_args()
+            }
+        }
+        "/status" => {
+            if args.is_empty() {
+                ParsedSlashCommand::Command(SlashCommand::Status, None)
+            } else {
+                reject_extra_args()
+            }
+        }
+        "/compact" => {
+            if args.is_empty() {
+                ParsedSlashCommand::Command(SlashCommand::Compact, None)
+            } else {
+                reject_extra_args()
+            }
+        }
+        "/session" => match args.as_slice() {
+            [] => ParsedSlashCommand::Command(SlashCommand::SessionShow, None),
+            [session_id] => ParsedSlashCommand::Command(
+                SlashCommand::SessionLoad,
+                Some(session_id.trim().to_string()),
+            ),
+            _ => ParsedSlashCommand::Error("Usage: /session [SESSION_ID]".to_string()),
+        },
+        _ => ParsedSlashCommand::NotCommand,
     }
 }
 
@@ -518,25 +855,19 @@ pub fn run_interactive(
                                 println!("Goodbye.");
                                 break;
                             }
-                            SlashCommand::Clear => {
-                                conv.session = Session::new();
-                                println!(
-                                    "Conversation cleared. New session started: {}",
-                                    conv.session.id
-                                );
-                            }
+                            SlashCommand::Clear => println!("{}", clear_session(&mut conv)?),
                             SlashCommand::Status => print_status(&conv),
-                            SlashCommand::Compact => println!("{}", compact_session(&mut conv)?),
-                            SlashCommand::SessionShow => print_session_status(&conv),
-                            SlashCommand::SessionLoad => {
-                                println!(
-                                    "{}",
-                                    load_session_into_loop(
-                                        &mut conv,
-                                        argument.as_deref().expect("session id must exist"),
-                                    )?
-                                );
+                            SlashCommand::Compact => {
+                                println!("{}", compact_session(&mut conv)?.message())
                             }
+                            SlashCommand::SessionShow => print_session_status(&conv),
+                            SlashCommand::SessionLoad => match load_session_into_loop(
+                                &mut conv,
+                                argument.as_deref().expect("session id must exist"),
+                            ) {
+                                Ok(message) => println!("{message}"),
+                                Err(error) => println!("{error:#}"),
+                            },
                         }
                         continue;
                     }
@@ -601,16 +932,29 @@ fn print_session_status(conv: &ConversationLoop) {
     }
 }
 
-pub(crate) fn compact_session(conv: &mut ConversationLoop) -> Result<String> {
+pub(crate) fn clear_session(conv: &mut ConversationLoop) -> Result<String> {
+    let session = Session::new();
+    session.save()?;
+    let session_id = session.id.clone();
+    conv.session = session;
+    Ok(format!(
+        "Conversation cleared. New session started: {session_id}"
+    ))
+}
+
+pub(crate) fn compact_session(conv: &mut ConversationLoop) -> Result<CompactFeedback> {
     let result = conv.session.compact(CompactPolicy::default());
     if result.changed {
         conv.session.save()?;
-        Ok(format_compact_result(&conv.session, result))
+        Ok(CompactFeedback::Compacted(format_compact_result(
+            &conv.session,
+            result,
+        )))
     } else {
-        Ok(format!(
+        Ok(CompactFeedback::Skipped(format!(
             "Compaction skipped for session {}: not enough history to compact.",
             conv.session.id
-        ))
+        )))
     }
 }
 
@@ -618,6 +962,7 @@ pub(crate) fn load_session_into_loop(
     conv: &mut ConversationLoop,
     session_id: &str,
 ) -> Result<String> {
+    let session_id = session_id.trim();
     let loaded = Session::load(session_id)
         .with_context(|| format!("Failed to load session `{session_id}`"))?;
     let loaded_id = loaded.id.clone();
@@ -801,6 +1146,31 @@ mod tests {
             parse_slash_command("/session abc def"),
             ParsedSlashCommand::Error("Usage: /session [SESSION_ID]".to_string())
         );
+    }
+
+    #[test]
+    fn parse_slash_command_trims_session_id_whitespace() {
+        assert_eq!(
+            parse_slash_command("/session   abc-123   "),
+            ParsedSlashCommand::Command(SlashCommand::SessionLoad, Some("abc-123".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_slash_command_rejects_extra_arguments_for_known_commands() {
+        for input in [
+            "/help extra",
+            "/status extra",
+            "/clear extra",
+            "/compact extra",
+            "/quit now",
+            "/exit now",
+        ] {
+            assert_eq!(
+                parse_slash_command(input),
+                ParsedSlashCommand::Error(format!("Unknown slash command usage: {input}"))
+            );
+        }
     }
 
     #[test]

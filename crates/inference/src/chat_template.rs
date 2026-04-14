@@ -105,7 +105,7 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
             tracing::warn!(
                 "Malformed tool call block: no valid JSON found between <tool_call> tags (offset {json_start})"
             );
-            break;
+            search_from = json_start;
         }
     }
 
@@ -139,7 +139,26 @@ pub fn extract_text_content(output: &str) -> String {
         }
 
         if !found {
-            break; // Unclosed tag — leave as-is
+            let next_open = result[after_tag..]
+                .find("<tool_call>")
+                .map(|offset| after_tag + offset);
+            let next_close = result[after_tag..]
+                .find("</tool_call>")
+                .map(|offset| after_tag + offset);
+
+            match (next_open, next_close) {
+                (None, Some(close)) => {
+                    let block_end = close + "</tool_call>".len();
+                    result = format!("{}{}", &result[..start], &result[block_end..]);
+                }
+                (Some(open), Some(close)) if close < open => {
+                    let block_end = close + "</tool_call>".len();
+                    result = format!("{}{}", &result[..start], &result[block_end..]);
+                }
+                _ => {
+                    result = format!("{}{}", &result[..start], &result[after_tag..]);
+                }
+            }
         }
     }
     result.trim().to_string()
@@ -273,9 +292,80 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_text_preserves_unclosed_tag() {
+    fn test_parse_malformed_block_does_not_hide_later_valid_call() {
+        let output = concat!(
+            "<tool_call>\n",
+            "{not valid json}\n",
+            "</tool_call>\n",
+            "still talking\n",
+            "<tool_call>\n",
+            "{\"name\": \"read_file\", \"arguments\": {\"file_path\": \"src/main.rs\"}}\n",
+            "</tool_call>"
+        );
+        let parsed = parse_tool_calls(output);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "read_file");
+        assert_eq!(parsed[0].arguments["file_path"], "src/main.rs");
+    }
+
+    #[test]
+    fn test_parse_unclosed_malformed_block_does_not_hide_later_valid_call() {
+        let output = concat!(
+            "<tool_call>\n",
+            "{\"name\":\n",
+            "plain text between blocks\n",
+            "<tool_call>\n",
+            "{\"name\": \"bash\", \"arguments\": {\"command\": \"pwd\"}}\n",
+            "</tool_call>"
+        );
+        let parsed = parse_tool_calls(output);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "bash");
+        assert_eq!(parsed[0].arguments["command"], "pwd");
+    }
+
+    #[test]
+    fn test_extract_text_strips_single_closed_malformed_block() {
+        let output = "Hello <tool_call>{not json}</tool_call> world";
+        let text = extract_text_content(output);
+        assert_eq!(text, "Hello  world");
+    }
+
+    #[test]
+    fn test_extract_text_skips_closed_malformed_block_and_later_valid_call() {
+        let output = concat!(
+            "<tool_call>\n",
+            "{not valid json}\n",
+            "</tool_call>\n",
+            "still talking\n",
+            "<tool_call>\n",
+            "{\"name\": \"read_file\", \"arguments\": {\"file_path\": \"src/main.rs\"}}\n",
+            "</tool_call>"
+        );
+        let text = extract_text_content(output);
+        assert_eq!(text, "still talking");
+    }
+
+    #[test]
+    fn test_extract_text_recovers_later_valid_call_after_unclosed_malformed_block() {
+        let output = concat!(
+            "<tool_call>\n",
+            "{\"name\":\n",
+            "plain text between blocks\n",
+            "<tool_call>\n",
+            "{\"name\": \"bash\", \"arguments\": {\"command\": \"pwd\"}}\n",
+            "</tool_call>"
+        );
+        let text = extract_text_content(output);
+        assert!(text.contains("plain text between blocks"));
+        assert!(!text.contains("<tool_call>"));
+        assert!(!text.contains("\"command\": \"pwd\""));
+    }
+
+    #[test]
+    fn test_extract_text_preserves_unclosed_content_without_tag_markup() {
         let output = "Hello <tool_call>partial content";
         let text = extract_text_content(output);
-        assert_eq!(text, "Hello <tool_call>partial content");
+        assert_eq!(text, "Hello partial content");
     }
 }

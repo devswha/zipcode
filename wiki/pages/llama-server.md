@@ -95,8 +95,8 @@ Uses **`/health`** (not `/v1/models`) because `/health` reports `status: "ok"` o
 - POST to `/v1/chat/completions` with `stream: true`.
 - Parse Server-Sent Events: each `data: {json}` line.
 - Extract `choices[0].delta.content` → `TokenEvent::Token(text)`.
-- Extract `choices[0].delta.tool_calls` → passed through the chat template parser (see [chat-template › tool-call parsing](chat-template.md#tool-call-parsing)).
-- On `data: [DONE]` → `TokenEvent::Done(FinishReason)`.
+- Extract every entry in `choices[0].delta.tool_calls` (including multiple deltas from the same SSE chunk) and accumulate them by index before emitting final `TokenEvent::ToolCall` values.
+- On `data: [DONE]` → stop reading immediately, then emit `TokenEvent::Done(FinishReason)`.
 
 The receiver channel is `std::sync::mpsc::Receiver<TokenEvent>` so the caller doesn't need tokio.
 
@@ -129,7 +129,18 @@ Precedence for the `llama-server` binary:
 2. `config.llama_server_bin` field from `~/.zipcode/config.json`
 3. `which llama-server` on PATH
 
-If none resolve, `doctor` reports `NeedsRepair`. See [cli › doctor](cli.md#doctor).
+If a saved/env path is stale, zipcode now keeps searching the bundled helper and `PATH` instead of treating that stale path as fatal by itself; `doctor` and bare startup surface the stale-path warning while still using a working fallback when one exists. If nothing resolves, `doctor` reports setup/repair guidance. See [cli › doctor](cli.md#doctor).
+
+### Helper config preflight
+
+When zipcode is about to rely on helper-backed Gemma 4 with GPU offload (`gpu_layers > 0`), `doctor`/startup do a lightweight preflight:
+
+- probe `llama-server --list-devices` when available
+- if the helper reports only CPU devices, zipcode treats the current helper config as unrunnable instead of saying `Ready`
+- if the helper probe hangs, zipcode times it out and surfaces that timeout as a backend-readiness problem
+- if the helper does not expose a usable device inventory, zipcode skips this check rather than guessing
+
+This catches obvious bad configs like `gpu_layers=999` against a CPU-only helper build before the real model launch path fails.
 
 ---
 

@@ -44,6 +44,7 @@ The `zipcode` (cli) crate — the user-facing entrypoint. Depends on `runtime` a
 | `prompt <TEXT>` | One-shot: send prompt, stream reply, exit |
 | `doctor` | System health report (models, tokenizer, llama-server, config) |
 | `setup [--skip-smoke]` | Guided setup: find models, find llama-server, write config, smoke-test |
+| `update [--check] [--rebuild]` | Inspect git update status, or fast-forward + rebuild when safe |
 
 **INFERRED** — if no args are passed, recent commit `29c436a` made bare paths not be misread as REPL commands, and `59610ad` restored helper-backed setup flows. Run `zipcode --help` for the live help.
 
@@ -67,6 +68,14 @@ Reports:
 - `llama-server` binary location (env var → PATH)
 - Current config values
 
+**Current readiness rules that matter for Gemma 4:**
+- bare `zipcode`, explicit `zipcode repl`, and `zipcode prompt ...` all route through the same startup readiness guidance instead of surfacing raw missing-model-directory errors
+- bare `zipcode` startup and `zipcode doctor` use the same helper discovery/fallback logic
+- a stale saved `llama_server_bin` no longer blocks a valid bundled/PATH helper fallback
+- explicit `--backend candle` / `--backend llama-cpp` will not be reported as Gemma 4 ready just because a helper exists elsewhere
+- helper-backed GPU configs get a lightweight preflight (`--list-devices` when supported) so obviously unrunnable setups are surfaced before startup says `Ready`
+- a helper probe that hangs is timed out and reported as a backend-readiness problem instead of blocking `doctor`/startup indefinitely
+
 ---
 
 ## `setup`
@@ -82,6 +91,16 @@ Reports:
 5. Create `~/.zipcode/bin/zipcode-local` wrapper script (shell shim for convenience).
 
 Used by `install.sh` to bootstrap a fresh machine.
+
+---
+
+## `update`
+
+**EXTRACTED** `commands.rs`
+
+- `zipcode update --check` prints the local checkout state and reports whether an update can be applied.
+- `zipcode update` fast-forwards with `git pull --ff-only`, optionally rebuilds, then runs `zipcode doctor`.
+- A **dirty working tree blocks both commands before any `git fetch`** so local modifications are reported as the blocker even if the network or remote would fail afterward.
 
 ---
 
@@ -101,6 +120,12 @@ Used by `install.sh` to bootstrap a fresh machine.
 10. Construct [`ConversationLoop`](conversation-loop.md).
 11. Enter TUI (`tui.rs`) or plain REPL depending on `--ui`.
 
+**Session / slash-command details that matter in practice:**
+- `/clear` creates a brand-new session **and saves it immediately**, so the printed id is resumable right away.
+- `/session <id>` trims surrounding whitespace before loading.
+- Failed `/session <id>` loads report an inline error and keep the interactive REPL alive.
+- Known slash commands reject unexpected trailing arguments (`/status extra`, `/clear now`, etc.) instead of falling through to model input.
+
 ---
 
 ## Fullscreen TUI
@@ -110,6 +135,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 - `termimad` for markdown rendering of assistant output.
 - `rustyline` for input line editing + history.
 - Slash commands: `/help`, `/status`, `/clear`, `/quit`, `/doctor`, etc.
+- `/compact` may legitimately be a no-op; the status line now says `Compaction skipped` instead of claiming success when there is not enough history to compact.
 - Automation hook: `ZIPCODE_TUI_AUTOMATION_SCRIPT` env var lets integration tests drive the TUI non-interactively (commit `52a7717`, `e2d22bd`).
 
 ---

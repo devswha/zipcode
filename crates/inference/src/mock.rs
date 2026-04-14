@@ -13,6 +13,8 @@ pub enum MockResponse {
         name: String,
         args: serde_json::Value,
     },
+    /// Return an explicit event stream
+    Events(Vec<TokenEvent>),
     /// Return an error
     Error(InferenceError),
 }
@@ -50,6 +52,11 @@ impl InferenceProvider for MockInferenceProvider {
                 };
                 let _ = tx.send(TokenEvent::ToolCall(call));
                 let _ = tx.send(TokenEvent::Done(FinishReason::ToolUse));
+            }
+            Some(MockResponse::Events(events)) => {
+                for event in events {
+                    let _ = tx.send(event);
+                }
             }
             Some(MockResponse::Error(e)) => {
                 let _ = tx.send(TokenEvent::Error(e));

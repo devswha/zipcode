@@ -10,8 +10,9 @@ use zipcode_runtime::config::{
 use zipcode_runtime::ZipcodeConfig;
 
 use crate::repl::{
-    has_nonempty_parent, is_probably_gemma4_model, resolve_effective_backend, resolve_model_path,
-    resolve_requested_backend, run_oneshot,
+    discover_helper, has_nonempty_parent, is_probably_gemma4_model, resolve_effective_backend,
+    resolve_model_path, resolve_requested_backend, run_oneshot, server_options_from_config,
+    validate_backend_configuration,
 };
 use crate::tui::run_interactive_with_ui;
 use crate::UiMode;
@@ -57,6 +58,7 @@ impl UserReadiness {
 struct ConfigLoad {
     config: ZipcodeConfig,
     warning: Option<String>,
+    warning_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,13 +74,8 @@ struct ReadinessReport {
     llama_server_bin: Option<PathBuf>,
     llama_server_issue: Option<String>,
     llama_server_issue_is_misconfigured: bool,
-}
-
-#[derive(Debug, Clone)]
-struct LlamaServerDiscovery {
-    path: Option<PathBuf>,
-    issue: Option<String>,
-    issue_is_misconfigured: bool,
+    backend_issue: Option<String>,
+    backend_issue_is_misconfigured: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -87,9 +84,9 @@ struct UpdateStatus {
     branch: String,
     local_head: String,
     remote_ref: String,
-    remote_head: String,
-    ahead: usize,
-    behind: usize,
+    remote_head: Option<String>,
+    ahead: Option<usize>,
+    behind: Option<usize>,
     dirty: bool,
 }
 
@@ -115,7 +112,76 @@ pub fn run_default(
             ui_mode,
         ),
         state => {
-            print_startup_guidance(state, &report, config_load.warning.as_deref());
+            print_startup_guidance(
+                state,
+                &report,
+                config_load.warning.as_deref(),
+                config_load.warning_path.as_deref(),
+            );
+            Ok(())
+        }
+    }
+}
+
+pub fn run_repl_command(
+    model_path: Option<&Path>,
+    permission_mode: Option<&str>,
+    backend_override: Option<&str>,
+    session_id: Option<&str>,
+    ui_mode: UiMode,
+) -> Result<()> {
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let config_load = load_config_with_warning(&cwd);
+    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend_override)?;
+    let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
+
+    match readiness {
+        UserReadiness::Ready => run_interactive_with_ui(
+            model_path,
+            permission_mode,
+            backend_override,
+            session_id,
+            ui_mode,
+        ),
+        state => {
+            print_startup_guidance(
+                state,
+                &report,
+                config_load.warning.as_deref(),
+                config_load.warning_path.as_deref(),
+            );
+            Ok(())
+        }
+    }
+}
+
+pub fn run_prompt_command(
+    text: &str,
+    model_path: Option<&Path>,
+    permission_mode: Option<&str>,
+    backend_override: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<()> {
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let config_load = load_config_with_warning(&cwd);
+    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend_override)?;
+    let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
+
+    match readiness {
+        UserReadiness::Ready => run_oneshot(
+            text,
+            model_path,
+            permission_mode,
+            backend_override,
+            session_id,
+        ),
+        state => {
+            print_startup_guidance(
+                state,
+                &report,
+                config_load.warning.as_deref(),
+                config_load.warning_path.as_deref(),
+            );
             Ok(())
         }
     }
@@ -139,7 +205,12 @@ pub fn doctor(model_path: Option<&Path>, backend_override: Option<&str>) -> Resu
 
     println!();
     println!("Next:");
-    for line in next_steps(readiness, &report, config_load.warning.as_deref()) {
+    for line in next_steps(
+        readiness,
+        &report,
+        config_load.warning.as_deref(),
+        config_load.warning_path.as_deref(),
+    ) {
         println!("  • {line}");
     }
 
@@ -198,7 +269,7 @@ pub fn setup(
     }
     println!();
 
-    for line in next_steps(readiness, &report, None) {
+    for line in next_steps(readiness, &report, None, None) {
         println!("{line}");
     }
 
@@ -241,9 +312,16 @@ pub fn update(check_only: bool, rebuild: bool) -> Result<()> {
     println!("Local HEAD:   {}", status.local_head);
     println!(
         "Remote HEAD:  {} ({})",
-        status.remote_head, status.remote_ref
+        status
+            .remote_head
+            .as_deref()
+            .unwrap_or("not checked (working tree dirty)"),
+        status.remote_ref
     );
-    println!("Ahead/behind: {}/{}", status.ahead, status.behind);
+    match (status.ahead, status.behind) {
+        (Some(ahead), Some(behind)) => println!("Ahead/behind: {ahead}/{behind}"),
+        _ => println!("Ahead/behind: not checked (working tree dirty)"),
+    }
     println!(
         "Working tree: {}",
         if status.dirty { "dirty" } else { "clean" }
@@ -258,7 +336,7 @@ pub fn update(check_only: bool, rebuild: bool) -> Result<()> {
     ensure_update_is_safe(&status)?;
 
     let mut changed = false;
-    if status.behind > 0 {
+    if status.behind.unwrap_or(0) > 0 {
         run_checked(
             &status.repo_root,
             "git",
@@ -386,12 +464,37 @@ fn load_config_with_warning(cwd: &Path) -> ConfigLoad {
         Ok(config) => ConfigLoad {
             config,
             warning: None,
+            warning_path: None,
         },
-        Err(error) => ConfigLoad {
-            config: ZipcodeConfig::default(),
-            warning: Some(error.to_string()),
-        },
+        Err(error) => {
+            let warning_path = detect_config_warning_path(cwd);
+            ConfigLoad {
+                config: ZipcodeConfig::default(),
+                warning: Some(error.to_string()),
+                warning_path,
+            }
+        }
     }
+}
+
+fn detect_config_warning_path(cwd: &Path) -> Option<PathBuf> {
+    fn validate_json_file(path: &Path) -> Result<()> {
+        let content = std::fs::read_to_string(path)?;
+        let _: serde_json::Value = serde_json::from_str(&content)?;
+        Ok(())
+    }
+
+    let global_path = global_config_path();
+    if global_path.exists() && validate_json_file(&global_path).is_err() {
+        return Some(global_path);
+    }
+
+    let project_path = find_project_root(cwd).join(".zipcode.json");
+    if project_path.exists() && validate_json_file(&project_path).is_err() {
+        return Some(project_path);
+    }
+
+    None
 }
 
 fn inspect_update_status(cwd: &Path) -> Result<UpdateStatus> {
@@ -410,9 +513,6 @@ fn inspect_update_status(cwd: &Path) -> Result<UpdateStatus> {
     let dirty = !git_stdout(&repo_root, &["status", "--short"], "read git status")?
         .trim()
         .is_empty();
-
-    run_checked(&repo_root, "git", &["fetch", "origin"], "fetch origin")?;
-
     let local_head = git_stdout(
         &repo_root,
         &["rev-parse", "--short", "HEAD"],
@@ -420,6 +520,21 @@ fn inspect_update_status(cwd: &Path) -> Result<UpdateStatus> {
     )?;
     let local_head = local_head.trim().to_string();
     let remote_ref = format!("origin/{branch}");
+
+    if dirty {
+        return Ok(UpdateStatus {
+            repo_root,
+            branch,
+            local_head,
+            remote_ref,
+            remote_head: None,
+            ahead: None,
+            behind: None,
+            dirty,
+        });
+    }
+
+    run_checked(&repo_root, "git", &["fetch", "origin"], "fetch origin")?;
     let remote_head = git_stdout(
         &repo_root,
         &["rev-parse", "--short", &remote_ref],
@@ -453,9 +568,9 @@ fn inspect_update_status(cwd: &Path) -> Result<UpdateStatus> {
         branch,
         local_head,
         remote_ref,
-        remote_head,
-        ahead,
-        behind,
+        remote_head: Some(remote_head),
+        ahead: Some(ahead),
+        behind: Some(behind),
         dirty,
     })
 }
@@ -468,15 +583,16 @@ fn print_update_check_summary(status: &UpdateStatus) {
     }
 
     match (status.ahead, status.behind) {
-        (0, 0) => println!("Update check: already up to date."),
-        (0, behind) => println!("Update check: {behind} commit(s) available to pull."),
-        (ahead, 0) => println!(
+        (Some(0), Some(0)) => println!("Update check: already up to date."),
+        (Some(0), Some(behind)) => println!("Update check: {behind} commit(s) available to pull."),
+        (Some(ahead), Some(0)) => println!(
             "Update check: local checkout is {ahead} commit(s) ahead of {}.",
             status.remote_ref
         ),
-        (ahead, behind) => println!(
+        (Some(ahead), Some(behind)) => println!(
             "Update check: local and remote have diverged ({ahead} ahead, {behind} behind)."
         ),
+        _ => println!("Update check: remote status not checked."),
     }
 }
 
@@ -487,19 +603,22 @@ fn ensure_update_is_safe(status: &UpdateStatus) -> Result<()> {
         );
     }
 
-    if status.ahead > 0 && status.behind > 0 {
+    let ahead = status.ahead.unwrap_or(0);
+    let behind = status.behind.unwrap_or(0);
+
+    if ahead > 0 && behind > 0 {
         anyhow::bail!(
             "Refusing to auto-update because this checkout has diverged from {} (ahead {}, behind {}).",
             status.remote_ref,
-            status.ahead,
-            status.behind
+            ahead,
+            behind
         );
     }
 
-    if status.ahead > 0 {
+    if ahead > 0 {
         anyhow::bail!(
             "Refusing to auto-update because this checkout is {} commit(s) ahead of {}.",
-            status.ahead,
+            ahead,
             status.remote_ref
         );
     }
@@ -550,7 +669,7 @@ fn build_readiness_report(
     };
     let model_search = model_search_locations(explicit_model_path, config, cwd, &project_root);
     let model_issue_is_misconfigured = explicit_model_path.is_some() || config.model_file.is_some();
-    let llama_server = discover_llama_server_bin(config);
+    let llama_server = discover_helper(config);
     let requested_backend = resolve_requested_backend(backend_override)?;
     let backend = model
         .as_deref()
@@ -558,6 +677,7 @@ fn build_readiness_report(
             resolve_effective_backend(requested_backend, model_path, llama_server.path.as_deref())
         })
         .unwrap_or(requested_backend.unwrap_or(Backend::LlamaCpp));
+    let server_options = server_options_from_config(config);
     let tokenizer_required = tokenizer_is_required(backend, model.as_deref());
 
     let tokenizer = tokenizer_required
@@ -584,6 +704,15 @@ fn build_readiness_report(
         tokenizer.as_deref(),
         llama_server.path.as_deref(),
     );
+    let backend_issue = model.as_deref().and_then(|model_path| {
+        validate_backend_configuration(
+            requested_backend,
+            backend,
+            model_path,
+            llama_server.path.as_deref(),
+            &server_options,
+        )
+    });
 
     Ok(ReadinessReport {
         status,
@@ -596,7 +725,9 @@ fn build_readiness_report(
         tokenizer_issue,
         llama_server_bin: llama_server.path,
         llama_server_issue: llama_server.issue,
-        llama_server_issue_is_misconfigured: llama_server.issue_is_misconfigured,
+        llama_server_issue_is_misconfigured: llama_server.issue_is_blocking,
+        backend_issue_is_misconfigured: backend_issue.is_some(),
+        backend_issue,
     })
 }
 
@@ -607,6 +738,7 @@ fn classify_user_readiness(
     if config_warning.is_some()
         || (report.model_issue.is_some() && report.model_issue_is_misconfigured)
         || (report.llama_server_issue.is_some() && report.llama_server_issue_is_misconfigured)
+        || (report.backend_issue.is_some() && report.backend_issue_is_misconfigured)
     {
         return UserReadiness::NeedsRepair;
     }
@@ -673,6 +805,7 @@ fn print_startup_guidance(
     readiness: UserReadiness,
     report: &ReadinessReport,
     config_warning: Option<&str>,
+    config_warning_path: Option<&Path>,
 ) {
     println!("zipcode\n");
     println!("{}", readiness.startup_title());
@@ -688,7 +821,7 @@ fn print_startup_guidance(
     }
 
     println!("Next:");
-    for (index, step) in next_steps(readiness, report, config_warning)
+    for (index, step) in next_steps(readiness, report, config_warning, config_warning_path)
         .iter()
         .enumerate()
     {
@@ -714,6 +847,16 @@ fn startup_details(report: &ReadinessReport, config_warning: Option<&str>) -> Ve
 
     if tokenizer_required {
         if let Some(issue) = &report.tokenizer_issue {
+            lines.push(issue.clone());
+        }
+    }
+
+    if let Some(issue) = &report.backend_issue {
+        lines.push(issue.clone());
+    }
+
+    if report.llama_server_bin.is_some() {
+        if let Some(issue) = &report.llama_server_issue {
             lines.push(issue.clone());
         }
     }
@@ -778,6 +921,10 @@ fn doctor_check_lines(report: &ReadinessReport, config_warning: Option<&str>) ->
         }
     }
 
+    if let Some(issue) = &report.backend_issue {
+        lines.push(format!("  ⚠️ Backend readiness: {issue}"));
+    }
+
     if helper_is_required(report.backend, report.model.as_deref()) {
         match &report.llama_server_bin {
             Some(path) => lines.push(format!("  ✅ Compatibility helper: {}", path.display())),
@@ -790,6 +937,12 @@ fn doctor_check_lines(report: &ReadinessReport, config_warning: Option<&str>) ->
             )),
             None => lines.push("  ❌ Compatibility helper: not found".to_string()),
         }
+
+        if report.llama_server_bin.is_some() {
+            if let Some(issue) = &report.llama_server_issue {
+                lines.push(format!("  ⚠️ Compatibility helper note: {issue}"));
+            }
+        }
     } else {
         lines.push("  ℹ️ Compatibility helper: not needed for this setup".to_string());
     }
@@ -801,6 +954,7 @@ fn next_steps(
     readiness: UserReadiness,
     report: &ReadinessReport,
     config_warning: Option<&str>,
+    config_warning_path: Option<&Path>,
 ) -> Vec<String> {
     match readiness {
         UserReadiness::Ready => {
@@ -818,7 +972,7 @@ fn next_steps(
             lines
         }
         UserReadiness::NeedsSetup => setup_steps(report),
-        UserReadiness::NeedsRepair => repair_steps(report, config_warning),
+        UserReadiness::NeedsRepair => repair_steps(report, config_warning, config_warning_path),
     }
 }
 
@@ -859,14 +1013,20 @@ fn setup_steps(report: &ReadinessReport) -> Vec<String> {
     }
 }
 
-fn repair_steps(report: &ReadinessReport, config_warning: Option<&str>) -> Vec<String> {
+fn repair_steps(
+    report: &ReadinessReport,
+    config_warning: Option<&str>,
+    config_warning_path: Option<&Path>,
+) -> Vec<String> {
     let mut lines = Vec::new();
     let tokenizer_required = tokenizer_is_required(report.backend, report.model.as_deref());
 
     if let Some(warning) = config_warning {
+        let global_path = global_config_path();
+        let warning_path = config_warning_path.unwrap_or(global_path.as_path());
         lines.push(format!(
             "Fix or replace {} (current error: {warning}).",
-            global_config_path().display()
+            warning_path.display()
         ));
     }
 
@@ -887,6 +1047,12 @@ fn repair_steps(report: &ReadinessReport, config_warning: Option<&str>) -> Vec<S
             lines.push(format!(
                 "Update the saved compatibility helper path ({issue})."
             ));
+        }
+    }
+
+    if report.backend_issue_is_misconfigured {
+        if let Some(issue) = &report.backend_issue {
+            lines.push(issue.clone());
         }
     }
 
@@ -1028,77 +1194,6 @@ fn default_model_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn discover_llama_server_bin(config: &ZipcodeConfig) -> LlamaServerDiscovery {
-    if let Some(path) = &config.llama_server_bin {
-        if path.is_file() {
-            return LlamaServerDiscovery {
-                path: Some(path.clone()),
-                issue: None,
-                issue_is_misconfigured: false,
-            };
-        }
-
-        return LlamaServerDiscovery {
-            path: None,
-            issue: Some(format!("saved helper path not found at {}", path.display())),
-            issue_is_misconfigured: true,
-        };
-    }
-
-    for key in ["ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"] {
-        if let Ok(value) = std::env::var(key) {
-            if value.trim().is_empty() {
-                continue;
-            }
-            let path = PathBuf::from(&value);
-            if path.is_file() {
-                return LlamaServerDiscovery {
-                    path: Some(path),
-                    issue: None,
-                    issue_is_misconfigured: false,
-                };
-            }
-
-            return LlamaServerDiscovery {
-                path: None,
-                issue: Some(format!(
-                    "{key} points to {} but that file was not found",
-                    path.display()
-                )),
-                issue_is_misconfigured: true,
-            };
-        }
-    }
-
-    if let Some(home) = dirs::home_dir() {
-        let bundled = home.join(".zipcode/bin/llama-server");
-        if bundled.is_file() {
-            return LlamaServerDiscovery {
-                path: Some(bundled),
-                issue: None,
-                issue_is_misconfigured: false,
-            };
-        }
-    }
-
-    LlamaServerDiscovery {
-        path: which_in_path("llama-server"),
-        issue: None,
-        issue_is_misconfigured: false,
-    }
-}
-
-fn which_in_path(binary: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(binary);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 fn write_setup_wrapper() -> Result<PathBuf> {
     let home = dirs::home_dir().context("HOME is not set")?;
     let bin_dir = home.join(".zipcode/bin");
@@ -1139,6 +1234,8 @@ mod tests {
             llama_server_bin: None,
             llama_server_issue: None,
             llama_server_issue_is_misconfigured: false,
+            backend_issue: None,
+            backend_issue_is_misconfigured: false,
         }
     }
 
@@ -1148,9 +1245,9 @@ mod tests {
             branch: "main".to_string(),
             local_head: "abc1234".to_string(),
             remote_ref: "origin/main".to_string(),
-            remote_head: "def5678".to_string(),
-            ahead: 0,
-            behind: 0,
+            remote_head: Some("def5678".to_string()),
+            ahead: Some(0),
+            behind: Some(0),
             dirty: false,
         }
     }
@@ -1300,8 +1397,8 @@ mod tests {
     #[test]
     fn update_refuses_diverged_checkout() {
         let mut status = sample_update_status();
-        status.ahead = 2;
-        status.behind = 3;
+        status.ahead = Some(2);
+        status.behind = Some(3);
         let error = ensure_update_is_safe(&status).unwrap_err().to_string();
         assert!(error.contains("diverged"));
     }
@@ -1309,7 +1406,7 @@ mod tests {
     #[test]
     fn update_refuses_ahead_checkout() {
         let mut status = sample_update_status();
-        status.ahead = 1;
+        status.ahead = Some(1);
         let error = ensure_update_is_safe(&status).unwrap_err().to_string();
         assert!(error.contains("ahead"));
     }

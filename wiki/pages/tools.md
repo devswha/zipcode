@@ -108,13 +108,13 @@ Method `truncate(max_bytes)` (lines 129-149) finds a safe UTF-8 char boundary, t
 
 | # | Name | File | Behavior (short) |
 |---|------|------|------------------|
-| 1 | `BashTool` | `bash.rs` | `bash -c <command>` with cwd; 120 s timeout via `wait_timeout`; captures stdout/stderr; preserves exit code |
+| 1 | `BashTool` | `bash.rs` | `bash -c <command>` with cwd; 120 s timeout via `wait_timeout`; captures stdout/stderr; preserves exit code; timeout cleanup walks `/proc` and kills descendant processes too |
 | 2 | `ReadFileTool` | `read_file.rs` | Offset/limit, line numbering, 10 MB `MAX_READ_SIZE`, binary detection |
 | 3 | `WriteFileTool` | `write_file.rs` | Creates parent dirs; path traversal blocked |
 | 4 | `EditFileTool` | `edit_file.rs` | Exact string replacement; **fails if 0 or >1 match** (enforced uniqueness) |
-| 5 | `GlobSearchTool` | `glob_search.rs` | `glob::glob()` sorted, filters to files |
-| 6 | `GrepSearchTool` | `grep_search.rs` | `grep-regex` + `grep-searcher`, optional glob filter, `file:line` output |
-| 7 | `ReplTool` | `repl.rs` | Spawns `python3 -c` or `node -e`; captures stdout/stderr |
+| 5 | `GlobSearchTool` | `glob_search.rs` | `glob::glob()` sorted, filters to files, rejects absolute / `..` escape patterns, and re-validates each match against workspace boundaries |
+| 6 | `GrepSearchTool` | `grep_search.rs` | `grep-regex` + `grep-searcher`, optional glob filter, rejects absolute / `..` traversal globs, re-validates matched files against the workspace, `file:line` output |
+| 7 | `ReplTool` | `repl.rs` | Spawns `python3 -c` or `node -e`; captures stdout/stderr; timeout cleanup kills descendant interpreters/processes too |
 | 8 | `TodoWriteTool` | `todo_write.rs` | Writes JSON to `.zipcode-todos.json` in cwd |
 | 9 | `ToolSearchTool` | `tool_search.rs` | Case-insensitive search over registered `ToolSpec`s |
 | 10 | `AgentTool` | `agent.rs` | **STUB** — returns "not yet implemented" |
@@ -137,7 +137,7 @@ Algorithm:
 2. Canonicalize (via `canonicalize_even_if_missing()` at `:36-60` for paths that don't exist yet).
 3. Assert `canonical.starts_with(&cwd_canonical)`.
 
-**GOTCHA:** Only works because every file tool remembers to call it. If you add a new file-touching tool and skip this, `../../etc/passwd` will work. Tests at `lib.rs:305-309` cover the blocking case but won't catch a new tool bypassing the function.
+**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Tests at `lib.rs:305-309` cover the blocking case but won't catch a brand-new tool that forgets the helper.
 
 ---
 

@@ -20,8 +20,9 @@ use zipcode_tools::PermissionMode;
 
 use crate::render::{terminal_width, truncate_to_width};
 use crate::repl::{
-    compact_session, help_text, load_session_into_loop, parse_slash_command, prepare_loop,
-    run_interactive, session_status_lines, ParsedSlashCommand, SlashCommand,
+    clear_session, compact_session, help_text, load_session_into_loop, parse_slash_command,
+    prepare_loop, run_interactive, session_status_lines, CompactFeedback, ParsedSlashCommand,
+    SlashCommand,
 };
 use crate::tui_composer::Composer;
 use crate::UiMode;
@@ -484,27 +485,32 @@ impl FullscreenUi {
                 }
             }
             SlashCommand::Compact => match compact_session(conv) {
-                Ok(message) => {
+                Ok(feedback) => {
                     self.set_transcript_from_session(&conv.session);
-                    self.push_entry(EntryKind::Info, message);
-                    self.status = "Compaction complete".to_string();
+                    self.push_entry(EntryKind::Info, feedback.message().to_string());
+                    self.status = match feedback {
+                        CompactFeedback::Compacted(_) => "Compaction complete".to_string(),
+                        CompactFeedback::Skipped(_) => "Compaction skipped".to_string(),
+                    };
                 }
                 Err(error) => {
                     self.push_entry(EntryKind::Error, error.to_string());
                     self.status = "Compaction failed".to_string();
                 }
             },
-            SlashCommand::Clear => {
-                conv.session = Session::new();
-                self.transcript.clear();
-                self.transcript_cache = TranscriptCache::default();
-                self.push_entry(
-                    EntryKind::Info,
-                    "Conversation cleared. New session started.".to_string(),
-                );
-                self.session_id = conv.session.id.clone();
-                self.status = "Conversation cleared".to_string();
-            }
+            SlashCommand::Clear => match clear_session(conv) {
+                Ok(message) => {
+                    self.transcript.clear();
+                    self.transcript_cache = TranscriptCache::default();
+                    self.push_entry(EntryKind::Info, message);
+                    self.session_id = conv.session.id.clone();
+                    self.status = "Conversation cleared".to_string();
+                }
+                Err(error) => {
+                    self.push_entry(EntryKind::Error, error.to_string());
+                    self.status = "Conversation clear failed".to_string();
+                }
+            },
             SlashCommand::Quit => return Ok(false),
         }
 

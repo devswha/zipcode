@@ -100,6 +100,7 @@ recommended_gpu_layers() {
     local helper_path="${1:-}"
     [ -n "${helper_path}" ] || return 1
     cuda_available || return 1
+    helper_supports_gpu_defaults "${helper_path}" || return 1
     printf '%s\n' "999"
 }
 
@@ -107,7 +108,22 @@ recommended_flash_attention() {
     local helper_path="${1:-}"
     [ -n "${helper_path}" ] || return 1
     cuda_available || return 1
+    helper_supports_gpu_defaults "${helper_path}" || return 1
     printf '%s\n' "true"
+}
+
+helper_supports_gpu_defaults() {
+    local helper_path="${1:-}"
+    [ -n "${helper_path}" ] || return 1
+    [ -x "${helper_path}" ] || return 1
+    command -v timeout >/dev/null 2>&1 || return 1
+
+    local probe_output=""
+    if ! probe_output="$(timeout 2 "${helper_path}" --list-devices 2>/dev/null)"; then
+        return 1
+    fi
+
+    printf '%s' "${probe_output}" | grep -Eiq 'cuda|gpu|nvidia|metal|vulkan|hip|rocm'
 }
 
 write_default_config() {

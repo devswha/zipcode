@@ -1,6 +1,9 @@
+use std::sync::mpsc;
+
 use tempfile::TempDir;
 use zipcode_inference::{
-    ChatMessage, MockInferenceProvider, MockResponse, Role, ToolCallParsed, ToolSpec,
+    ChatMessage, FinishReason, InferenceError, InferenceProvider, MockInferenceProvider,
+    MockResponse, Role, TokenEvent, ToolCallParsed, ToolSpec,
 };
 use zipcode_runtime::{
     CompactPolicy, ConversationLoop, PermissionPolicy, Session, StreamCallback,
@@ -67,6 +70,14 @@ fn build_test_loop(
     mock: MockInferenceProvider,
     permission: PermissionMode,
 ) -> ConversationLoop {
+    build_test_loop_with_engine(dir, mock, permission)
+}
+
+fn build_test_loop_with_engine(
+    dir: &TempDir,
+    engine: impl InferenceProvider + 'static,
+    permission: PermissionMode,
+) -> ConversationLoop {
     use zipcode_tools::{
         bash::BashTool, edit_file::EditFileTool, glob_search::GlobSearchTool,
         grep_search::GrepSearchTool, read_file::ReadFileTool, write_file::WriteFileTool,
@@ -92,13 +103,39 @@ fn build_test_loop(
         .collect();
 
     ConversationLoop {
-        engine: Box::new(mock),
+        engine: Box::new(engine),
         tools: registry,
         session: Session::new(),
         permission: PermissionPolicy::new(permission),
         system_prompt: "You are a test assistant.".to_string(),
         tool_specs,
         cwd: dir.path().to_path_buf(),
+    }
+}
+
+struct ToolCallMarkupProvider {
+    content: String,
+    call: ToolCallParsed,
+    emitted_tool_call: bool,
+}
+
+impl InferenceProvider for ToolCallMarkupProvider {
+    fn generate_stream(
+        &mut self,
+        _messages: &[ChatMessage],
+        _tools: &[ToolSpec],
+    ) -> mpsc::Receiver<TokenEvent> {
+        let (tx, rx) = mpsc::channel();
+        if self.emitted_tool_call {
+            let _ = tx.send(TokenEvent::Token("done".to_string()));
+            let _ = tx.send(TokenEvent::Done(FinishReason::Stop));
+        } else {
+            self.emitted_tool_call = true;
+            let _ = tx.send(TokenEvent::Token(self.content.clone()));
+            let _ = tx.send(TokenEvent::ToolCall(self.call.clone()));
+            let _ = tx.send(TokenEvent::Done(FinishReason::ToolUse));
+        }
+        rx
     }
 }
 
@@ -324,7 +361,91 @@ fn path_traversal_blocked() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: resumed sessions do not duplicate the system prompt
+// Test 7: failed inference turns are persisted before returning the error
+// ---------------------------------------------------------------------------
+
+#[test]
+fn failed_turn_is_saved_to_session_file() {
+    let dir = TempDir::new().unwrap();
+    let mock = MockInferenceProvider::new(vec![MockResponse::Error(
+        InferenceError::GenerationError("backend exploded".to_string()),
+    )]);
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    let session_path = conv.session.path();
+    let session_id = conv.session.id.clone();
+    let mut cb = TestCallback::new();
+
+    let error = conv
+        .run_turn("please fail", &mut cb)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("backend exploded"));
+    assert!(
+        session_path.is_file(),
+        "expected failed turn to save the session to {}",
+        session_path.display()
+    );
+
+    let saved = Session::load(&session_id).unwrap();
+    assert!(
+        saved
+            .messages
+            .iter()
+            .any(|message| message.content == "please fail"),
+        "expected failed user turn to be persisted, got {:?}",
+        saved.messages
+    );
+
+    std::fs::remove_file(session_path).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: tool-call turns strip raw markup before persisting assistant history
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tool_call_turn_strips_raw_markup_from_saved_assistant_content() {
+    let dir = TempDir::new().unwrap();
+    let provider = ToolCallMarkupProvider {
+        content:
+            "Before <tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"test.txt\"}}</tool_call> after"
+                .to_string(),
+        call: ToolCallParsed {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({ "path": "test.txt" }),
+        },
+        emitted_tool_call: false,
+    };
+    std::fs::write(dir.path().join("test.txt"), "hello").unwrap();
+
+    let mut conv = build_test_loop_with_engine(&dir, provider, PermissionMode::FullAccess);
+    let mut cb = TestCallback::new();
+
+    conv.run_turn("use a tool", &mut cb).unwrap();
+
+    let assistant = conv
+        .session
+        .messages
+        .iter()
+        .find(|message| message.role == Role::Model && message.tool_calls.is_some())
+        .expect("expected assistant tool-call message");
+
+    assert_eq!(assistant.content, "Before  after");
+    assert!(
+        !assistant.content.contains("<tool_call>"),
+        "assistant history should not persist raw tool markup: {:?}",
+        assistant
+    );
+    assert!(
+        cb.all_tokens().contains("<tool_call>"),
+        "sanity check: provider should have streamed raw markup into the callback"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: resumed sessions do not duplicate the system prompt
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -357,7 +478,7 @@ fn resumed_session_does_not_duplicate_system_prompt() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 8: compacted sessions roundtrip and continue correctly
+// Test 10: compacted sessions roundtrip and continue correctly
 // ---------------------------------------------------------------------------
 
 #[test]

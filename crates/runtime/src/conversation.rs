@@ -2,7 +2,9 @@ use anyhow::Result;
 use tracing::info;
 
 use zipcode_inference::chat_template::ToolSpec;
-use zipcode_inference::{ChatMessage, FinishReason, InferenceProvider, TokenEvent};
+use zipcode_inference::{
+    extract_text_content, ChatMessage, FinishReason, InferenceProvider, TokenEvent,
+};
 use zipcode_tools::{execute_tool, ToolContext, ToolRegistry};
 
 use crate::permission::{PermissionCheck, PermissionPolicy};
@@ -75,6 +77,7 @@ impl ConversationLoop {
                     }
                     TokenEvent::Error(e) => {
                         callback.on_error(&e.to_string());
+                        self.session.save()?;
                         return Err(anyhow::anyhow!("Inference error: {e}"));
                     }
                 }
@@ -85,9 +88,10 @@ impl ConversationLoop {
                 self.session
                     .push_message(ChatMessage::assistant(&full_text));
             } else {
+                let assistant_text = extract_text_content(&full_text);
                 self.session
                     .push_message(ChatMessage::assistant_with_tool_calls(
-                        &full_text,
+                        &assistant_text,
                         tool_calls.clone(),
                     ));
             }

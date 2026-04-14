@@ -1,9 +1,13 @@
-use std::collections::HashMap;
-use std::path::Component;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Child, ExitStatus};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use wait_timeout::ChildExt;
 
 /// Resolve a path and ensure it stays within the workspace root.
 /// Returns error if the resolved path escapes the workspace.
@@ -106,6 +110,139 @@ fn normalize_path(path: &std::path::Path) -> PathBuf {
     }
 
     normalized
+}
+
+fn send_signal_to_process_tree(root_pid: u32, signal: &str) {
+    let pids = process_tree_pids(root_pid);
+    if pids.is_empty() {
+        return;
+    }
+
+    let kill_bin = ["/bin/kill", "/usr/bin/kill"]
+        .into_iter()
+        .map(Path::new)
+        .find(|path| path.is_file());
+
+    if let Some(kill_bin) = kill_bin {
+        let mut args = Vec::with_capacity(pids.len() + 1);
+        args.push(signal.to_string());
+        args.extend(pids.iter().map(u32::to_string));
+        let _ = std::process::Command::new(kill_bin).args(&args).status();
+    }
+}
+
+pub(crate) fn terminate_child_tree(child: &mut Child) {
+    let root_pid = child.id();
+
+    for signal in ["-TERM", "-KILL"] {
+        send_signal_to_process_tree(root_pid, signal);
+
+        if wait_for_exit(child, Duration::from_millis(250)) {
+            return;
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+pub(crate) struct CollectedChildOutput {
+    pub status: ExitStatus,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+fn spawn_pipe_reader<T>(pipe: Option<T>) -> Option<JoinHandle<std::io::Result<Vec<u8>>>>
+where
+    T: Read + Send + 'static,
+{
+    pipe.map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            pipe.read_to_end(&mut buf)?;
+            Ok(buf)
+        })
+    })
+}
+
+fn join_pipe_reader(
+    handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
+    stream_name: &str,
+) -> Result<Vec<u8>> {
+    let Some(handle) = handle else {
+        return Ok(Vec::new());
+    };
+
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed to join {stream_name} reader thread"))?
+        .with_context(|| format!("failed to read child {stream_name}"))
+}
+
+pub(crate) fn wait_with_output_timeout(
+    mut child: Child,
+    timeout: Duration,
+) -> Result<Option<CollectedChildOutput>> {
+    let stdout_reader = spawn_pipe_reader(child.stdout.take());
+    let stderr_reader = spawn_pipe_reader(child.stderr.take());
+
+    let status = match child.wait_timeout(timeout)? {
+        Some(status) => status,
+        None => {
+            terminate_child_tree(&mut child);
+            let _ = join_pipe_reader(stdout_reader, "stdout");
+            let _ = join_pipe_reader(stderr_reader, "stderr");
+            return Ok(None);
+        }
+    };
+
+    Ok(Some(CollectedChildOutput {
+        status,
+        stdout: join_pipe_reader(stdout_reader, "stdout")?,
+        stderr: join_pipe_reader(stderr_reader, "stderr")?,
+    }))
+}
+
+fn process_tree_pids(root_pid: u32) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    let mut stack = vec![root_pid];
+    let mut ordered = Vec::new();
+
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        ordered.push(pid);
+        stack.extend(read_child_pids(pid));
+    }
+
+    ordered.reverse();
+    ordered
+}
+
+fn read_child_pids(pid: u32) -> Vec<u32> {
+    let path = format!("/proc/{pid}/task/{pid}/children");
+    let Ok(children) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+
+    children
+        .split_whitespace()
+        .filter_map(|value| value.parse::<u32>().ok())
+        .collect()
+}
+
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => return false,
+        }
+    }
 }
 
 pub mod agent;

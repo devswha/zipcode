@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
-use wait_timeout::ChildExt;
 
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{wait_with_output_timeout, Tool, ToolContext, ToolResult};
 
 /// Default timeout for REPL execution: 30 seconds.
 const REPL_DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -54,7 +53,7 @@ impl Tool for ReplTool {
             }
         };
 
-        let mut child = std::process::Command::new(program)
+        let child = std::process::Command::new(program)
             .arg(flag)
             .arg(&code)
             .current_dir(&ctx.cwd)
@@ -64,9 +63,8 @@ impl Tool for ReplTool {
             .with_context(|| format!("Failed to execute {program}"))?;
 
         let timeout = std::time::Duration::from_millis(timeout_ms);
-        match child.wait_timeout(timeout)? {
-            Some(status) => {
-                let output = child.wait_with_output()?;
+        match wait_with_output_timeout(child, timeout)? {
+            Some(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -81,25 +79,23 @@ impl Tool for ReplTool {
                     result.push_str("[stderr]\n");
                     result.push_str(&stderr);
                 }
-                if !status.success() {
+                if !output.status.success() {
                     if !result.is_empty() {
                         result.push('\n');
                     }
-                    result.push_str(&format!("[exit code: {}]", status.code().unwrap_or(-1)));
+                    result.push_str(&format!(
+                        "[exit code: {}]",
+                        output.status.code().unwrap_or(-1)
+                    ));
                 }
                 if result.is_empty() {
                     result = "(no output)".to_string();
                 }
                 Ok(ToolResult::new(result))
             }
-            None => {
-                // Timeout — kill the process
-                child.kill().ok();
-                child.wait().ok();
-                Ok(ToolResult::error(format!(
-                    "REPL execution timed out after {timeout_ms}ms"
-                )))
-            }
+            None => Ok(ToolResult::error(format!(
+                "REPL execution timed out after {timeout_ms}ms"
+            ))),
         }
     }
 }
@@ -108,7 +104,8 @@ impl Tool for ReplTool {
 mod tests {
     use super::*;
     use crate::PermissionMode;
-    use std::path::PathBuf;
+    use std::{path::PathBuf, thread, time::Duration};
+    use tempfile::TempDir;
 
     fn test_ctx() -> ToolContext {
         ToolContext {
@@ -203,5 +200,65 @@ mod tests {
             )
             .unwrap();
         assert!(result.content.contains("[exit code: 42]"));
+    }
+
+    #[test]
+    fn test_repl_timeout_kills_descendants() {
+        let tool = ReplTool;
+        let dir = TempDir::new().unwrap();
+        let flag = dir.path().join("leaked.txt");
+        let code = format!(
+            "import pathlib, subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import pathlib, time; time.sleep(1); pathlib.Path(r\"{}\").write_text(\"leaked\")']); time.sleep(60)",
+            flag.display()
+        );
+        let ctx = ToolContext {
+            cwd: dir.path().to_path_buf(),
+            permission: PermissionMode::FullAccess,
+            session_id: "test".to_string(),
+        };
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "language": "python",
+                    "code": code,
+                    "timeout": 200
+                }),
+                &ctx,
+            )
+            .unwrap();
+
+        assert!(result.content.contains("timed out"));
+        thread::sleep(Duration::from_millis(1500));
+        assert!(
+            !flag.exists(),
+            "timeout should kill descendant interpreters before they outlive the REPL tool"
+        );
+    }
+
+    #[test]
+    fn test_repl_large_stdout_does_not_false_timeout() {
+        let tool = ReplTool;
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "language": "python",
+                    "code": "import sys; sys.stdout.write('x' * 200000)",
+                    "timeout": 2_000
+                }),
+                &test_ctx(),
+            )
+            .unwrap();
+
+        assert!(
+            !result.content.contains("timed out"),
+            "fast large-output repl should not false-timeout: {}",
+            result.content
+        );
+        assert!(
+            result.content.len() >= 200_000,
+            "expected captured stdout, got {} bytes",
+            result.content.len()
+        );
     }
 }

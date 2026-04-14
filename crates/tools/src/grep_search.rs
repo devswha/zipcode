@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Seek};
-use std::path::Path;
+use std::path::{Component, Path};
 
 use crate::{Tool, ToolContext, ToolResult};
 
@@ -56,6 +56,9 @@ impl Tool for GrepSearchTool {
         };
 
         let glob_filter = args["glob"].as_str();
+        if let Some(glob) = glob_filter {
+            validate_glob_pattern(glob)?;
+        }
 
         let mut output_lines: Vec<String> = Vec::new();
         let mut output_bytes = 0usize;
@@ -65,6 +68,7 @@ impl Tool for GrepSearchTool {
         } else {
             search_directory(
                 &search_path,
+                &ctx.cwd,
                 glob_filter,
                 &regex,
                 &mut output_lines,
@@ -89,6 +93,7 @@ impl Tool for GrepSearchTool {
 /// Search a directory lazily, stopping as soon as the output budget is exhausted.
 fn search_directory(
     path: &Path,
+    workspace_root: &Path,
     glob_filter: Option<&str>,
     regex: &Regex,
     output_lines: &mut Vec<String>,
@@ -107,12 +112,34 @@ fn search_directory(
         if !file_path.is_file() {
             continue;
         }
+        let display = file_path.to_string_lossy().into_owned();
+        if crate::resolve_and_validate_path(&display, workspace_root).is_err() {
+            continue;
+        }
         if search_file(&file_path, regex, output_lines, output_bytes) {
             return Ok(true);
         }
     }
 
     Ok(false)
+}
+
+fn validate_glob_pattern(pattern: &str) -> Result<()> {
+    let path = Path::new(pattern);
+    if path.is_absolute() {
+        anyhow::bail!("Glob pattern must stay within the workspace");
+    }
+
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Glob pattern must not escape the workspace");
+    }
+
+    Ok(())
 }
 
 /// Search a single file for regex matches, appending results to output_lines.
@@ -325,5 +352,51 @@ mod tests {
 
         assert!(result.truncated);
         assert!(!result.content.contains("z-late.txt"));
+    }
+
+    #[test]
+    fn test_absolute_glob_cannot_escape_workspace() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("escape.txt"), "SECRET_MATCH\n").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({
+            "pattern": "SECRET_MATCH",
+            "glob": format!("{}/*.txt", outside.path().display())
+        });
+
+        let error = tool.execute(args, &ctx).unwrap_err().to_string();
+        assert!(error.contains("workspace") || error.contains("escape"));
+    }
+
+    #[test]
+    fn test_parent_dir_glob_cannot_escape_workspace() {
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("inside.txt"), "inside\n").unwrap();
+
+        let outside_dir = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join(format!("grep-search-escape-parent-{}", std::process::id()));
+        fs::create_dir_all(&outside_dir).unwrap();
+        let outside = outside_dir.join("escape.txt");
+        fs::write(&outside, "SECRET_MATCH\n").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({
+            "pattern": "SECRET_MATCH",
+            "glob": "nested/../../*.txt"
+        });
+
+        let error = tool.execute(args, &ctx).unwrap_err().to_string();
+        assert!(error.contains("workspace") || error.contains("escape"));
+
+        fs::remove_dir_all(&outside_dir).unwrap();
     }
 }

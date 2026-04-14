@@ -49,6 +49,374 @@ fn write_file(path: &std::path::Path, body: &str) {
     std::fs::write(path, body).expect("write file");
 }
 
+fn prepend_path(dir: &std::path::Path) -> String {
+    match std::env::var_os("PATH") {
+        Some(existing) => {
+            let mut paths = vec![dir.to_path_buf()];
+            paths.extend(std::env::split_paths(&existing));
+            std::env::join_paths(paths)
+                .expect("join PATH")
+                .to_string_lossy()
+                .into_owned()
+        }
+        None => dir.display().to_string(),
+    }
+}
+
+fn write_fake_git(path: &std::path::Path) {
+    write_executable(
+        path,
+        r#"#!/usr/bin/python3
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+log_path = pathlib.Path(os.environ["ZIPCODE_FAKE_GIT_LOG"])
+with log_path.open("a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\n")
+
+repo = os.environ["ZIPCODE_FAKE_GIT_REPO"]
+
+if args == ["rev-parse", "--show-toplevel"]:
+    print(repo)
+    sys.exit(0)
+if args == ["branch", "--show-current"]:
+    print("main")
+    sys.exit(0)
+if args == ["status", "--short"]:
+    print(" M src/lib.rs")
+    sys.exit(0)
+if args == ["rev-parse", "--short", "HEAD"]:
+    print("abc123")
+    sys.exit(0)
+if args == ["fetch", "origin"]:
+    print("simulated fetch failure", file=sys.stderr)
+    sys.exit(2)
+
+print(f"unexpected fake git invocation: {args}", file=sys.stderr)
+sys.exit(99)
+"#,
+    );
+}
+
+fn write_fake_llama_server(path: &std::path::Path) {
+    write_executable(
+        path,
+        r#"#!/usr/bin/python3
+import signal
+import socket
+import sys
+
+args = sys.argv[1:]
+
+if "--help" in args:
+    print("fake llama-server help")
+    sys.exit(0)
+
+if "--list-devices" in args:
+    print("Available devices:\n  CUDA0")
+    sys.exit(0)
+
+port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen()
+
+def shutdown(*_args):
+    server.close()
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, shutdown)
+signal.signal(signal.SIGINT, shutdown)
+
+while True:
+    conn, _ = server.accept()
+    request = conn.recv(4096)
+    if b"GET /health " in request:
+        body = b'{"status":"ok"}'
+    else:
+        body = b'ok'
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+        + body
+    )
+    conn.sendall(response)
+    conn.close()
+"#,
+    );
+}
+
+fn write_cpu_only_llama_server(path: &std::path::Path) {
+    write_executable(
+        path,
+        r#"#!/usr/bin/python3
+import signal
+import socket
+import sys
+
+args = sys.argv[1:]
+
+if "--help" in args:
+    print("fake llama-server help")
+    sys.exit(0)
+
+if "--list-devices" in args:
+    print("Available devices:\n  CPU")
+    sys.exit(0)
+
+if "-ngl" in args:
+    layers = args[args.index("-ngl") + 1]
+    if layers not in ("0", "-1"):
+        print(f"error: GPU offload requested with -ngl {layers}, but this helper only supports CPU", file=sys.stderr)
+        sys.exit(1)
+
+port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen()
+
+def shutdown(*_args):
+    server.close()
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, shutdown)
+signal.signal(signal.SIGINT, shutdown)
+
+while True:
+    conn, _ = server.accept()
+    request = conn.recv(4096)
+    if b"GET /health " in request:
+        body = b'{"status":"ok"}'
+    else:
+        body = b'ok'
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+        + body
+    )
+    conn.sendall(response)
+    conn.close()
+"#,
+    );
+}
+
+fn write_hanging_list_devices_llama_server(path: &std::path::Path) {
+    write_executable(
+        path,
+        r#"#!/usr/bin/python3
+import signal
+import socket
+import sys
+import time
+
+args = sys.argv[1:]
+
+if "--help" in args:
+    print("fake llama-server help")
+    sys.exit(0)
+
+if "--list-devices" in args:
+    signal.signal(signal.SIGTERM, lambda *_args: sys.exit(0))
+    signal.signal(signal.SIGINT, lambda *_args: sys.exit(0))
+    time.sleep(30)
+    sys.exit(0)
+
+port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen()
+
+def shutdown(*_args):
+    server.close()
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, shutdown)
+signal.signal(signal.SIGINT, shutdown)
+
+while True:
+    conn, _ = server.accept()
+    request = conn.recv(4096)
+    if b"GET /health " in request:
+        body = b'{"status":"ok"}'
+    else:
+        body = b'ok'
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        + f"Content-Length: {len(body)}\r\n".encode()
+        + b"Connection: close\r\n\r\n"
+        + body
+    )
+    conn.sendall(response)
+    conn.close()
+"#,
+    );
+}
+
+fn run_zipcode_in_pty(
+    args: &[String],
+    home: &std::path::Path,
+    cwd: &std::path::Path,
+    input_script: Option<&str>,
+    automation_script: Option<&str>,
+    extra_env: &[(&str, String)],
+) -> Output {
+    let python = if Command::new("python3").arg("--version").output().is_ok() {
+        "python3"
+    } else {
+        "python"
+    };
+
+    let rendered_args = args
+        .iter()
+        .map(|arg| format!("{arg:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let env_lines = extra_env
+        .iter()
+        .map(|(key, value)| format!("env[{key:?}] = {value:?}\n"))
+        .collect::<String>();
+    let automation_script = automation_script
+        .map(|script| format!("{script:?}"))
+        .unwrap_or_else(|| "None".to_string());
+    let input_script = input_script
+        .map(|script| format!("{script:?}"))
+        .unwrap_or_else(|| "None".to_string());
+    let has_automation_script = if automation_script == "None" {
+        "False"
+    } else {
+        "True"
+    };
+    let has_input_script = if input_script == "None" {
+        "False"
+    } else {
+        "True"
+    };
+
+    let script = format!(
+        r#"
+import fcntl, os, pty, select, struct, subprocess, sys, termios, time
+cmd = [{cmd:?}, {rendered_args}]
+env = os.environ.copy()
+env["HOME"] = {home:?}
+{env_lines}if {has_automation_script}:
+    env["ZIPCODE_TUI_AUTOMATION_SCRIPT"] = {automation_script}
+master, slave = pty.openpty()
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+proc = subprocess.Popen(
+    cmd,
+    stdin=slave,
+    stdout=slave,
+    stderr=slave,
+    cwd={cwd:?},
+    env=env,
+    text=False,
+)
+os.close(slave)
+if {has_input_script}:
+    time.sleep(0.3)
+    for line in {input_script}.splitlines(True):
+        os.write(master, line.encode("utf-8"))
+        time.sleep(0.5)
+deadline = time.time() + 20
+chunks = []
+while time.time() < deadline:
+    if proc.poll() is not None:
+        break
+    try:
+        ready, _, _ = select.select([master], [], [], 0.2)
+        if ready:
+            chunk = os.read(master, 8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError:
+        break
+if proc.poll() is None:
+    proc.terminate()
+    proc.wait(timeout=5)
+while True:
+    try:
+        chunk = os.read(master, 8192)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    except OSError:
+        break
+output = b"".join(chunks).decode("utf-8", "replace")
+print(output)
+sys.exit(proc.returncode or 0)
+"#,
+        cmd = env!("CARGO_BIN_EXE_zipcode"),
+        rendered_args = rendered_args,
+        home = home.display().to_string(),
+        cwd = cwd.display().to_string(),
+        env_lines = env_lines,
+        automation_script = automation_script,
+        input_script = input_script,
+        has_automation_script = has_automation_script,
+        has_input_script = has_input_script,
+    );
+
+    Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .output()
+        .expect("failed to run zipcode PTY harness")
+}
+
+fn run_plain_zipcode_with_input(
+    args: &[String],
+    home: &std::path::Path,
+    cwd: &std::path::Path,
+    input_script: &str,
+    extra_env: &[(&str, String)],
+) -> Output {
+    run_zipcode_in_pty(args, home, cwd, Some(input_script), None, extra_env)
+}
+
+fn run_fullscreen_zipcode_with_script(
+    args: &[String],
+    home: &std::path::Path,
+    cwd: &std::path::Path,
+    automation_script: &str,
+    extra_env: &[(&str, String)],
+) -> Output {
+    run_zipcode_in_pty(args, home, cwd, None, Some(automation_script), extra_env)
+}
+
+fn setup_repl_fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let home = make_temp_dir(name);
+    let model_dir = home.join(".zipcode/models");
+    let helper_path = home.join(".zipcode/bin/fake-llama-server");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(helper_path.parent().expect("helper parent"))
+        .expect("create helper dir");
+    let model_path = model_dir.join("fake.gguf");
+    std::fs::write(&model_path, b"gguf").expect("write fake model");
+    write_fake_llama_server(&helper_path);
+    (home, model_path, helper_path)
+}
+
+fn parse_cleared_session_id(output: &str) -> Option<String> {
+    output
+        .lines()
+        .find_map(|line| {
+            line.split("Conversation cleared. New session started: ")
+                .nth(1)
+                .map(str::trim)
+        })
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn run_bash_script_with_input(
     script: &std::path::Path,
     args: &[&str],
@@ -150,6 +518,83 @@ fn help_lists_explicit_power_user_flows() {
 }
 
 #[test]
+fn update_check_reports_dirty_tree_before_fetch_failure() {
+    let repo = make_temp_dir("update-check-dirty");
+    let fake_bin = repo.join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+    let git_log = repo.join("git.log");
+    write_fake_git(&fake_bin.join("git"));
+
+    let output = zipcode_bin()
+        .args(["update", "--check"])
+        .current_dir(&repo)
+        .env("PATH", prepend_path(&fake_bin))
+        .env("ZIPCODE_FAKE_GIT_REPO", &repo)
+        .env("ZIPCODE_FAKE_GIT_LOG", &git_log)
+        .output()
+        .expect("failed to run zipcode update --check");
+
+    assert!(
+        output.status.success(),
+        "update --check should report the dirty tree instead of failing the fetch: {output:?}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let git_log = std::fs::read_to_string(&git_log).expect("read fake git log");
+    assert!(
+        stdout.contains("Working tree: dirty")
+            && stdout.contains("Update check: blocked by local modifications."),
+        "expected dirty-tree blocker output, got stdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains("fetch origin") && !git_log.contains("fetch origin"),
+        "dirty check should stop before fetch/network work, stderr: {stderr}, git log: {git_log}"
+    );
+
+    std::fs::remove_dir_all(repo).expect("cleanup temp dir");
+}
+
+#[test]
+fn update_reports_dirty_tree_before_fetch_failure() {
+    let repo = make_temp_dir("update-dirty");
+    let fake_bin = repo.join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+    let git_log = repo.join("git.log");
+    write_fake_git(&fake_bin.join("git"));
+
+    let output = zipcode_bin()
+        .arg("update")
+        .current_dir(&repo)
+        .env("PATH", prepend_path(&fake_bin))
+        .env("ZIPCODE_FAKE_GIT_REPO", &repo)
+        .env("ZIPCODE_FAKE_GIT_LOG", &git_log)
+        .output()
+        .expect("failed to run zipcode update");
+
+    assert!(
+        !output.status.success(),
+        "update should fail with a local-modifications blocker"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let git_log = std::fs::read_to_string(&git_log).expect("read fake git log");
+    assert!(
+        stdout.contains("Working tree: dirty"),
+        "expected dirty working tree summary, got stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("local modifications"),
+        "expected local modifications error, got stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("fetch origin") && !git_log.contains("fetch origin"),
+        "dirty update should stop before fetch/network work, stderr: {stderr}, git log: {git_log}"
+    );
+
+    std::fs::remove_dir_all(repo).expect("cleanup temp dir");
+}
+
+#[test]
 fn help_lists_ui_flag() {
     let output = zipcode_bin()
         .arg("--help")
@@ -181,23 +626,34 @@ fn version_flag() {
 
 #[test]
 fn prompt_no_model_graceful_error() {
+    let home = make_temp_dir("prompt-no-model-guidance");
     let output = zipcode_bin()
         .args(["prompt", "hello"])
-        .env("HOME", "/tmp/zipcode-test-nonexistent")
+        .env("HOME", &home)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
         .output()
         .expect("failed to run zipcode prompt");
 
-    // Should NOT panic (exit code should not be signal-terminated)
-    // It's OK to exit with non-zero since there's no model
+    assert!(
+        output.status.success(),
+        "prompt should exit 0 with guidance"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stdout}{stderr}");
 
-    // Should show a user-friendly error, not a panic backtrace
     assert!(
         !combined.contains("panicked at") && !combined.contains("RUST_BACKTRACE"),
         "should not panic, got: {combined}"
     );
+    assert!(
+        stdout.contains("Setup needed before zipcode can start.")
+            && stdout.contains("Copy a .gguf AI model"),
+        "prompt should show setup guidance instead of a raw missing-model error, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
 }
 
 #[test]
@@ -254,12 +710,16 @@ fn bare_zipcode_routes_to_repair_guidance_when_saved_model_path_is_broken() {
 
 #[test]
 fn repl_no_model_graceful_error() {
+    let home = make_temp_dir("repl-no-model-guidance");
     let output = zipcode_bin()
-        .arg("repl")
-        .env("HOME", "/tmp/zipcode-test-nonexistent")
+        .args(["repl", "--ui", "plain"])
+        .env("HOME", &home)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
         .output()
         .expect("failed to run zipcode repl");
 
+    assert!(output.status.success(), "repl should exit 0 with guidance");
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stdout}{stderr}");
@@ -268,6 +728,13 @@ fn repl_no_model_graceful_error() {
         !combined.contains("panicked at") && !combined.contains("RUST_BACKTRACE"),
         "repl should not panic, got: {combined}"
     );
+    assert!(
+        stdout.contains("Setup needed before zipcode can start.")
+            && stdout.contains("Copy a .gguf AI model"),
+        "repl should show setup guidance instead of a raw missing-model error, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
 }
 
 #[test]
@@ -362,10 +829,7 @@ fn doctor_auto_selects_llama_server_for_gemma4_when_helper_exists() {
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
     std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
-    write_executable(
-        &zipcode_bin_dir.join("llama-server"),
-        "#!/bin/sh\necho fake llama-server\n",
-    );
+    write_fake_llama_server(&zipcode_bin_dir.join("llama-server"));
 
     let output = zipcode_bin()
         .arg("doctor")
@@ -382,6 +846,315 @@ fn doctor_auto_selects_llama_server_for_gemma4_when_helper_exists() {
         stdout.contains("Engine: compatibility helper (llama-server)")
             && stdout.contains("Status: Ready"),
         "doctor should auto-select llama-server for Gemma 4 when helper exists, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn bare_zipcode_and_doctor_agree_when_helper_is_found_on_path_for_gemma4() {
+    let home = make_temp_dir("startup-doctor-path-helper");
+    let model_dir = home.join(".zipcode/models");
+    let path_dir = home.join("path-bin");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&path_dir).expect("create PATH dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_fake_llama_server(&path_dir.join("llama-server"));
+
+    let doctor = zipcode_bin()
+        .arg("doctor")
+        .env("HOME", &home)
+        .env("PATH", &path_dir)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+    assert!(doctor.status.success(), "doctor should exit 0");
+    let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        doctor_stdout.contains("Status: Ready")
+            && doctor_stdout.contains("Engine: compatibility helper (llama-server)")
+            && doctor_stdout.contains(&path_dir.join("llama-server").display().to_string()),
+        "doctor should be ready via PATH helper, got: {doctor_stdout}"
+    );
+
+    let startup = run_fullscreen_zipcode_with_script(
+        &[],
+        &home,
+        &repo_root(),
+        "/quit\n",
+        &[("PATH", path_dir.display().to_string())],
+    );
+    assert!(startup.status.success(), "bare zipcode should exit 0");
+    let startup_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&startup.stdout),
+        String::from_utf8_lossy(&startup.stderr)
+    );
+    assert!(
+        !startup_output.contains("Setup needed before zipcode can start.")
+            && !startup_output.contains("Repair needed before zipcode can start.")
+            && !startup_output.contains("Gemma 4 is not supported by the native llama-cpp backend"),
+        "bare zipcode should agree with doctor and start instead of showing readiness errors, got: {startup_output}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn stale_saved_helper_path_does_not_block_valid_path_fallback_discovery() {
+    let home = make_temp_dir("stale-helper-fallback");
+    let model_dir = home.join(".zipcode/models");
+    let path_dir = home.join("path-bin");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&path_dir).expect("create PATH dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_fake_llama_server(&path_dir.join("llama-server"));
+    write_file(
+        &home.join(".zipcode/config.json"),
+        r#"{
+  "model_dir": "~/.zipcode/models",
+  "model_file": "gemma-4-test.gguf",
+  "llama_server_bin": "~/.zipcode/bin/missing-llama-server"
+}"#,
+    );
+
+    let output = zipcode_bin()
+        .arg("doctor")
+        .env("HOME", &home)
+        .env("PATH", &path_dir)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+
+    assert!(output.status.success(), "doctor should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Status: Ready")
+            && stdout.contains(&path_dir.join("llama-server").display().to_string())
+            && !stdout.contains("Status: Repair needed"),
+        "doctor should fall back to a working helper instead of blocking on the stale saved path, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn startup_surfaces_stale_saved_helper_path_when_fallback_is_used() {
+    let home = make_temp_dir("startup-stale-helper-fallback");
+    let model_dir = home.join(".zipcode/models");
+    let path_dir = home.join("path-bin");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&path_dir).expect("create PATH dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_fake_llama_server(&path_dir.join("llama-server"));
+    write_file(
+        &home.join(".zipcode/config.json"),
+        r#"{
+  "model_dir": "~/.zipcode/models",
+  "model_file": "gemma-4-test.gguf",
+  "llama_server_bin": "~/.zipcode/bin/missing-llama-server"
+}"#,
+    );
+
+    let output = run_fullscreen_zipcode_with_script(
+        &[],
+        &home,
+        &repo_root(),
+        "/quit\n",
+        &[("PATH", path_dir.display().to_string())],
+    );
+    assert!(output.status.success(), "bare zipcode should exit 0");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Compatibility helper note: saved helper path could not be used")
+            && !combined.contains("Repair needed before zipcode can start."),
+        "startup should surface the stale saved helper warning while still starting, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn doctor_backend_candle_does_not_claim_gemma4_is_ready() {
+    let home = make_temp_dir("doctor-candle-gemma4");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write fake tokenizer");
+    write_fake_llama_server(&zipcode_bin_dir.join("llama-server"));
+
+    let output = zipcode_bin()
+        .args(["doctor", "--backend", "candle"])
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor --backend candle");
+
+    assert!(output.status.success(), "doctor should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Status: Ready")
+            && stdout.contains("Gemma 4")
+            && stdout.contains("candle"),
+        "doctor should not report candle as Gemma 4 ready, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn doctor_reports_unrunnable_helper_gpu_offload_config() {
+    let home = make_temp_dir("doctor-unrunnable-helper-config");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_cpu_only_llama_server(&zipcode_bin_dir.join("llama-server"));
+    write_file(
+        &home.join(".zipcode/config.json"),
+        &format!(
+            r#"{{
+  "model_dir": "{}",
+  "model_file": "gemma-4-test.gguf",
+  "llama_server_bin": "{}",
+  "gpu_layers": 999
+}}"#,
+            model_dir.display(),
+            zipcode_bin_dir.join("llama-server").display()
+        ),
+    );
+
+    let output = zipcode_bin()
+        .arg("doctor")
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+
+    assert!(output.status.success(), "doctor should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Status: Ready")
+            && stdout.contains("gpu_layers")
+            && stdout.contains("Compatibility helper"),
+        "doctor should surface unrunnable helper-backed GPU config instead of reporting Ready, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn bare_zipcode_surfaces_unrunnable_helper_gpu_offload_config() {
+    let home = make_temp_dir("startup-unrunnable-helper-config");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let path_dir = home.join("path-bin");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
+    std::fs::create_dir_all(&path_dir).expect("create PATH dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_cpu_only_llama_server(&zipcode_bin_dir.join("llama-server"));
+    write_file(
+        &home.join(".zipcode/config.json"),
+        &format!(
+            r#"{{
+  "model_dir": "{}",
+  "model_file": "gemma-4-test.gguf",
+  "llama_server_bin": "{}",
+  "gpu_layers": 999
+}}"#,
+            model_dir.display(),
+            zipcode_bin_dir.join("llama-server").display()
+        ),
+    );
+
+    let output = run_fullscreen_zipcode_with_script(
+        &[],
+        &home,
+        &repo_root(),
+        "/quit\n",
+        &[("PATH", path_dir.display().to_string())],
+    );
+    assert!(output.status.success(), "bare zipcode should exit 0");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Repair needed before zipcode can start.")
+            && combined.contains("gpu_layers"),
+        "startup should surface the unrunnable helper-backed config, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn doctor_times_out_hanging_helper_device_probe() {
+    let home = make_temp_dir("doctor-hanging-helper-probe");
+    let model_dir = home.join(".zipcode/models");
+    let zipcode_bin_dir = home.join(".zipcode/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_hanging_list_devices_llama_server(&zipcode_bin_dir.join("llama-server"));
+    write_file(
+        &home.join(".zipcode/config.json"),
+        &format!(
+            r#"{{
+  "model_dir": "{}",
+  "model_file": "gemma-4-test.gguf",
+  "llama_server_bin": "{}",
+  "gpu_layers": 999
+}}"#,
+            model_dir.display(),
+            zipcode_bin_dir.join("llama-server").display()
+        ),
+    );
+
+    let started = std::time::Instant::now();
+    let output = zipcode_bin()
+        .arg("doctor")
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+    let elapsed = started.elapsed();
+
+    assert!(output.status.success(), "doctor should exit 0");
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "doctor should time out the helper probe instead of hanging for {:?}",
+        elapsed
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Status: Ready")
+            && stdout.contains("timed out")
+            && stdout.contains("gpu_layers"),
+        "doctor should surface the timed-out helper probe, got: {stdout}"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
@@ -429,6 +1202,37 @@ fn doctor_resolves_tilde_project_model_dir() {
 
     std::fs::remove_dir_all(home).expect("cleanup temp home");
     std::fs::remove_dir_all(project).expect("cleanup temp project");
+}
+
+#[test]
+fn doctor_reports_project_config_path_when_project_json_is_invalid() {
+    let home = make_temp_dir("doctor-project-config-warning-home");
+    let project = make_temp_dir("doctor-project-config-warning-project");
+    std::fs::write(project.join(".zipcode.json"), "{ invalid json\n")
+        .expect("write invalid project config");
+
+    let output = zipcode_bin()
+        .arg("doctor")
+        .current_dir(&project)
+        .env("HOME", &home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run zipcode doctor");
+
+    assert!(output.status.success(), "doctor should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let project_config = project.join(".zipcode.json").display().to_string();
+    let global_config = home.join(".zipcode/config.json").display().to_string();
+
+    assert!(
+        stdout.contains(&format!("Fix or replace {project_config}")),
+        "doctor should point at the broken project config, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains(&format!("Fix or replace {global_config}")),
+        "doctor should not blame the unrelated global config, got: {stdout}"
+    );
 }
 
 #[test]
@@ -1257,6 +2061,168 @@ sys.exit(proc.returncode or 0)
             && combined.contains("Session ID:")
             && !combined.contains("Unknown command"),
         "fullscreen e2e should process /status and /quit cleanly, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn plain_repl_session_load_failure_stays_alive() {
+    let (home, model_path, helper_path) = setup_repl_fixture("plain-session-load-failure");
+    let args = vec![
+        "repl".to_string(),
+        "--ui".to_string(),
+        "plain".to_string(),
+        "--backend".to_string(),
+        "llama-server".to_string(),
+        "--model".to_string(),
+        model_path.display().to_string(),
+    ];
+
+    let output = run_plain_zipcode_with_input(
+        &args,
+        &home,
+        &repo_root(),
+        "/session missing-session\n/status\n/quit\n",
+        &[(
+            "ZIPCODE_LLAMA_SERVER_BIN",
+            helper_path.display().to_string(),
+        )],
+    );
+
+    assert!(
+        output.status.success(),
+        "plain REPL should stay alive after a failed /session load, got: {output:?}"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Failed to load session `missing-session`")
+            && combined.contains("Session ID:")
+            && combined.contains("Goodbye."),
+        "expected inline session-load error and continued REPL interaction, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn clear_persists_new_session_id_immediately() {
+    let (home, model_path, helper_path) = setup_repl_fixture("plain-clear-persists-session");
+    let args = vec![
+        "repl".to_string(),
+        "--ui".to_string(),
+        "plain".to_string(),
+        "--backend".to_string(),
+        "llama-server".to_string(),
+        "--model".to_string(),
+        model_path.display().to_string(),
+    ];
+
+    let clear_output = run_plain_zipcode_with_input(
+        &args,
+        &home,
+        &repo_root(),
+        "/clear\n/quit\n",
+        &[(
+            "ZIPCODE_LLAMA_SERVER_BIN",
+            helper_path.display().to_string(),
+        )],
+    );
+    assert!(
+        clear_output.status.success(),
+        "plain REPL clear flow should exit 0, got: {clear_output:?}"
+    );
+    let clear_combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&clear_output.stdout),
+        String::from_utf8_lossy(&clear_output.stderr)
+    );
+    let session_id = parse_cleared_session_id(&clear_combined)
+        .expect("clear output should print the new resumable session id");
+    let session_path = home.join(format!(".zipcode/sessions/{session_id}.json"));
+    assert!(
+        session_path.is_file(),
+        "cleared session should be saved immediately at {}, output: {}",
+        session_path.display(),
+        clear_combined
+    );
+
+    let resumed_args = vec![
+        "--session".to_string(),
+        session_id.clone(),
+        "repl".to_string(),
+        "--ui".to_string(),
+        "plain".to_string(),
+        "--backend".to_string(),
+        "llama-server".to_string(),
+        "--model".to_string(),
+        model_path.display().to_string(),
+    ];
+    let resumed = run_plain_zipcode_with_input(
+        &resumed_args,
+        &home,
+        &repo_root(),
+        "/session\n/quit\n",
+        &[(
+            "ZIPCODE_LLAMA_SERVER_BIN",
+            helper_path.display().to_string(),
+        )],
+    );
+    assert!(
+        resumed.status.success(),
+        "resuming the freshly cleared session should work, got: {resumed:?}"
+    );
+    let resumed_combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&resumed.stdout),
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(
+        resumed_combined.contains(&format!("Resumed session {session_id}"))
+            && resumed_combined.contains(&format!("Session ID:   {session_id}")),
+        "expected the cleared session id to be immediately resumable, got: {resumed_combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn fullscreen_compact_noop_is_reported_as_skipped() {
+    let (home, model_path, helper_path) = setup_repl_fixture("fullscreen-compact-noop");
+    let args = vec![
+        "repl".to_string(),
+        "--ui".to_string(),
+        "fullscreen".to_string(),
+        "--backend".to_string(),
+        "llama-server".to_string(),
+        "--model".to_string(),
+        model_path.display().to_string(),
+    ];
+
+    let output = run_fullscreen_zipcode_with_script(
+        &args,
+        &home,
+        &repo_root(),
+        "/compact\n/quit\n",
+        &[(
+            "ZIPCODE_LLAMA_SERVER_BIN",
+            helper_path.display().to_string(),
+        )],
+    );
+
+    assert!(output.status.success(), "fullscreen TUI should exit 0");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Compaction skipped") && !combined.contains("Compaction complete"),
+        "fullscreen /compact should report skipped/no-op accurately, got: {combined}"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
