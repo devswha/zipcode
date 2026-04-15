@@ -3,7 +3,7 @@
 Developer reference for the `crates/` workspace. Structured as a knowledge graph — navigate by **community** (a tightly-related module cluster) and jump between pages via **god node** links.
 
 **Scope:** `/home/devswha/workspace/zipcode/crates/` only.
-**Snapshot:** extracted from code on 2026-04-14.
+**Snapshot:** extracted from code on 2026-04-15.
 **Provenance rule:** every factual claim below carries a `file:line` reference.
 
 > Graphify-inspired layout. Start at [god nodes](#god-nodes) if you're new to the codebase — that's where everything else hangs off.
@@ -51,10 +51,10 @@ cli ──▶ runtime ──▶ inference
 The highest-degree concepts — almost every code path touches one of these. Read these pages first.
 
 1. **[`InferenceProvider`](pages/inference.md#inferenceprovider-trait)** — abstracts all inference backends. `crates/inference/src/lib.rs:28`. 4 implementors: `LlamaCppProvider`, `LlamaServerProvider`, `InferenceEngine` (candle), `MockInferenceProvider`.
-2. **[`Tool` + `ToolRegistry`](pages/tools.md#tool-trait)** — abstracts every tool invocation. `crates/tools/src/lib.rs:160` (trait) + `:168` (registry). 10 implementors.
-3. **[`ConversationLoop`](pages/conversation-loop.md)** — drives the agentic loop. Holds both god nodes above plus `PermissionPolicy` and `Session`. `crates/runtime/src/conversation.rs:21`.
+2. **[`Tool` + `ToolRegistry`](pages/tools.md#tool-trait)** — abstracts every tool invocation. `crates/tools/src/lib.rs:328` (trait) + `:336` (registry). 10 implementors.
+3. **[`ConversationLoop`](pages/conversation-loop.md)** — drives the agentic loop. Holds both god nodes above plus `PermissionPolicy` and `Session`. `crates/runtime/src/conversation.rs:23`.
 4. **[`ChatMessage`](pages/inference.md#core-types)** — the wire format that crosses every crate. `crates/inference/src/types.rs:13`.
-5. **[`PermissionMode`](pages/permissions.md)** — gates every tool invocation. `crates/tools/src/lib.rs:91` (enum) + `crates/runtime/src/permission.rs:24` (policy).
+5. **[`PermissionMode`](pages/permissions.md)** — gates every tool invocation. `crates/tools/src/lib.rs:262` (enum) + `crates/runtime/src/permission.rs:28` (policy).
 
 ---
 
@@ -65,13 +65,13 @@ The highest-degree concepts — almost every code path touches one of these. Rea
 | Add a new inference backend | [inference › Adding a backend](pages/inference.md#adding-a-backend) → factory in `crates/inference/src/lib.rs:71` |
 | Add a new tool | [recipes › Add a new tool](pages/recipes.md#add-a-new-tool) → `crates/tools/src/lib.rs` |
 | Support a non-Gemma model | [chat-template](pages/chat-template.md) — currently single-model hardcoded |
-| Change the tool-loop iteration cap | `MAX_TOOL_ITERATIONS` in `crates/runtime/src/conversation.rs:41` |
-| Change the tool output size limit | `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:209` |
+| Change the tool-loop iteration cap | `MAX_TOOL_ITERATIONS` in `crates/runtime/src/conversation.rs:43` |
+| Change the tool output size limit | `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:377` |
 | Add a config field | [config › Fields](pages/config.md#fields) → `crates/runtime/src/config.rs` |
 | Tune GPU offload | [llama-server › GPU offload](pages/llama-server.md#gpu-offload) — env vars or config |
 | Understand the intended backend roadmap | [project-direction](pages/project-direction.md) |
-| Change permission tiers | [permissions](pages/permissions.md) → `crates/runtime/src/permission.rs:24` |
-| Change what's injected into the system prompt | `crates/runtime/src/prompt.rs:37` (`.zipcode.md`) + `:46` (`git status`) |
+| Change permission tiers | [permissions](pages/permissions.md) → `crates/runtime/src/permission.rs:28` |
+| Change what's injected into the system prompt | `crates/runtime/src/prompt.rs:27-59` (`build_system_prompt`, including `.zipcode.md` injection at `:39-45`) |
 
 ---
 

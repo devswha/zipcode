@@ -941,6 +941,47 @@ fn stale_saved_helper_path_does_not_block_valid_path_fallback_discovery() {
 }
 
 #[test]
+fn doctor_resolves_tilde_global_llama_server_bin() {
+    let home = make_temp_dir("doctor-tilde-global-helper");
+    let model_dir = home.join(".zipcode/models");
+    let helper_dir = home.join("custom/bin");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&helper_dir).expect("create helper dir");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    write_fake_llama_server(&helper_dir.join("my-helper"));
+    write_file(
+        &home.join(".zipcode/config.json"),
+        r#"{
+  "model_dir": "~/.zipcode/models",
+  "model_file": "gemma-4-test.gguf",
+  "llama_server_bin": "~/custom/bin/my-helper"
+}"#,
+    );
+
+    let output = zipcode_bin()
+        .args(["doctor", "--backend", "llama-server"])
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode doctor");
+
+    assert!(output.status.success(), "doctor should exit 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Status: Ready")
+            && stdout.contains(&helper_dir.join("my-helper").display().to_string())
+            && !stdout.contains("saved helper path could not be used"),
+        "doctor should expand a tilde helper path from global config, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
 fn startup_surfaces_stale_saved_helper_path_when_fallback_is_used() {
     let home = make_temp_dir("startup-stale-helper-fallback");
     let model_dir = home.join(".zipcode/models");
@@ -1009,6 +1050,44 @@ fn doctor_backend_candle_does_not_claim_gemma4_is_ready() {
             && stdout.contains("Gemma 4")
             && stdout.contains("candle"),
         "doctor should not report candle as Gemma 4 ready, got: {stdout}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn prompt_explicit_llama_cpp_is_rejected_for_gemma4() {
+    let home = make_temp_dir("prompt-gemma4-explicit-llama-cpp");
+    let model_path = home.join("gemma-4-test.gguf");
+    let helper_path = home.join("path-bin/llama-server");
+    std::fs::create_dir_all(helper_path.parent().expect("helper parent"))
+        .expect("create helper dir");
+    std::fs::write(&model_path, b"gguf").expect("write fake gguf");
+    write_fake_llama_server(&helper_path);
+
+    let output = zipcode_bin()
+        .args([
+            "--backend",
+            "llama-cpp",
+            "--model",
+            model_path.to_str().expect("utf-8 model path"),
+            "prompt",
+            "hello",
+        ])
+        .env("HOME", &home)
+        .env("ZIPCODE_LLAMA_SERVER_BIN", &helper_path)
+        .output()
+        .expect("failed to run zipcode prompt");
+
+    assert!(
+        output.status.success(),
+        "prompt should exit 0 with readiness guidance"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Repair needed before zipcode can start.")
+            && stdout.contains("Gemma 4 is not supported by the native llama-cpp backend"),
+        "prompt should reject explicit native llama-cpp for Gemma 4, got: {stdout}"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
@@ -1728,10 +1807,14 @@ mkdir -p "$install_dir/bin"
 cat > "$install_dir/bin/llama-server" <<'EOF'
 #!/usr/bin/python3
 import http.server
+import json
 import socketserver
 import sys
 
 args = sys.argv[1:]
+if "--list-devices" in args:
+    print("Available devices:\n  CUDA0")
+    sys.exit(0)
 port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -1741,6 +1824,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        payload = json.dumps({
+            "choices": [
+                {
+                    "delta": {"content": "READY"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b"data: " + payload + b"\n\n")
+        self.wfile.write(b"data: [DONE]\n\n")
 
     def log_message(self, format, *args):
         return
@@ -1860,10 +1963,14 @@ mkdir -p "$install_dir/bin"
 cat > "$install_dir/bin/llama-server" <<'EOF'
 #!/usr/bin/python3
 import http.server
+import json
 import socketserver
 import sys
 
 args = sys.argv[1:]
+if "--list-devices" in args:
+    print("Available devices:\n  CUDA0")
+    sys.exit(0)
 port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -1873,6 +1980,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        payload = json.dumps({
+            "choices": [
+                {
+                    "delta": {"content": "READY"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b"data: " + payload + b"\n\n")
+        self.wfile.write(b"data: [DONE]\n\n")
 
     def log_message(self, format, *args):
         return
@@ -2104,6 +2231,44 @@ fn plain_repl_session_load_failure_stays_alive() {
             && combined.contains("Session ID:")
             && combined.contains("Goodbye."),
         "expected inline session-load error and continued REPL interaction, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+#[test]
+fn plain_repl_missing_session_flag_fails_before_printing_banner() {
+    let (home, model_path, helper_path) = setup_repl_fixture("plain-missing-session-flag");
+    let output = zipcode_bin()
+        .args([
+            "--ui",
+            "plain",
+            "--session",
+            "missing-session",
+            "repl",
+            "--backend",
+            "llama-server",
+            "--model",
+            model_path.to_str().expect("utf-8 model path"),
+        ])
+        .env("HOME", &home)
+        .env("ZIPCODE_LLAMA_SERVER_BIN", &helper_path)
+        .output()
+        .expect("failed to run plain REPL with missing session");
+
+    assert!(
+        !output.status.success(),
+        "repl with a missing startup session should fail"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Failed to load session `missing-session`")
+            && !combined.contains("type /help for commands"),
+        "startup session failure should not print the REPL banner first, got: {combined}"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");

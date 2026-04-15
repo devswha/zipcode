@@ -4,8 +4,8 @@ Permission state is **split across two crates** — GOTCHA flagged in [`GRAPH_RE
 
 | Concept | Where | File |
 |---------|-------|------|
-| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:91` |
-| `PermissionPolicy` + `check()` | `zipcode-runtime` | `crates/runtime/src/permission.rs:24` |
+| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:262` |
+| `PermissionPolicy` + `check()` | `zipcode-runtime` | `crates/runtime/src/permission.rs:28` |
 | CLI flag `--permission-mode` | `zipcode` (cli) | `crates/cli/src/main.rs` |
 | Config field `permission_mode` | `zipcode-runtime` | `crates/runtime/src/config.rs` (default: `workspace-write`) |
 
@@ -13,7 +13,7 @@ Permission state is **split across two crates** — GOTCHA flagged in [`GRAPH_RE
 
 ## `PermissionMode`
 
-**EXTRACTED** `crates/tools/src/lib.rs:91-98`
+**EXTRACTED** `crates/tools/src/lib.rs:260-266`
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +31,7 @@ Serialization: kebab-case (`read-only`, `workspace-write`, `full-access`). The p
 
 ## `PermissionPolicy::check()`
 
-**EXTRACTED** `crates/runtime/src/permission.rs:24-42`
+**EXTRACTED** `crates/runtime/src/permission.rs:28-49`
 
 Returns a 3-variant enum:
 
@@ -58,7 +58,7 @@ pub enum PermissionCheck {
 | `repl` | Denied | **Approval** | Allowed |
 | `agent` | Denied | Denied / Allowed (STUB) | Allowed |
 
-**EXTRACTED** from `permission.rs:24-42` — read-only's allowlist is hardcoded; workspace-write's approval list is `{bash, repl}`.
+**EXTRACTED** from `permission.rs:28-49` — read-only's allowlist is hardcoded; workspace-write's approval list is `{bash, repl}`.
 
 ### Approval flow
 
@@ -84,15 +84,15 @@ When `check()` returns `NeedsApproval(msg)`, [`ConversationLoop`](conversation-l
 
 ## Adding a new tier or tool
 
-1. **New tier:** add a variant to `PermissionMode` in `tools/lib.rs:91` **and** a match arm in `PermissionPolicy::check()` in `runtime/permission.rs:24`. Both crates must compile together.
-2. **New tool into existing tier:** add its name to the appropriate allowlist/approval list in `permission.rs:24-42`. Also add a test in `permission.rs`.
+1. **New tier:** add a variant to `PermissionMode` in `tools/lib.rs:262` **and** a match arm in `PermissionPolicy::check()` in `runtime/permission.rs:28`. Both crates must compile together.
+2. **New tool into existing tier:** add its name to the appropriate allowlist/approval list in `permission.rs:28-49`. Also add a test in `permission.rs`.
 3. **CLI flag:** `--permission-mode` is parsed via `parse_permission_mode()` (`permission.rs:60-69`). Any new variant must round-trip through that function.
 
 ---
 
 ## GOTCHAs
 
-- **GOTCHA** — `read-only` mode's allowlist is a hardcoded set; any new read-safe tool you add is **implicitly denied** in read-only mode unless you remember to update `permission.rs:24`.
+- **GOTCHA** — `read-only` mode's allowlist is a hardcoded set; any new read-safe tool you add is **implicitly denied** in read-only mode unless you remember to update `permission.rs:28`.
 - **GOTCHA** — the `AgentTool` stub has no entry in the policy matrix today; its behavior in each tier is undefined until the stub is implemented. Cross-reference [tools › the 10 tools](tools.md#the-10-tools).
 
 ---

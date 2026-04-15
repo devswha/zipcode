@@ -147,9 +147,9 @@ zipcode doctor
 # Custom model
 zipcode --model ./my-model.gguf
 
-# Gemma 4 fallback via llama.cpp server
+# Gemma 4 via the llama-server helper
 ZIPCODE_LLAMA_SERVER_BIN=/path/to/llama-server \
-zipcode --backend llama-cpp --model ~/.zipcode/models/gemma-4-e2b-it-Q8_0.gguf prompt "hello"
+zipcode --backend llama-server --model ~/.zipcode/models/gemma-4-e2b-it-Q8_0.gguf prompt "hello"
 
 # GPU acceleration (CUDA)
 ZIPCODE_GPU_LAYERS=99 ZIPCODE_FLASH_ATTENTION=1 zipcode

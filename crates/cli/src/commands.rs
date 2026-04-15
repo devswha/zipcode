@@ -478,20 +478,27 @@ fn load_config_with_warning(cwd: &Path) -> ConfigLoad {
 }
 
 fn detect_config_warning_path(cwd: &Path) -> Option<PathBuf> {
+    let global_path = global_config_path();
+    let project_path = find_project_root(cwd).join(".zipcode.json");
+    detect_config_warning_path_from_paths(&global_path, &project_path)
+}
+
+fn detect_config_warning_path_from_paths(
+    global_path: &Path,
+    project_path: &Path,
+) -> Option<PathBuf> {
     fn validate_json_file(path: &Path) -> Result<()> {
         let content = std::fs::read_to_string(path)?;
         let _: serde_json::Value = serde_json::from_str(&content)?;
         Ok(())
     }
 
-    let global_path = global_config_path();
-    if global_path.exists() && validate_json_file(&global_path).is_err() {
-        return Some(global_path);
+    if project_path.exists() && validate_json_file(project_path).is_err() {
+        return Some(project_path.to_path_buf());
     }
 
-    let project_path = find_project_root(cwd).join(".zipcode.json");
-    if project_path.exists() && validate_json_file(&project_path).is_err() {
-        return Some(project_path);
+    if global_path.exists() && validate_json_file(global_path).is_err() {
+        return Some(global_path.to_path_buf());
     }
 
     None
@@ -1357,6 +1364,31 @@ mod tests {
             classify_user_readiness(&report, Some("invalid json")),
             UserReadiness::NeedsRepair
         );
+    }
+
+    #[test]
+    fn detect_config_warning_path_prefers_project_config_over_global_config() {
+        let unique = format!(
+            "zipcode-config-warning-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root).unwrap();
+        let global_path = root.join("global.json");
+        let project_path = root.join("project/.zipcode.json");
+        std::fs::create_dir_all(project_path.parent().unwrap()).unwrap();
+        std::fs::write(&global_path, "{ invalid json\n").unwrap();
+        std::fs::write(&project_path, "{ invalid json\n").unwrap();
+
+        let detected = detect_config_warning_path_from_paths(&global_path, &project_path);
+
+        assert_eq!(detected, Some(project_path));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

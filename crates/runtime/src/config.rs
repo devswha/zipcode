@@ -81,12 +81,19 @@ impl Default for ZipcodeConfig {
 }
 
 impl ZipcodeConfig {
+    fn load_from_path(path: &Path) -> Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let mut config: Self = serde_json::from_str(&content)?;
+        config.model_dir = expand_user_path(&config.model_dir);
+        config.llama_server_bin = config.llama_server_bin.as_deref().map(expand_user_path);
+        Ok(config)
+    }
+
     /// Load only the global config (~/.zipcode/config.json), or defaults if it does not exist.
     pub fn load_global() -> Result<Self> {
         let path = global_config_path();
         if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
-            Ok(serde_json::from_str(&content)?)
+            Self::load_from_path(&path)
         } else {
             Ok(Self::default())
         }
@@ -308,6 +315,23 @@ mod tests {
         .unwrap();
 
         let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(
+            config.llama_server_bin,
+            Some(dirs::home_dir().unwrap().join(".zipcode/bin/llama-server"))
+        );
+    }
+
+    #[test]
+    fn test_load_global_tilde_llama_server_bin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_path = dir.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            r#"{"llama_server_bin": "~/.zipcode/bin/llama-server"}"#,
+        )
+        .unwrap();
+
+        let config = ZipcodeConfig::load_from_path(&config_path).unwrap();
         assert_eq!(
             config.llama_server_bin,
             Some(dirs::home_dir().unwrap().join(".zipcode/bin/llama-server"))
