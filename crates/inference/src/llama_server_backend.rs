@@ -307,6 +307,13 @@ fn build_chat_request(
         "repeat_penalty": config.repeat_penalty,
         "repeat_last_n": config.repeat_last_n,
         "id_slot": 0,
+        // Gemma 4's thinking channel is gated at the Jinja template via the
+        // `enable_thinking` kwarg. When enabled, llama-server emits the thought
+        // process on `delta.reasoning_content`, which `parse_sse_events` routes
+        // to `TokenEvent::Thinking` so UIs can render it distinctly. When
+        // disabled, the template skips `<|think|>` and the model produces
+        // direct answers only. See `wiki/pages/gemma4-format-spec.md`.
+        "chat_template_kwargs": { "enable_thinking": config.enable_thinking },
     });
 
     if !tools.is_empty() {
@@ -380,6 +387,11 @@ fn openai_message(message: &ChatMessage) -> Value {
 #[derive(Debug)]
 enum SseEvent {
     Token(String),
+    /// Gemma 4's private reasoning channel streamed by llama-server via
+    /// `delta.reasoning_content`. Distinct from `Token` so the runtime
+    /// can route it through a separate UI lane and avoid mixing it into
+    /// the stored assistant history.
+    Thinking(String),
     ToolCallDelta {
         index: usize,
         id: Option<String>,
@@ -429,6 +441,15 @@ fn parse_sse_events(line: &str) -> Vec<SseEvent> {
             .collect::<Vec<_>>();
         if !events.is_empty() {
             return events;
+        }
+    }
+
+    // Gemma 4 thinking channel — llama-server emits this as `reasoning_content`
+    // when `chat_template_kwargs.enable_thinking` is true. Kept separate from
+    // `content` deltas so the runtime can render it in a distinct UI lane.
+    if let Some(reasoning) = delta["reasoning_content"].as_str() {
+        if !reasoning.is_empty() {
+            return vec![SseEvent::Thinking(reasoning.to_string())];
         }
     }
 
@@ -540,6 +561,11 @@ fn stream_sse_events(port: u16, request: &Value, tx: &mpsc::Sender<TokenEvent>) 
             match event {
                 SseEvent::Token(text) => {
                     if tx.send(TokenEvent::Token(text)).is_err() {
+                        return Ok(());
+                    }
+                }
+                SseEvent::Thinking(text) => {
+                    if tx.send(TokenEvent::Thinking(text)).is_err() {
                         return Ok(());
                     }
                 }
@@ -831,6 +857,123 @@ mod tests {
         assert_eq!(request["tools"][0]["function"]["name"], "read_file");
         assert_eq!(request["tool_choice"], "auto");
         assert_eq!(request["parse_tool_calls"], true);
+    }
+
+    /// Default `GenerationConfig` has `enable_thinking: true`, and the kwarg
+    /// is forwarded to llama-server so Gemma 4 streams its reasoning channel.
+    /// The runtime routes `delta.reasoning_content` through `TokenEvent::Thinking`.
+    /// See `wiki/pages/gemma4-format-spec.md` § "Empirical wire contract".
+    #[test]
+    fn build_chat_request_enables_gemma4_thinking_mode_by_default() {
+        let request = build_chat_request(
+            &[ChatMessage::user("hi")],
+            &[],
+            &GenerationConfig::default(),
+            DEFAULT_ALIAS,
+        );
+
+        assert_eq!(
+            request["chat_template_kwargs"]["enable_thinking"],
+            serde_json::Value::Bool(true),
+            "default config should request thinking so the UI can render reasoning deltas",
+        );
+    }
+
+    /// Callers that explicitly want direct answers (benchmarks, latency-sensitive
+    /// automation) can set `config.enable_thinking = false` and the request
+    /// must propagate that choice to the template kwarg.
+    #[test]
+    fn build_chat_request_honors_disabled_thinking_config() {
+        let config = GenerationConfig {
+            enable_thinking: false,
+            ..GenerationConfig::default()
+        };
+
+        let request = build_chat_request(&[ChatMessage::user("hi")], &[], &config, DEFAULT_ALIAS);
+
+        assert_eq!(
+            request["chat_template_kwargs"]["enable_thinking"],
+            serde_json::Value::Bool(false),
+            "explicit opt-out must suppress the template thinking token",
+        );
+    }
+
+    #[test]
+    fn parse_sse_data_line_extracts_reasoning_as_thinking() {
+        let line =
+            r#"data: {"choices":[{"delta":{"reasoning_content":"I should call the tool."}}]}"#;
+        let events = parse_sse_events(line);
+        assert!(
+            matches!(events.as_slice(), [SseEvent::Thinking(t)] if t == "I should call the tool."),
+            "reasoning_content delta should produce SseEvent::Thinking, got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn parse_sse_data_line_ignores_empty_reasoning() {
+        let line = r#"data: {"choices":[{"delta":{"reasoning_content":""}}]}"#;
+        assert!(
+            parse_sse_events(line).is_empty(),
+            "empty reasoning delta should not produce a Thinking event"
+        );
+    }
+
+    /// End-to-end proof that a mixed stream — reasoning chunks followed by
+    /// tool_call chunks — surfaces both as distinct TokenEvent variants and
+    /// does not leak reasoning into the regular token lane.
+    #[test]
+    fn stream_sse_events_routes_reasoning_and_tool_calls_separately() {
+        let port = serve_sse_response(concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"The user wants \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"the readme.\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_r\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n"
+        ));
+        let request = json!({"stream": true});
+        let (tx, rx) = mpsc::channel();
+
+        stream_sse_events(port, &request, &tx).unwrap();
+        drop(tx);
+
+        let events: Vec<_> = rx.into_iter().collect();
+
+        let thinking: String = events
+            .iter()
+            .filter_map(|event| match event {
+                TokenEvent::Thinking(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, "The user wants the readme.");
+
+        let tokens: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                TokenEvent::Token(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            tokens.is_empty(),
+            "reasoning chunks must not leak into the regular token lane: {tokens:?}"
+        );
+
+        let tool_calls: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                TokenEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].name, "read_file");
+        assert_eq!(tool_calls[0].arguments["path"], "README.md");
+
+        assert!(matches!(
+            events.last(),
+            Some(TokenEvent::Done(FinishReason::ToolUse))
+        ));
     }
 
     #[test]

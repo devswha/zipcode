@@ -42,6 +42,10 @@ pub(crate) struct HelperDiscovery {
 /// tool execution rounds to indicate activity.
 pub struct CliCallback {
     spinner: Option<Spinner>,
+    /// Set while the model is streaming a thinking chunk so the next
+    /// transition (token, tool, error) can close the ANSI dim/italic
+    /// attributes cleanly and emit a visual separator.
+    thinking_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +82,10 @@ impl CompactFeedback {
 
 impl CliCallback {
     pub fn new() -> Self {
-        Self { spinner: None }
+        Self {
+            spinner: None,
+            thinking_active: false,
+        }
     }
 
     /// Start the thinking spinner. Call before `run_turn`.
@@ -91,11 +98,25 @@ impl CliCallback {
         if let Some(mut s) = self.spinner.take() {
             s.stop();
         }
+        self.end_thinking_block();
     }
 
     fn stop_spinner(&mut self) {
         if let Some(mut s) = self.spinner.take() {
             s.stop();
+        }
+    }
+
+    /// Close an open thinking block: reset ANSI attributes and emit a blank
+    /// line so subsequent output starts on a clean line. Called on every
+    /// callback transition (token, tool, error, end-of-turn) so reasoning
+    /// never bleeds into other output lanes.
+    fn end_thinking_block(&mut self) {
+        if self.thinking_active {
+            use std::io::Write;
+            print!("\x1b[0m\n\n");
+            let _ = std::io::stdout().flush();
+            self.thinking_active = false;
         }
     }
 }
@@ -112,18 +133,34 @@ fn permission_prompt_allowed(interactive: bool, bytes_read: usize, input: &str) 
 impl zipcode_runtime::StreamCallback for CliCallback {
     fn on_token(&mut self, text: &str) {
         self.stop_spinner();
+        self.end_thinking_block();
         print!("{text}");
         use std::io::Write;
         let _ = std::io::stdout().flush();
     }
 
+    fn on_thinking(&mut self, text: &str) {
+        self.stop_spinner();
+        use std::io::Write;
+        if !self.thinking_active {
+            // dim + italic + subtle prefix so users can tell reasoning apart
+            // from the model's final answer
+            print!("\x1b[2m\x1b[3m");
+            self.thinking_active = true;
+        }
+        print!("{text}");
+        let _ = std::io::stdout().flush();
+    }
+
     fn on_tool_start(&mut self, name: &str, args: &serde_json::Value) {
         self.stop_spinner();
+        self.end_thinking_block();
         println!(); // newline after streamed tokens
         print_tool_start(name, args);
     }
 
     fn on_tool_result(&mut self, name: &str, result: &str) {
+        self.end_thinking_block();
         print_tool_result(name, result);
         // Restart spinner — model will think again after processing results
         self.spinner = Some(Spinner::start("thinking"));
@@ -131,6 +168,7 @@ impl zipcode_runtime::StreamCallback for CliCallback {
 
     fn on_permission_prompt(&mut self, message: &str) -> bool {
         self.stop_spinner();
+        self.end_thinking_block();
         use std::io::{self, IsTerminal, Write};
         print!("\x1b[33m[permission]\x1b[0m {message} [Y/n] ");
         io::stdout().flush().ok();
@@ -142,6 +180,7 @@ impl zipcode_runtime::StreamCallback for CliCallback {
 
     fn on_error(&mut self, error: &str) {
         self.stop_spinner();
+        self.end_thinking_block();
         eprintln!("\x1b[31merror:\x1b[0m {error}");
     }
 }

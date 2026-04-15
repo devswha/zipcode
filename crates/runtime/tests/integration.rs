@@ -17,6 +17,7 @@ use zipcode_tools::PermissionMode;
 
 struct TestCallback {
     tokens: Vec<String>,
+    thinking: Vec<String>,
     tool_calls: Vec<(String, serde_json::Value)>,
     tool_results: Vec<(String, String)>,
     permission_prompts: Vec<String>,
@@ -28,6 +29,7 @@ impl TestCallback {
     fn new() -> Self {
         Self {
             tokens: Vec::new(),
+            thinking: Vec::new(),
             tool_calls: Vec::new(),
             tool_results: Vec::new(),
             permission_prompts: Vec::new(),
@@ -46,11 +48,19 @@ impl TestCallback {
     fn all_tokens(&self) -> String {
         self.tokens.concat()
     }
+
+    fn all_thinking(&self) -> String {
+        self.thinking.concat()
+    }
 }
 
 impl StreamCallback for TestCallback {
     fn on_token(&mut self, text: &str) {
         self.tokens.push(text.to_string());
+    }
+
+    fn on_thinking(&mut self, text: &str) {
+        self.thinking.push(text.to_string());
     }
 
     fn on_tool_start(&mut self, name: &str, args: &serde_json::Value) {
@@ -527,6 +537,63 @@ fn tool_call_turn_strips_raw_markup_from_saved_assistant_content() {
     assert!(
         cb.all_tokens().contains("<tool_call>"),
         "sanity check: provider should have streamed raw markup into the callback"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8b: Gemma 4 thinking channel is surfaced to the callback but NOT
+// persisted into assistant session history.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn thinking_channel_routes_to_callback_but_not_to_history() {
+    let dir = TempDir::new().unwrap();
+
+    // Mock a turn that emits reasoning deltas, a visible token, and a done
+    // event. The conversation loop must route thinking through `on_thinking`
+    // (accumulated in `cb.thinking`) while persisting only the visible token
+    // in the assistant message — Gemma 4 strips reasoning on re-injection,
+    // so letting it leak into history would desync the session.
+    let mock = MockInferenceProvider::new(vec![MockResponse::Events(vec![
+        TokenEvent::Thinking("I should greet the user. ".to_string()),
+        TokenEvent::Thinking("They just said hi.".to_string()),
+        TokenEvent::Token("Hello world!".to_string()),
+        TokenEvent::Done(FinishReason::Stop),
+    ])]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    let mut cb = TestCallback::new();
+
+    conv.run_turn("hi", &mut cb).unwrap();
+
+    assert_eq!(
+        cb.all_thinking(),
+        "I should greet the user. They just said hi.",
+        "thinking deltas must reach the callback",
+    );
+    assert_eq!(
+        cb.all_tokens(),
+        "Hello world!",
+        "visible tokens must reach the callback unmixed with reasoning",
+    );
+
+    // system + user + assistant
+    assert_eq!(conv.session.messages.len(), 3);
+    let assistant = conv
+        .session
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Model)
+        .expect("expected assistant turn");
+
+    assert_eq!(
+        assistant.content, "Hello world!",
+        "assistant history must contain only visible content, not reasoning"
+    );
+    assert!(
+        !assistant.content.contains("greet"),
+        "reasoning text must not leak into persisted assistant content: {:?}",
+        assistant.content
     );
 }
 

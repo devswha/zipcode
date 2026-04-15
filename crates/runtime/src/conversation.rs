@@ -13,6 +13,12 @@ use crate::session::Session;
 /// Callback for streaming tokens and events to the UI layer.
 pub trait StreamCallback: Send {
     fn on_token(&mut self, text: &str);
+    /// A chunk of the model's private reasoning channel (Gemma 4's thinking
+    /// mode). UIs may render this dimmed/collapsed to keep the main token
+    /// lane clean. Defaults to dropping the text so existing implementers
+    /// remain correct without code changes — the reasoning is already
+    /// excluded from stored assistant history by the run loop.
+    fn on_thinking(&mut self, _text: &str) {}
     fn on_tool_start(&mut self, name: &str, args: &serde_json::Value);
     fn on_tool_result(&mut self, name: &str, result: &str);
     /// Returns true if the user approves the action.
@@ -67,6 +73,15 @@ impl ConversationLoop {
                     TokenEvent::Token(text) => {
                         callback.on_token(&text);
                         full_text.push_str(&text);
+                    }
+                    TokenEvent::Thinking(text) => {
+                        // Route to the UI but do not accumulate into full_text —
+                        // reasoning must not land in the stored assistant content
+                        // because Gemma 4 strips it on re-injection
+                        // (`supports_preserve_reasoning = false`). Keeping it out
+                        // of history also prevents drift when the session is
+                        // resumed or compacted.
+                        callback.on_thinking(&text);
                     }
                     TokenEvent::ToolCall(call) => {
                         tool_calls.push(call);

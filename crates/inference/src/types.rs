@@ -76,6 +76,12 @@ pub struct ToolCallParsed {
 #[derive(Debug, Clone)]
 pub enum TokenEvent {
     Token(String),
+    /// A chunk of the model's private reasoning channel (Gemma 4
+    /// `<|channel>thought<channel|>`). The UI may render this as dimmed /
+    /// collapsible text. It must NOT be appended to assistant history —
+    /// Gemma 4 `chat_template_caps.supports_preserve_reasoning` is `false`
+    /// and the GGUF-embedded `strip_thinking` macro drops it on re-injection.
+    Thinking(String),
     ToolCall(ToolCallParsed),
     Done(FinishReason),
     Error(InferenceError),
@@ -108,6 +114,14 @@ pub struct GenerationConfig {
     pub max_tokens: usize,
     pub repeat_penalty: f32,
     pub repeat_last_n: usize,
+    /// Enable Gemma 4's thinking channel. When `true`, the backend asks
+    /// llama-server to stream `delta.reasoning_content` alongside regular
+    /// content — the runtime surfaces it via `TokenEvent::Thinking` so the
+    /// UI can render the model's reasoning. When `false`, the template
+    /// `<|think|>` token is not emitted and the model produces direct
+    /// answers only. Defaults to `true` because the visible reasoning is
+    /// a core part of the Claude-Code-like experience zipcode targets.
+    pub enable_thinking: bool,
 }
 
 impl Default for GenerationConfig {
@@ -119,6 +133,7 @@ impl Default for GenerationConfig {
             max_tokens: 4096,
             repeat_penalty: 1.1,
             repeat_last_n: 64,
+            enable_thinking: true,
         }
     }
 }
