@@ -33,6 +33,15 @@ struct Cli {
     #[arg(long, value_name = "SESSION_ID", global = true)]
     session: Option<String>,
 
+    /// Stream the model's reasoning channel inline as dimmed text.
+    /// By default the reasoning stays behind a "Thinking… (N chars)"
+    /// progress indicator — matches Claude Code's default UX. Enable
+    /// this for prompt-engineering debugging or when you want to see
+    /// how a local model is thinking through a problem. Can also be
+    /// set via `ZIPCODE_VERBOSE=1`.
+    #[arg(long, short = 'v', global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -84,6 +93,16 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Wire the process-wide verbose flag before any UI callbacks spin
+    // up: the flag is read during streaming, not consulted again at
+    // construction time. `ZIPCODE_VERBOSE` acts as a fallback so shell
+    // wrappers can flip it without editing argv.
+    let verbose_env = std::env::var("ZIPCODE_VERBOSE")
+        .ok()
+        .filter(|value| !matches!(value.as_str(), "" | "0" | "false"))
+        .is_some();
+    render::set_verbose(cli.verbose || verbose_env);
 
     let model_path = cli.model.as_deref();
     let permission_mode = cli.permission_mode.as_deref();

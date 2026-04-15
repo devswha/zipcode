@@ -140,11 +140,24 @@ impl zipcode_runtime::StreamCallback for CliCallback {
     }
 
     fn on_thinking(&mut self, text: &str) {
+        // Silent by default: keep the spinner alive and forward the chunk
+        // size to its live counter so the user still gets visible progress
+        // feedback ("thinking (N chars)") without drowning the terminal in
+        // reasoning tokens. Only in verbose mode do we stream the raw
+        // reasoning as dim+italic inline — useful for prompt-engineering
+        // debugging but noisy for day-to-day use. This matches Claude Code
+        // default UX where "Thinking…" is a header, not a content lane.
+        if let Some(spinner) = &self.spinner {
+            spinner.add_thinking_bytes(text.len());
+        }
+
+        if !crate::render::is_verbose() {
+            return;
+        }
+
         self.stop_spinner();
         use std::io::Write;
         if !self.thinking_active {
-            // dim + italic + subtle prefix so users can tell reasoning apart
-            // from the model's final answer
             print!("\x1b[2m\x1b[3m");
             self.thinking_active = true;
         }

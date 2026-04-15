@@ -1,10 +1,30 @@
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use serde_json::Value;
 use termimad::MadSkin;
+
+// ── Verbose flag ─────────────────────────────────────────────────────
+//
+// Process-wide toggle for surfacing thinking reasoning inline. Set once
+// at startup from `--verbose`/`-v` or `ZIPCODE_VERBOSE=1`, then read by
+// the callbacks. Keeps the default experience Claude-Code-like (reasoning
+// is happening silently behind a counter) while still letting developers
+// flip the full stream on when debugging prompt behavior.
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// Enable verbose rendering for the remainder of the process.
+pub fn set_verbose(on: bool) {
+    VERBOSE.store(on, Ordering::Relaxed);
+}
+
+/// Check whether verbose rendering is enabled.
+pub fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
 
 // ── Terminal utilities ──────────────────────────────────────────────
 
@@ -43,9 +63,12 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 /// A braille-dot spinner that runs on a background thread.
 ///
 /// Writes to stderr so it doesn't interfere with streamed token output
-/// on stdout. Clears its own line when stopped.
+/// on stdout. Clears its own line when stopped. Exposes a thinking-bytes
+/// counter so the silent (non-verbose) thinking path can still surface
+/// progress feedback to the user without dumping reasoning content.
 pub struct Spinner {
     active: Arc<AtomicBool>,
+    thinking_bytes: Arc<AtomicUsize>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -54,6 +77,8 @@ impl Spinner {
     pub fn start(message: &str) -> Self {
         let active = Arc::new(AtomicBool::new(true));
         let active_clone = active.clone();
+        let thinking_bytes = Arc::new(AtomicUsize::new(0));
+        let thinking_clone = thinking_bytes.clone();
         let msg = message.to_string();
 
         let handle = std::thread::spawn(move || {
@@ -61,9 +86,15 @@ impl Spinner {
             let stderr = io::stderr();
             while active_clone.load(Ordering::Relaxed) {
                 let frame = SPINNER_FRAMES[i % SPINNER_FRAMES.len()];
+                let count = thinking_clone.load(Ordering::Relaxed);
+                let label = if count > 0 {
+                    format!("{msg} ({count} chars)")
+                } else {
+                    msg.clone()
+                };
                 {
                     let mut lock = stderr.lock();
-                    let _ = write!(lock, "\r\x1b[2K\x1b[90m{frame} {msg}\x1b[0m");
+                    let _ = write!(lock, "\r\x1b[2K\x1b[90m{frame} {label}\x1b[0m");
                     let _ = lock.flush();
                 }
                 std::thread::sleep(std::time::Duration::from_millis(80));
@@ -77,8 +108,15 @@ impl Spinner {
 
         Spinner {
             active,
+            thinking_bytes,
             handle: Some(handle),
         }
+    }
+
+    /// Record additional thinking bytes streamed from the model so the
+    /// spinner label can show live progress without printing the reasoning.
+    pub fn add_thinking_bytes(&self, bytes: usize) {
+        self.thinking_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Stop the spinner, blocking until the thread finishes.
@@ -124,10 +162,60 @@ pub fn print_tool_start(name: &str, args: &Value) {
     let width = terminal_width();
     // Reserve space for "▶ name(" + ")"  →  name.len() + 4 (▶ takes ~2 cols)
     let max_args = width.saturating_sub(name.len() + 5);
-    let args_str = format_tool_args(args, max_args);
+    let args_str = summarize_tool_args(name, args, max_args);
     sync_eprintln(&format!(
         "\x1b[33m▶\x1b[0m \x1b[1m{name}\x1b[0m\x1b[90m({args_str})\x1b[0m"
     ));
+}
+
+/// Per-tool argument summarization.
+///
+/// Claude-Code-style: show the most useful identifier (usually `path`)
+/// and a size hint, and elide long free-form content so bulk edits do
+/// not dump hundreds of lines of code into the terminal. Falls through
+/// to the generic `format_tool_args` rendering for tools we do not
+/// specialize.
+pub(crate) fn summarize_tool_args(name: &str, args: &Value, max_width: usize) -> String {
+    match name {
+        "write_file" => {
+            let path = args["path"].as_str().unwrap_or("?");
+            let content = args["content"].as_str().unwrap_or("");
+            let lines = content.lines().count().max(1);
+            let bytes = content.len();
+            truncate_to_width(&format!("path={path}, {lines} lines, {bytes} B"), max_width)
+        }
+        "edit_file" => {
+            let path = args["path"].as_str().unwrap_or("?");
+            let old_lines = args["old_string"]
+                .as_str()
+                .map(|s| s.lines().count().max(1))
+                .unwrap_or(0);
+            let new_lines = args["new_string"]
+                .as_str()
+                .map(|s| s.lines().count().max(1))
+                .unwrap_or(0);
+            truncate_to_width(
+                &format!("path={path}, -{old_lines}/+{new_lines} lines"),
+                max_width,
+            )
+        }
+        "bash" => {
+            let cmd = args["command"].as_str().unwrap_or("");
+            let first_line = cmd.lines().next().unwrap_or(cmd);
+            truncate_to_width(first_line, max_width)
+        }
+        "repl" => {
+            let code = args["code"].as_str().unwrap_or("");
+            let lines = code.lines().count().max(1);
+            let preview = code.lines().next().unwrap_or("");
+            if lines > 1 {
+                truncate_to_width(&format!("{preview} … ({lines} lines)"), max_width)
+            } else {
+                truncate_to_width(preview, max_width)
+            }
+        }
+        _ => format_tool_args(args, max_width),
+    }
 }
 
 /// Print a tool result: `◀ tool_name: preview…`
@@ -197,5 +285,66 @@ mod tests {
         let args = serde_json::json!({"command": "a]".repeat(100)});
         let formatted = format_tool_args(&args, 80);
         assert!(formatted.len() <= 80 + 3); // allow for ellipsis multi-byte
+    }
+
+    #[test]
+    fn summarize_write_file_elides_content_shows_size() {
+        let huge = "fn main() {}\n".repeat(200);
+        let args = serde_json::json!({"path": "src/main.rs", "content": huge});
+        let summary = summarize_tool_args("write_file", &args, 120);
+        assert!(summary.contains("path=src/main.rs"));
+        assert!(summary.contains("200 lines"));
+        assert!(
+            !summary.contains("fn main"),
+            "content body must not leak into summary: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_edit_file_shows_line_delta() {
+        let args = serde_json::json!({
+            "path": "foo.rs",
+            "old_string": "line1\nline2\nline3",
+            "new_string": "replacement\nwith\ntwo extra\nlines\nhere",
+        });
+        let summary = summarize_tool_args("edit_file", &args, 120);
+        assert!(summary.contains("path=foo.rs"));
+        assert!(summary.contains("-3/+5 lines"));
+        assert!(!summary.contains("line1"));
+        assert!(!summary.contains("replacement"));
+    }
+
+    #[test]
+    fn summarize_bash_shows_first_line_only() {
+        let args = serde_json::json!({"command": "echo hello\nrm -rf /\n# not shown"});
+        let summary = summarize_tool_args("bash", &args, 120);
+        assert_eq!(summary, "echo hello");
+    }
+
+    #[test]
+    fn summarize_repl_shows_line_count_when_multiline() {
+        let args = serde_json::json!({"code": "x = 1\ny = 2\nprint(x + y)"});
+        let summary = summarize_tool_args("repl", &args, 120);
+        assert!(summary.contains("x = 1"));
+        assert!(summary.contains("(3 lines)"));
+    }
+
+    #[test]
+    fn summarize_unknown_tool_falls_back_to_generic_format() {
+        let args = serde_json::json!({"pattern": "**/*.rs"});
+        let summary = summarize_tool_args("glob_search", &args, 120);
+        assert_eq!(summary, "pattern=**/*.rs");
+    }
+
+    #[test]
+    fn verbose_flag_round_trip() {
+        // Not thread-safe with other tests that touch VERBOSE, but we
+        // only set it here and restore. Run serially.
+        let prior = is_verbose();
+        set_verbose(true);
+        assert!(is_verbose());
+        set_verbose(false);
+        assert!(!is_verbose());
+        set_verbose(prior);
     }
 }

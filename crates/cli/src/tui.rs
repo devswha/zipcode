@@ -166,6 +166,11 @@ struct FullscreenUi {
     overlay: Option<Overlay>,
     draw_drops: usize,
     esc_armed: bool,
+    /// Bytes of Gemma 4 reasoning streamed during the current turn.
+    /// Surfaced in the status bar as "Thinking… (N chars)" so the user
+    /// sees live progress without the reasoning itself polluting the
+    /// transcript. Reset to 0 at the start of each `run_turn`.
+    thinking_bytes: usize,
 }
 
 impl FullscreenUi {
@@ -214,6 +219,7 @@ impl FullscreenUi {
             overlay: None,
             draw_drops: 0,
             esc_armed: false,
+            thinking_bytes: 0,
         };
         for notice in startup_notices {
             ui.push_entry(EntryKind::Info, format!("[notice] {notice}"));
@@ -588,6 +594,7 @@ impl FullscreenUi {
     fn run_turn(&mut self, input: String, conv: &mut ConversationLoop) -> Result<()> {
         self.push_entry(EntryKind::User, input.trim_end().to_string());
         self.status = "Thinking…".to_string();
+        self.thinking_bytes = 0;
         self.draw()?;
 
         let mut cb = TuiCallback {
@@ -1047,8 +1054,18 @@ impl StreamCallback for TuiCallback<'_> {
     }
 
     fn on_thinking(&mut self, text: &str) {
-        self.ui.append_thinking_token(text);
-        self.ui.status = "Thinking…".to_string();
+        // Silent default: keep the "Thinking…" header in the status bar
+        // and update a live character counter so the user sees progress
+        // without the reasoning itself flooding the transcript. Verbose
+        // mode (`--verbose` / `ZIPCODE_VERBOSE=1`) additionally streams
+        // the raw reasoning into a dedicated dimmed transcript entry.
+        self.ui.thinking_bytes = self.ui.thinking_bytes.saturating_add(text.len());
+        self.ui.status = format!("Thinking… ({} chars)", self.ui.thinking_bytes);
+
+        if crate::render::is_verbose() {
+            self.ui.append_thinking_token(text);
+        }
+
         self.pending_stream_bytes = self.pending_stream_bytes.saturating_add(text.len());
         if self.should_draw_stream_update(text) {
             self.try_draw();
