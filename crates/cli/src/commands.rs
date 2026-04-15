@@ -493,12 +493,12 @@ fn detect_config_warning_path_from_paths(
         Ok(())
     }
 
-    if project_path.exists() && validate_json_file(project_path).is_err() {
-        return Some(project_path.to_path_buf());
-    }
-
     if global_path.exists() && validate_json_file(global_path).is_err() {
         return Some(global_path.to_path_buf());
+    }
+
+    if project_path.exists() && validate_json_file(project_path).is_err() {
+        return Some(project_path.to_path_buf());
     }
 
     None
@@ -1367,7 +1367,7 @@ mod tests {
     }
 
     #[test]
-    fn detect_config_warning_path_prefers_project_config_over_global_config() {
+    fn detect_config_warning_path_prefers_global_config_when_both_are_invalid() {
         let unique = format!(
             "zipcode-config-warning-{}-{}",
             std::process::id(),
@@ -1386,7 +1386,7 @@ mod tests {
 
         let detected = detect_config_warning_path_from_paths(&global_path, &project_path);
 
-        assert_eq!(detected, Some(project_path));
+        assert_eq!(detected, Some(global_path));
 
         let _ = std::fs::remove_dir_all(&root);
     }
