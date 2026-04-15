@@ -1,3 +1,24 @@
+//! Legacy chat template and tool-call parser — **not on the Gemma 4 hot path.**
+//!
+//! This module renders prompts using Gemma 3-era tokens
+//! (`<start_of_turn>` / `<end_of_turn>`, JSON-wrapped `<tool_call>` blocks)
+//! and was historically labelled "Gemma 4" despite the token set.
+//!
+//! The current production backend is `llama_server_backend`, which sets
+//! `--jinja` so llama-server applies the GGUF's embedded Gemma 4 Jinja
+//! template and parses tool calls back to OpenAI `tool_calls` JSON on our
+//! behalf. Nothing in this module is invoked on that code path — it
+//! survives only so the feature-gated `candle` and `llama-cpp-rs` backends
+//! keep compiling. Both of those backends are known broken for Gemma 4
+//! today (see `CLAUDE.md` "Current Limitations"), so touching this file
+//! does not affect real user sessions.
+//!
+//! When the native backends are revived, rewrite this module against the
+//! actual Gemma 4 wire format: `<|turn>` / `<turn|>`, `<|tool_call>call:…`
+//! structured mini-language, `<|"|>` string delimiter. The authoritative
+//! reference (extracted live from the bundled GGUF) is
+//! [`wiki/pages/gemma4-format-spec.md`](../../../../wiki/pages/gemma4-format-spec.md).
+
 use crate::types::{ChatMessage, Role, ToolCallParsed};
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +29,9 @@ pub struct ToolSpec {
     pub parameters: serde_json::Value,
 }
 
-/// Format a single message in Gemma 4 turn format
+/// Format a single message using the legacy Gemma 3 turn format.
+/// See module docs — `llama_server_backend` does not use this function;
+/// it is kept for the feature-gated candle / llama-cpp-rs backends.
 pub fn format_message(msg: &ChatMessage, tools: &[ToolSpec]) -> String {
     match msg.role {
         Role::System => {
