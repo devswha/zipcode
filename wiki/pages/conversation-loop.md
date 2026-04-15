@@ -105,15 +105,17 @@ Current named coverage includes:
 1. `text_only_response` — single natural-language turn exits after one iteration. `crates/runtime/tests/integration.rs:147`
 2. `single_tool_call` — tool call → tool execution → model follow-up → final answer. `crates/runtime/tests/integration.rs:175`
 3. `multi_tool_turn` — more than one tool call in the same turn. `crates/runtime/tests/integration.rs:210`
-4. `permission_denied` — `read_only` mode blocks `bash`. `crates/runtime/tests/integration.rs:256`
-5. `tool_call_loop_cap` — repeated tool requests hit the 25-iteration guard. `crates/runtime/tests/integration.rs:295`
-6. `path_traversal_blocked` — `read_file ../../etc/passwd` is rejected by tool path validation. `crates/runtime/tests/integration.rs:329`
-7. `failed_turn_is_saved_to_session_file` — inference errors still persist the attempted turn. `crates/runtime/tests/integration.rs:368`
-8. `tool_call_turn_strips_raw_markup_from_saved_assistant_content` — raw `<tool_call>` markup is stripped before assistant history is saved. `crates/runtime/tests/integration.rs:408`
-9. `resumed_session_does_not_duplicate_system_prompt` — resume path keeps the prompt boundary stable. `crates/runtime/tests/integration.rs:452`
-10. `compacted_session_roundtrip_can_continue_turns` — compacted sessions still resume correctly. `crates/runtime/tests/integration.rs:485`
+4. `permission_denied` — `read_only` mode blocks `write_file`. `crates/runtime/tests/integration.rs:256`
+5. `workspace_write_permission_prompt_executes_bash_when_approved` — approval prompt is emitted and `bash` executes only after acceptance. `crates/runtime/tests/integration.rs:301`
+6. `workspace_write_permission_prompt_records_denial_when_rejected` — rejected approval leaves a denial tool-result message in session history without executing the tool. `crates/runtime/tests/integration.rs:327`
+7. `tool_call_loop_cap` — repeated tool requests hit the 25-iteration guard. `crates/runtime/tests/integration.rs:360`
+8. `path_traversal_blocked` — `read_file ../../etc/passwd` is rejected by tool path validation. `crates/runtime/tests/integration.rs:394`
+9. `failed_turn_is_saved_to_session_file` — inference errors still persist the attempted turn. `crates/runtime/tests/integration.rs:433`
+10. `tool_call_turn_strips_raw_markup_from_saved_assistant_content` — raw `<tool_call>` markup is stripped before assistant history is saved. `crates/runtime/tests/integration.rs:473`
+11. `resumed_session_does_not_duplicate_system_prompt` — resume path keeps the prompt boundary stable. `crates/runtime/tests/integration.rs:517`
+12. `compacted_session_roundtrip_can_continue_turns` — compacted sessions still resume correctly. `crates/runtime/tests/integration.rs:550`
 
-10 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-04-14).
+12 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-04-15).
 
 ---
 

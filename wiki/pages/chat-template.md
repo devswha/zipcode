@@ -82,11 +82,13 @@ A proper fix needs a `ChatTemplate` trait that each `InferenceProvider` pairs wi
 
 ## Tests
 
-**EXTRACTED** — 7 tests inline in `chat_template.rs`:
-- `format_message()` for each role
-- `format_conversation()` full flow
-- `parse_tool_calls()` on well-formed blocks
-- `extract_text_content()` removes blocks cleanly
+**EXTRACTED** — 20 inline tests in `chat_template.rs` as of 2026-04-15.
+
+Coverage now includes:
+- `format_message()` / `format_conversation()` role rendering and first-turn tool injection
+- `parse_tool_calls()` on well-formed, empty, malformed, missing-name, nested-closing-tag, and unclosed-block cases
+- explicit regression guards that malformed or unclosed `<tool_call>` blocks do **not** hide later valid calls in the same model turn
+- `extract_text_content()` behavior for closed malformed blocks, later valid blocks after malformed prefixes, nested closing tags inside JSON strings, and preservation of partial unclosed content without raw tag markup
 
 ---
 

@@ -68,14 +68,17 @@ When `check()` returns `NeedsApproval(msg)`, [`ConversationLoop`](conversation-l
 
 ## Tests
 
-**EXTRACTED** `permission.rs` — 6 inline tests:
+**EXTRACTED** `permission.rs` — 9 inline tests as of 2026-04-15:
 
-- `full_access_allows_everything`
-- `read_only_allows_read_tools`
-- `read_only_denies_write_tools`
-- `workspace_write_requires_approval_for_bash`
-- `workspace_write_requires_approval_for_repl`
-- `parse_permission_mode_accepts_danger_alias`
+- `test_full_access_allows_everything`
+- `test_read_only_blocks_writes`
+- `test_read_only_blocks_repl`
+- `test_workspace_write_needs_approval_for_bash`
+- `test_workspace_write_needs_approval_for_repl`
+- `test_workspace_write_denies_agent`
+- `test_workspace_write_denies_unknown_tools`
+- `test_parse_permission_mode_accepts_known_values`
+- `test_parse_permission_mode_rejects_unknown_values`
 
 ---
 

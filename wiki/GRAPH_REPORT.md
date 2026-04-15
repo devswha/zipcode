@@ -73,16 +73,16 @@ Drop these into a code search or walk the links — the wiki is pre-wired for th
 
 ---
 
-## Test surface (~130 tests total)
+## Test surface (265 passing + 2 ignored on current workspace)
 
-| Crate | Inline unit | Integration | Notable |
-|-------|-------------|-------------|---------|
-| `inference` | ~20 | 1 ignored (needs real model) | types, chat_template well-covered |
-| `tools` | ~40 | 0 | Every tool has a unit test; path traversal test at `lib.rs:305` |
-| `runtime` | ~22 | 6 (`tests/integration.rs`) | `MockInferenceProvider` drives loop tests (permission denied, iteration cap, etc.) |
-| `cli` | 0 | ~40 (`tests/smoke.rs`) | Spawns real binary in temp `HOME`; fullscreen TUI e2e uses `ZIPCODE_TUI_AUTOMATION_SCRIPT` |
+| Crate | Unit / inline | Integration | Notable |
+|-------|---------------|-------------|---------|
+| `inference` | 43 total (`41` passing + `2` ignored) | 0 separate integration crates | `chat_template.rs` alone now carries 20 parsing/formatting robustness tests; `llama_server_backend.rs` has 14 parser/streaming tests |
+| `tools` | 63 | 0 | Every tool has focused unit coverage; workspace-escape regressions exist for both glob and grep search |
+| `runtime` | 38 | 12 (`tests/integration.rs`) | `MockInferenceProvider` drives loop tests including read-only denial, workspace-write approval accept/reject, traversal blocking, persistence, and compaction resume |
+| `cli` | 71 | 40 smoke tests (`tests/smoke.rs`) | Unit tests live across `commands`, `repl`, `render`, `tui`, `tui_composer`, and `width`; smoke tests spawn the real binary in temp `HOME` |
 
-**EXTRACTED** from explorer output; exact counts may drift as tests are added.
+**EXTRACTED** from `cargo test --workspace` on 2026-04-15 plus per-file test inventories in the source tree.
 
 ---
 

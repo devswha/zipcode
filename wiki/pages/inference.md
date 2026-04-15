@@ -154,12 +154,16 @@ Chain: `top_k → top_p → temperature → sample`. Used by `InferenceEngine`. 
 
 ## Tests
 
-**EXTRACTED** — counted during mapping pass.
+**EXTRACTED** — current inline inventory from source + `cargo test --workspace` on 2026-04-15.
 
-- `lib.rs` — 5 tests (backend parsing, llama-server e2e marked `#[ignore]` needing `ZIPCODE_TEST_MODEL_PATH`)
-- `types.rs` — 5 tests (ChatMessage constructors, GenerationConfig defaults)
-- `chat_template.rs` — 7 tests (format, parse, extract) — see [chat-template](chat-template.md)
-- Backend-specific tests are minimal because they need real GGUF models.
+- `lib.rs` — 3 tests total:
+  - `parse_accepts_known_backends`
+  - `parse_rejects_unknown_backend`
+  - `local_gemma4_model_loads_via_llama_server` (`#[ignore]`, requires local Gemma 4 GGUF + helper)
+- `types.rs` — 4 tests covering `ChatMessage` constructors and `GenerationConfig` defaults
+- `chat_template.rs` — 20 tests covering formatting plus malformed / nested / unclosed `<tool_call>` recovery paths — see [chat-template](chat-template.md)
+- `llama_server_backend.rs` — 14 tests covering SSE parsing, streaming behavior, request building, and flash-attention flag compatibility
+- `device.rs` / `sampler.rs` add the remaining baseline unit coverage visible in the crate total (`41` passing + `2` ignored)
 
 ---
 

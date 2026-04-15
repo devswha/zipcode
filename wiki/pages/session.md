@@ -62,10 +62,14 @@ pub struct Session {
 
 ## Tests
 
-**EXTRACTED** — 3 inline tests:
-- `session_new_has_uuid_and_timestamps`
-- `push_message_updates_updated_at`
-- `save_load_roundtrip` (uses `tempfile::TempDir`)
+**EXTRACTED** — 14 inline tests in `session.rs` as of 2026-04-15.
+
+Current coverage includes:
+- basic lifecycle: `test_new_session`, `test_push_message`, `test_session_roundtrip`
+- load-path validation: mismatched ids, invalid ids, traversal, slash, backslash, null-byte, and empty-id rejection
+- compaction behavior: `test_compact_preserves_system_message_and_safe_boundary_suffix` and `test_compact_is_idempotent_without_new_user_turns`
+- save hardening: `test_save_with_malicious_id_blocked`
+- positive path validation: `test_valid_uuid_session_id_accepted`
 
 ---
 

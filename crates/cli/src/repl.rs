@@ -100,6 +100,15 @@ impl CliCallback {
     }
 }
 
+fn permission_prompt_allowed(interactive: bool, bytes_read: usize, input: &str) -> bool {
+    if !interactive || bytes_read == 0 {
+        return false;
+    }
+
+    let trimmed = input.trim().to_lowercase();
+    trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+}
+
 impl zipcode_runtime::StreamCallback for CliCallback {
     fn on_token(&mut self, text: &str) {
         self.stop_spinner();
@@ -122,13 +131,13 @@ impl zipcode_runtime::StreamCallback for CliCallback {
 
     fn on_permission_prompt(&mut self, message: &str) -> bool {
         self.stop_spinner();
-        use std::io::{self, Write};
+        use std::io::{self, IsTerminal, Write};
         print!("\x1b[33m[permission]\x1b[0m {message} [Y/n] ");
         io::stdout().flush().ok();
         let mut input = String::new();
-        io::stdin().read_line(&mut input).ok();
-        let trimmed = input.trim().to_lowercase();
-        trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+        let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+        let bytes_read = io::stdin().read_line(&mut input).unwrap_or(0);
+        permission_prompt_allowed(interactive, bytes_read, &input)
     }
 
     fn on_error(&mut self, error: &str) {
@@ -1238,5 +1247,24 @@ mod tests {
             .iter()
             .any(|line| line.contains("GPU layer offload")));
         assert!(notices.iter().any(|line| line.contains("flash attention")));
+    }
+
+    #[test]
+    fn permission_prompt_denies_eof_even_if_interactive() {
+        assert!(!permission_prompt_allowed(true, 0, ""));
+    }
+
+    #[test]
+    fn permission_prompt_denies_noninteractive_input_even_if_yes() {
+        assert!(!permission_prompt_allowed(false, 4, "yes\n"));
+        assert!(!permission_prompt_allowed(false, 1, "\n"));
+    }
+
+    #[test]
+    fn permission_prompt_accepts_only_interactive_enter_or_yes() {
+        assert!(permission_prompt_allowed(true, 1, "\n"));
+        assert!(permission_prompt_allowed(true, 2, "y\n"));
+        assert!(permission_prompt_allowed(true, 4, "yes\n"));
+        assert!(!permission_prompt_allowed(true, 2, "n\n"));
     }
 }

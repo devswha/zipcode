@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/license/devswha/zipcode?style=flat-square" alt="License" />
   <img src="https://img.shields.io/badge/platform-linux%20x86__64-blue?style=flat-square" alt="Platform" />
-  <img src="https://img.shields.io/badge/tests-120%20passing-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-265%20passing-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/clippy-zero%20warnings-brightgreen?style=flat-square" alt="Clippy" />
 </p>
 
@@ -251,6 +251,8 @@ All tool output is automatically truncated at **8 KB** with a byte-count summary
 | `read-only` | Denied | Denied | Allowed | Safe exploration |
 | `workspace-write` | Approval required | Allowed | Allowed | **Default** |
 | `full-access` | Allowed | Allowed | Allowed | Trusted automation |
+
+> In `workspace-write`, approval-gated tools fail closed when zipcode is running non-interactively (for example `prompt` mode with EOF / no TTY). A real interactive terminal is required to approve `bash` or `repl`.
 
 ---
 

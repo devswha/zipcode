@@ -19,6 +19,8 @@ struct TestCallback {
     tokens: Vec<String>,
     tool_calls: Vec<(String, serde_json::Value)>,
     tool_results: Vec<(String, String)>,
+    permission_prompts: Vec<String>,
+    approve_prompts: bool,
     errors: Vec<String>,
 }
 
@@ -28,7 +30,16 @@ impl TestCallback {
             tokens: Vec::new(),
             tool_calls: Vec::new(),
             tool_results: Vec::new(),
+            permission_prompts: Vec::new(),
+            approve_prompts: false,
             errors: Vec::new(),
+        }
+    }
+
+    fn with_permission_response(approve_prompts: bool) -> Self {
+        Self {
+            approve_prompts,
+            ..Self::new()
         }
     }
 
@@ -52,8 +63,9 @@ impl StreamCallback for TestCallback {
     }
 
     /// Deny all permission prompts by default.
-    fn on_permission_prompt(&mut self, _message: &str) -> bool {
-        false
+    fn on_permission_prompt(&mut self, message: &str) -> bool {
+        self.permission_prompts.push(message.to_string());
+        self.approve_prompts
     }
 
     fn on_error(&mut self, error: &str) {
@@ -284,6 +296,80 @@ fn permission_denied() {
     assert!(
         has_denial,
         "expected a denial tool_result in session messages"
+    );
+}
+
+#[test]
+fn workspace_write_permission_prompt_executes_bash_when_approved() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "echo approved" }),
+        },
+        MockResponse::Text("done".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::WorkspaceWrite);
+    let mut cb = TestCallback::with_permission_response(true);
+
+    conv.run_turn("run bash", &mut cb).unwrap();
+
+    assert_eq!(
+        cb.permission_prompts.len(),
+        1,
+        "expected one permission prompt"
+    );
+    assert!(cb.permission_prompts[0].contains("requires approval"));
+    assert_eq!(cb.tool_calls.len(), 1, "expected approved tool execution");
+    assert_eq!(cb.tool_calls[0].0, "bash");
+    assert_eq!(
+        cb.tool_results.len(),
+        1,
+        "expected tool result after approval"
+    );
+    assert!(cb.tool_results[0].1.contains("approved"));
+}
+
+#[test]
+fn workspace_write_permission_prompt_records_denial_when_rejected() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "echo should-not-run" }),
+        },
+        MockResponse::Text("done".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::WorkspaceWrite);
+    let mut cb = TestCallback::with_permission_response(false);
+
+    conv.run_turn("run bash", &mut cb).unwrap();
+
+    assert_eq!(
+        cb.permission_prompts.len(),
+        1,
+        "expected one permission prompt"
+    );
+    assert!(
+        cb.tool_calls.is_empty(),
+        "tool should not execute after rejection"
+    );
+    assert!(
+        cb.tool_results.is_empty(),
+        "denial should not surface as callback tool result"
+    );
+
+    let has_denial = conv.session.messages.iter().any(|m| {
+        let json = serde_json::to_string(m).unwrap_or_default();
+        json.contains("User denied permission for this action.")
+    });
+    assert!(
+        has_denial,
+        "expected denied permission message in session history"
     );
 }
 
