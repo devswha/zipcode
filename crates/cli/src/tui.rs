@@ -130,6 +130,10 @@ fn run_automation_script_from_env(
 enum EntryKind {
     User,
     Assistant,
+    /// Gemma 4 private reasoning channel. Rendered dimmed so users can
+    /// follow the model's thinking without mistaking it for the final
+    /// answer. Never persisted into session history — see `ConversationLoop`.
+    Thinking,
     ToolStart,
     ToolResult,
     Info,
@@ -623,6 +627,21 @@ impl FullscreenUi {
         self.refresh_last_transcript_cache_entry();
     }
 
+    /// Append a Gemma 4 reasoning chunk to the transcript. Reasoning entries
+    /// are kept separate from assistant entries so styling can dim them and
+    /// so the next regular `append_assistant_token` opens a fresh Assistant
+    /// entry — visually marking the transition from "thinking" to "answer".
+    fn append_thinking_token(&mut self, token: &str) {
+        match self.transcript.last_mut() {
+            Some(TranscriptEntry {
+                kind: EntryKind::Thinking,
+                content,
+            }) => content.push_str(token),
+            _ => self.push_entry(EntryKind::Thinking, token.to_string()),
+        }
+        self.refresh_last_transcript_cache_entry();
+    }
+
     fn transcript_viewport(&mut self) -> Result<TranscriptViewport> {
         let (width, height) = terminal::size()?;
         let usable_width = width.saturating_sub(2) as usize;
@@ -1027,6 +1046,17 @@ impl StreamCallback for TuiCallback<'_> {
         }
     }
 
+    fn on_thinking(&mut self, text: &str) {
+        self.ui.append_thinking_token(text);
+        self.ui.status = "Thinking…".to_string();
+        self.pending_stream_bytes = self.pending_stream_bytes.saturating_add(text.len());
+        if self.should_draw_stream_update(text) {
+            self.try_draw();
+            self.last_stream_draw = Some(Instant::now());
+            self.pending_stream_bytes = 0;
+        }
+    }
+
     fn on_tool_start(&mut self, name: &str, args: &Value) {
         self.ui.push_entry(
             EntryKind::ToolStart,
@@ -1323,6 +1353,31 @@ mod tests {
         assert_eq!(entries[3].content, "tool output");
     }
 
+    /// The Gemma 4 reasoning channel is rendered as a dedicated, dimmed
+    /// entry so users can follow the model's thinking without mistaking it
+    /// for the final answer.
+    #[test]
+    fn format_entry_renders_thinking_with_dimmed_style() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Thinking,
+            content: "I should read the README".to_string(),
+        };
+
+        let lines = format_entry(&entry, 80);
+
+        assert!(!lines.is_empty(), "thinking entry should produce output");
+        assert!(
+            lines
+                .iter()
+                .all(|line| matches!(line.color, Color::DarkGrey)),
+            "every thinking line must be DarkGrey: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.text.contains("I should read")),
+            "thinking content must appear in formatted lines"
+        );
+    }
+
     #[test]
     fn scroll_status_label_is_human_friendly() {
         assert_eq!(scroll_status_label(0), "latest");
@@ -1382,6 +1437,9 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
     let (prefix, color) = match entry.kind {
         EntryKind::User => ("You", Color::Green),
         EntryKind::Assistant => ("Zip", Color::White),
+        // DarkGrey gives the reasoning channel a visually dimmed appearance
+        // distinct from normal assistant output while remaining readable.
+        EntryKind::Thinking => ("…", Color::DarkGrey),
         EntryKind::ToolStart => ("Tool", Color::Yellow),
         EntryKind::ToolResult => ("Out", Color::Blue),
         EntryKind::Info => ("Info", Color::Cyan),
