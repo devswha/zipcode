@@ -553,3 +553,4 @@ curl -s http://127.0.0.1:44262/props > /tmp/llama-props.json
 - [inference](inference.md) — consumes this format via `InferenceProvider` implementations
 - [conversation-loop](conversation-loop.md) — owns the tool-call iteration logic that must adapt to parallel tool calls
 - [llama-server](llama-server.md) — backend that currently bypasses `chat_template.rs` via `--jinja`
+- [`docs/experiments/2026-04-16-gemma4-e4b-gamedev-probe.md`](../../docs/experiments/2026-04-16-gemma4-e4b-gamedev-probe.md) — end-to-end capability probe: "build me a game" across Python, HTML Canvas, and Rust, showing E4B's one-shot ceiling and the second-hop debug wall
