@@ -137,6 +137,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 - `termimad` for markdown rendering of assistant output.
 - `rustyline` for input line editing + history.
 - Slash commands: `/help`, `/status`, `/clear`, `/quit`, `/doctor`, etc.
+- Transcript navigation supports both `PgUp` / `PgDn` page jumps and mouse-wheel line scrolling in fullscreen mode.
 - `/compact` may legitimately be a no-op; the status line now says `Compaction skipped` instead of claiming success when there is not enough history to compact.
 - Automation hook: `ZIPCODE_TUI_AUTOMATION_SCRIPT` env var lets integration tests drive the TUI non-interactively (commit `52a7717`, `e2d22bd`).
 

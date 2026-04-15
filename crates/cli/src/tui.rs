@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use termimad::crossterm::cursor::{Hide, MoveTo, Show};
-use termimad::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use termimad::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseEvent, MouseEventKind,
+};
 use termimad::crossterm::execute;
 use termimad::crossterm::style::{
     Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor,
@@ -36,6 +39,7 @@ const HINT_LINES: u16 = 1;
 const MAX_COMPOSER_LINES: usize = 5;
 const STREAM_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
 const STREAM_REDRAW_MIN_BYTES: usize = 24;
+const MOUSE_WHEEL_SCROLL_LINES: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TranscriptViewport {
@@ -96,6 +100,7 @@ fn run_interactive_fullscreen(
                     break;
                 }
             }
+            Event::Mouse(mouse) => ui.handle_mouse_event(mouse)?,
             Event::Resize(_, _) => ui.draw()?,
             _ => {}
         }
@@ -169,18 +174,23 @@ impl FullscreenUi {
             std::panic::set_hook(Box::new(move |info| {
                 // Best-effort terminal restoration — ignore errors.
                 let _ = terminal::disable_raw_mode();
-                let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
+                let _ = execute!(
+                    io::stdout(),
+                    Show,
+                    DisableMouseCapture,
+                    LeaveAlternateScreen
+                );
                 prev_hook(info);
             }));
         }
 
         let mut stdout = io::stdout();
-        if let Err(e) = execute!(stdout, EnterAlternateScreen, Hide) {
+        if let Err(e) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide) {
             clear_panic_hook_flag();
             return Err(e.into());
         }
         if let Err(e) = terminal::enable_raw_mode() {
-            let _ = execute!(stdout, Show, LeaveAlternateScreen);
+            let _ = execute!(stdout, Show, DisableMouseCapture, LeaveAlternateScreen);
             clear_panic_hook_flag();
             return Err(e.into());
         }
@@ -216,7 +226,7 @@ impl FullscreenUi {
             terminal::disable_raw_mode()?;
             self.raw_enabled = false;
         }
-        execute!(self.stdout, Show, LeaveAlternateScreen)?;
+        execute!(self.stdout, Show, DisableMouseCapture, LeaveAlternateScreen)?;
         self.stdout.flush()?;
         Ok(())
     }
@@ -413,6 +423,30 @@ impl FullscreenUi {
         Ok(true)
     }
 
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<()> {
+        if self.overlay.is_some() {
+            return Ok(());
+        }
+
+        let Some(direction) = mouse_scroll_direction(mouse.kind) else {
+            return Ok(());
+        };
+
+        let moved = self.scroll_transcript_by_lines(direction, MOUSE_WHEEL_SCROLL_LINES)?;
+        self.status = match direction {
+            ScrollDirection::Older if moved == 0 => {
+                "Already at the oldest visible history".to_string()
+            }
+            ScrollDirection::Older => format!("Scrolled up {} line(s)", moved),
+            ScrollDirection::Newer if self.transcript_scroll == 0 => {
+                "Back to latest output".to_string()
+            }
+            ScrollDirection::Newer => format!("Scrolled down {} line(s)", moved),
+        };
+        self.draw()?;
+        Ok(())
+    }
+
     fn handle_submitted_input(
         &mut self,
         input: String,
@@ -529,6 +563,7 @@ impl FullscreenUi {
             "  Option+Enter newline".to_string(),
             "  Arrow keys  move cursor / recall history".to_string(),
             "  PgUp/PgDn   scroll transcript by page".to_string(),
+            "  Mouse wheel scroll transcript by line".to_string(),
             "  Ctrl+Home   jump to oldest visible history".to_string(),
             "  Ctrl+End    jump to latest output".to_string(),
             "  Shift+Tab   cycle permission mode".to_string(),
@@ -614,16 +649,21 @@ impl FullscreenUi {
             .saturating_sub(viewport.height))
     }
 
+    fn scroll_transcript_by_lines(
+        &mut self,
+        direction: ScrollDirection,
+        lines: usize,
+    ) -> Result<usize> {
+        let previous = self.transcript_scroll;
+        let max_scroll = self.max_transcript_scroll()?;
+        self.transcript_scroll = scroll_offset_after_delta(previous, max_scroll, lines, direction);
+        Ok(previous.abs_diff(self.transcript_scroll))
+    }
+
     fn scroll_transcript_by_page(&mut self, direction: ScrollDirection) -> Result<usize> {
         let viewport = self.transcript_viewport()?;
         let page = viewport.height.saturating_sub(2).max(1);
-        let previous = self.transcript_scroll;
-        let max_scroll = self.max_transcript_scroll()?;
-        self.transcript_scroll = match direction {
-            ScrollDirection::Older => previous.saturating_add(page).min(max_scroll),
-            ScrollDirection::Newer => previous.saturating_sub(page),
-        };
-        Ok(previous.abs_diff(self.transcript_scroll))
+        self.scroll_transcript_by_lines(direction, page)
     }
 
     fn jump_to_oldest_transcript(&mut self) -> Result<usize> {
@@ -1291,6 +1331,39 @@ mod tests {
     }
 
     #[test]
+    fn mouse_wheel_maps_to_transcript_scroll_direction() {
+        assert_eq!(
+            mouse_scroll_direction(MouseEventKind::ScrollUp),
+            Some(ScrollDirection::Older)
+        );
+        assert_eq!(
+            mouse_scroll_direction(MouseEventKind::ScrollDown),
+            Some(ScrollDirection::Newer)
+        );
+        assert_eq!(mouse_scroll_direction(MouseEventKind::Moved), None);
+    }
+
+    #[test]
+    fn scroll_amount_clamps_within_transcript_bounds() {
+        assert_eq!(
+            scroll_offset_after_delta(0, 10, 4, ScrollDirection::Older),
+            4
+        );
+        assert_eq!(
+            scroll_offset_after_delta(8, 10, 4, ScrollDirection::Older),
+            10
+        );
+        assert_eq!(
+            scroll_offset_after_delta(10, 10, 3, ScrollDirection::Newer),
+            7
+        );
+        assert_eq!(
+            scroll_offset_after_delta(2, 10, 5, ScrollDirection::Newer),
+            0
+        );
+    }
+
+    #[test]
     fn visible_tail_clamps_scroll_without_empty_overscroll() {
         let items = vec![1, 2, 3, 4, 5];
         assert_eq!(visible_tail(&items, 3, 0), &[3, 4, 5]);
@@ -1358,6 +1431,26 @@ fn wrap_plain(text: &str, width: usize) -> Vec<String> {
 enum ScrollDirection {
     Older,
     Newer,
+}
+
+fn mouse_scroll_direction(kind: MouseEventKind) -> Option<ScrollDirection> {
+    match kind {
+        MouseEventKind::ScrollUp => Some(ScrollDirection::Older),
+        MouseEventKind::ScrollDown => Some(ScrollDirection::Newer),
+        _ => None,
+    }
+}
+
+fn scroll_offset_after_delta(
+    previous: usize,
+    max_scroll: usize,
+    amount: usize,
+    direction: ScrollDirection,
+) -> usize {
+    match direction {
+        ScrollDirection::Older => previous.saturating_add(amount).min(max_scroll),
+        ScrollDirection::Newer => previous.saturating_sub(amount),
+    }
 }
 
 fn scroll_status_label(offset: usize) -> String {
