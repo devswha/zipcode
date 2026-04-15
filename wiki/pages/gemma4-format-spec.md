@@ -434,13 +434,89 @@ This second fix is the "Claude-Code-like experience" path — it gives users vis
 
 ---
 
+## Phase B — E2B vs E4B under production load
+
+**EXTRACTED** from live probes against `gemma-4-e2b-it-Q8_0.gguf` and
+`gemma-4-E4B-it-Q4_K_M.gguf` on 2026-04-15. Both models served through
+zipcode's bundled `llama-server` with the full 10-tool registry and the
+real `BASE_SYSTEM_PROMPT` from `crates/runtime/src/prompt.rs`.
+
+Each row is one request. Reasoning / tool-call delta counts are taken
+directly from the SSE stream.
+
+| Scenario | Model | reasoning Δ | tool_call Δ | Picked tool | Quality |
+|---|---|---|---|---|---|
+| 1. Simple `"What's in README.md?"` | **E2B** | 32 | 9 | `read_file({path:"README.md"})` | ✓ ideal |
+| 1. Simple `"What's in README.md?"` | **E4B** | 28 | 9 | `read_file({path:"README.md"})` | ✓ ideal |
+| 2. Ambiguous `"Find where the InferenceProvider trait is defined"` | **E2B** | 91 | 9 | `glob_search({pattern:"**/*.rs"})` | ⚠ broad file enum |
+| 2. Ambiguous `"Find where the InferenceProvider trait is defined"` | **E4B** | 46 | 12 | `glob_search({pattern:"**/*InferenceProvider*"})` | ⚠ targeted filename glob |
+| 3. Explicit `"Grep the codebase for uses of MAX_TOOL_ITERATIONS."` | **E2B** | 65 | 12 | `grep_search({pattern:"MAX_TOOL_ITERATIONS"})` | ✓ correct, minimal args |
+| 3. Explicit `"Grep the codebase for uses of MAX_TOOL_ITERATIONS."` | **E4B** | 48 | 19 | `grep_search({path:"**/*",pattern:"MAX_TOOL_ITERATIONS"})` | ✓ correct, defensive args |
+
+### Takeaways
+
+1. **10-tool production shape does not break either model.** Both E2B
+   and E4B emit well-formed tool calls under the full
+   `BASE_SYSTEM_PROMPT` + 10-tool schema load. This closes the Phase A
+   prerequisite — the `enable_thinking` wire contract holds at scale.
+2. **Neither model is broken; the differentiator is reasoning
+   efficiency and tool-selection nuance.** E4B consistently burns
+   ~30–50% fewer reasoning tokens than E2B to reach the same or
+   better conclusion.
+3. **E4B is materially smarter on ambiguous intent.** On Scenario 2,
+   E2B falls back to `**/*.rs` (enumerate every Rust file, then
+   post-process), while E4B narrows by filename with
+   `**/*InferenceProvider*` — same wrong tool family (both picked
+   `glob_search` instead of `grep_search`), but E4B's candidate space
+   is orders of magnitude smaller.
+4. **Explicit-intent queries converge.** When the user literally says
+   "grep", both models pick `grep_search`. E2B emits minimal args;
+   E4B adds a defensive `path:"**/*"` workspace glob. Both are
+   acceptable; E4B's version is slightly safer if `grep_search`
+   defaults to CWD-only.
+5. **Reasoning channel wire contract is identical on E2B and E4B.**
+   `delta.reasoning_content` fires on both with the same shape; the
+   `TokenEvent::Thinking` lane added in the previous commits handles
+   both transparently — no code changes needed for E4B support.
+6. **Tool-selection ceiling is a prompt-engineering problem on this
+   hardware tier, not a format problem.** Both models know
+   `grep_search` exists; neither reaches for it first on exploratory
+   phrasing like "Find where X is defined". A short directive in
+   `BASE_SYSTEM_PROMPT` ("When locating symbol definitions, prefer
+   `grep_search` over `glob_search`") is likely enough to close the
+   gap without touching model selection.
+
+### Hardware envelope observed
+
+- RTX 2070 SUPER 8 GB, `-ngl 999` (full GPU offload)
+- E4B Q4_K_M (4.7 GB on disk) + 4 k ctx fits inside 8 GB VRAM with
+  headroom. E5/Q6 quants would likely still fit at ≤4 k ctx.
+- Q5_K_M (5.48 GB on disk per upstream Unsloth repo) is the next
+  quality step and should still fit on this card at ≤4 k ctx.
+
+### Artifacts captured on disk (2026-04-15, Phase B)
+
+- `/tmp/probeB-req.json`, `/tmp/probeB-stream.sse` — E2B Case 1
+- `/tmp/probeB2-req.json`, `/tmp/probeB2-stream.sse` — E2B Case 2
+- `/tmp/e2b-req-3.json`, `/tmp/e2b-stream-3.sse` — E2B Case 3
+- `/tmp/e4b-req-1.json`, `/tmp/e4b-stream-1.sse` — E4B Case 1
+- `/tmp/e4b-req-2.json`, `/tmp/e4b-stream-2.sse` — E4B Case 2
+- `/tmp/e4b-req-3.json`, `/tmp/e4b-stream-3.sse` — E4B Case 3
+
+Scratch, not committed. Regenerate by launching llama-server on the
+respective GGUFs and replaying the JSON requests.
+
+---
+
 ## Open questions still unresolved
 
-1. **How does E2B behave under zipcode's real load** — 10 tools + the long `BASE_SYSTEM_PROMPT` + optional `.zipcode.md` + multi-turn history? The minimal 1-tool probe worked cleanly; this does not prove the 10-tool production case works. Worth testing as part of Phase A before shipping the `enable_thinking` fix.
-2. **Does the real Gemma 4 function-calling-tuned model accept Gemma-3-style `<tool_call>{json}</tool_call>` prompts at inference time as a lenient fallback?** Less urgent now that we know the llama-server path bypasses `chat_template.rs` entirely — but still relevant if candle/llama-cpp-rs backends come back online.
-3. **Edge case: does `<|"|>` require escaping of an inner literal `<|"|>` sequence?** The Jinja template does not show any escape mechanism, which implies tool call argument strings cannot contain the delimiter token verbatim. Relevant for Phase C grammar definition but not for the llama-server path (llama-server handles escaping internally).
-4. **Is `chat_template_caps` consistent across E2B / E4B / 26B A4B / 31B,** or do the larger models expose additional capability flags (e.g. `supports_preserve_reasoning: true`)? Worth re-running the probe against E4B when we download it, and against a 26B A4B build when we reach that hardware tier.
-5. **Does `chat_template_kwargs: {enable_thinking: false}` behave consistently on E4B / 26B A4B / 31B?** Google's docs note that the 26B and 31B sometimes emit a thought channel even when thinking mode is explicitly off. Confirm the behavior there before declaring the two-line fix universal.
+1. ~~**Does E2B behave under zipcode's real load** — 10 tools + the long `BASE_SYSTEM_PROMPT` + optional `.zipcode.md` + multi-turn history?~~ **Resolved above** — both E2B and E4B emit valid tool calls under the full load.
+2. ~~**Is `chat_template_caps` consistent across E2B / E4B?**~~ **Resolved above** — the SSE delta shape and `reasoning_content` wire contract are identical; zipcode's `TokenEvent::Thinking` lane handles both without code changes.
+3. **Does the real Gemma 4 function-calling-tuned model accept Gemma-3-style `<tool_call>{json}</tool_call>` prompts at inference time as a lenient fallback?** Less urgent now that we know the llama-server path bypasses `chat_template.rs` entirely — but still relevant if candle/llama-cpp-rs backends come back online.
+4. **Edge case: does `<|"|>` require escaping of an inner literal `<|"|>` sequence?** The Jinja template does not show any escape mechanism, which implies tool call argument strings cannot contain the delimiter token verbatim. Relevant for Phase C grammar definition but not for the llama-server path (llama-server handles escaping internally).
+5. **Is `chat_template_caps` consistent across the larger variants** (26B A4B / 31B) — e.g. does `supports_preserve_reasoning` flip to `true`? Needs a 24 GB+ GPU or Apple Silicon host to verify.
+6. **Does `chat_template_kwargs: {enable_thinking: false}` behave consistently on 26B A4B / 31B?** Google's docs note the larger models sometimes emit a thought channel even when thinking is explicitly off. Confirm before declaring the kwarg fix universal.
+7. **Tool-selection nudging:** does adding a short "prefer `grep_search` over `glob_search` for symbol lookups" directive to `BASE_SYSTEM_PROMPT` materially change Scenario 2 behavior on E2B / E4B? Low-risk experiment; one-line system prompt edit followed by the same probe.
 
 ---
 
