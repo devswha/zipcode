@@ -32,7 +32,8 @@ cli ──▶ runtime ──▶ inference
 | Page | What it covers |
 |------|----------------|
 | [inference](pages/inference.md) | `InferenceProvider` trait, 4 backends (candle, llama-cpp, llama-server, mock), sampling, `GenerationConfig` |
-| [chat-template](pages/chat-template.md) | Hardcoded Gemma 4 format, `<tool_call>` parsing, single-model coupling |
+| [chat-template](pages/chat-template.md) | Current implementation — labelled "Gemma 4" but actually Gemma 3 tokens; `<tool_call>` JSON parsing; single-model coupling |
+| [gemma4-format-spec](pages/gemma4-format-spec.md) | **Phase 0 spec** — real Gemma 4 chat template extracted from the GGUF: `<\|turn>` tokens, custom tool-call mini-language, thinking channel, stop tokens, implementation deltas |
 | [tools](pages/tools.md) | `Tool` trait, `ToolRegistry`, all 10 tools, path safety, 8 KB truncation |
 | [conversation-loop](pages/conversation-loop.md) | `ConversationLoop`, 25-iteration cap, `StreamCallback`, agentic loop flow |
 | [permissions](pages/permissions.md) | `PermissionMode`, 3-tier matrix, approval-gated tools |
@@ -65,6 +66,7 @@ The highest-degree concepts — almost every code path touches one of these. Rea
 | Add a new inference backend | [inference › Adding a backend](pages/inference.md#adding-a-backend) → factory in `crates/inference/src/lib.rs:71` |
 | Add a new tool | [recipes › Add a new tool](pages/recipes.md#add-a-new-tool) → `crates/tools/src/lib.rs` |
 | Support a non-Gemma model | [chat-template](pages/chat-template.md) — currently single-model hardcoded |
+| Rewrite chat template to real Gemma 4 | [gemma4-format-spec](pages/gemma4-format-spec.md) — authoritative spec + implementation deltas |
 | Change the tool-loop iteration cap | `MAX_TOOL_ITERATIONS` in `crates/runtime/src/conversation.rs:43` |
 | Change the tool output size limit | `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:377` |
 | Add a config field | [config › Fields](pages/config.md#fields) → `crates/runtime/src/config.rs` |
