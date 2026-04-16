@@ -139,6 +139,10 @@ enum EntryKind {
     Info,
     Error,
     Permission,
+    /// Thin visual separator inserted between major turn transitions
+    /// (User→Tool, Tool→Assistant, etc.) so the transcript doesn't
+    /// read as one undifferentiated wall of text.
+    Separator,
 }
 
 struct TranscriptEntry {
@@ -615,6 +619,29 @@ impl FullscreenUi {
     }
 
     fn push_entry(&mut self, kind: EntryKind, content: String) {
+        // Auto-insert a separator on major role transitions so the
+        // transcript visually groups related entries (e.g. User question,
+        // then Tool+Out block, then Zip answer).
+        if !matches!(kind, EntryKind::Separator | EntryKind::Info) {
+            if let Some(prev) = self.transcript.last() {
+                let dominated = matches!(
+                    (prev.kind, kind),
+                    (EntryKind::User, EntryKind::Assistant)
+                        | (EntryKind::User, EntryKind::Thinking)
+                        | (EntryKind::ToolResult, EntryKind::Assistant)
+                        | (EntryKind::ToolResult, EntryKind::Thinking)
+                        | (EntryKind::Assistant, EntryKind::User)
+                );
+                if dominated {
+                    let sep = TranscriptEntry {
+                        kind: EntryKind::Separator,
+                        content: String::new(),
+                    };
+                    self.transcript_cache.append_entry(&sep);
+                    self.transcript.push(sep);
+                }
+            }
+        }
         self.transcript.push(TranscriptEntry { kind, content });
         self.transcript_scroll = 0;
         let Some(entry) = self.transcript.last() else {
@@ -1451,6 +1478,15 @@ struct StyledLine {
 }
 
 fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
+    // Separator: thin dotted line spanning the width
+    if matches!(entry.kind, EntryKind::Separator) {
+        let line = "╌".repeat(width.min(60));
+        return vec![StyledLine {
+            color: Color::DarkGrey,
+            text: line,
+        }];
+    }
+
     let (prefix, color) = match entry.kind {
         EntryKind::User => ("You", Color::Green),
         EntryKind::Assistant => ("Zip", Color::White),
@@ -1462,6 +1498,7 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
         EntryKind::Info => ("Info", Color::Cyan),
         EntryKind::Error => ("Err", Color::Red),
         EntryKind::Permission => ("Perm", Color::Magenta),
+        EntryKind::Separator => unreachable!(),
     };
     let indent = " ".repeat(prefix.len() + 2);
     let mut out = Vec::new();

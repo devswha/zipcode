@@ -46,6 +46,10 @@ pub struct CliCallback {
     /// transition (token, tool, error) can close the ANSI dim/italic
     /// attributes cleanly and emit a visual separator.
     thinking_active: bool,
+    /// True until the first visible token is printed in this turn.
+    /// Used to emit a `Zip: ` role prefix before the first token,
+    /// matching the TUI's `Zip:` transcript entries.
+    needs_role_prefix: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +89,7 @@ impl CliCallback {
         Self {
             spinner: None,
             thinking_active: false,
+            needs_role_prefix: true,
         }
     }
 
@@ -99,6 +104,12 @@ impl CliCallback {
             s.stop();
         }
         self.end_thinking_block();
+        // Print a turn separator and reset role prefix for the next turn
+        if !self.needs_role_prefix {
+            // Only print separator if we actually emitted tokens this turn
+            eprintln!("\x1b[90m─── ─── ───\x1b[0m");
+        }
+        self.needs_role_prefix = true;
     }
 
     fn stop_spinner(&mut self) {
@@ -134,6 +145,10 @@ impl zipcode_runtime::StreamCallback for CliCallback {
     fn on_token(&mut self, text: &str) {
         self.stop_spinner();
         self.end_thinking_block();
+        if self.needs_role_prefix {
+            print!("\x1b[1mZip:\x1b[0m ");
+            self.needs_role_prefix = false;
+        }
         print!("{text}");
         use std::io::Write;
         let _ = std::io::stdout().flush();
