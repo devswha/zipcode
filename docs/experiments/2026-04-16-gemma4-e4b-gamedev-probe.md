@@ -266,30 +266,155 @@ Scratch paths on the probe host (not committed):
 - `/tmp/round{1,2,3,3b}.{stdout,stderr}` — raw zipcode output streams
 
 Regenerate by running the commands in the "Prompt" blocks of each
-round above against the same GGUF. E4B is mostly deterministic at
-temperature 0.2 (zipcode's default), so outcomes should be stable
-modulo the `random.randint` in Round 1.
+round above against the same GGUF.
+
+**Important correction:** E4B is NOT deterministic at temperature 0.2.
+Three runs of the identical Round 3 prompt against the same GGUF
+produced three different initial code generations, three different
+error types, and three different outcomes (see § Follow-up probes
+below). Treat E4B results as a probability distribution, not a
+repeatable ceiling.
 
 ---
 
-## Next probes worth doing
+## Follow-up probes (2026-04-16, same session)
 
-1. **Re-run Round 3 with `--verbose`** so the reasoning channel is
-   visible and we can read what the model was actually thinking
-   during the second "give up" turn. Might reveal a concrete
-   blocker (e.g. "I can't see the current lib.rs content any more")
-   vs a generic uncertainty.
-2. **Re-run Round 3 with an explicit `read_file` nudge in the
-   prompt** ("Start by reading src/lib.rs, then describe the current
-   tick implementation, then decide what to change") to see if
-   forcing the exploration step breaks the silent-exit pattern.
+### Probe 1 — `--verbose` rerun (no nudge)
+
+Re-ran the exact Round 3 prompt with `--verbose` to capture the full
+reasoning channel.
+
+**Result: 4/4 tests pass on first compile-fix cycle.**
+
+```
+[2] write_file(Cargo.toml)
+[4] write_file(src/lib.rs)       ← used rand::random (same class of mistake as Round 3)
+[6] bash(cargo test --offline)   → E0433: failed to resolve `rand`
+[8] edit_file(src/lib.rs)        ← replaced rand with deterministic spawning
+    content: "The test run failed because I used the `rand` crate in
+    Game::spawn_food, violating the constraint of using only `std`."
+[10] bash(cargo test --offline)  → 4/4 ok
+[12] model: final summary text
+```
+
+**Reasoning highlights (from verbose stdout):**
+
+- Block 3 (2439 chars): *"the `rand` crate was used but not included
+  in `Cargo.toml`. The user explicitly stated: 'Do NOT use any
+  external dependencies — use only std.' I need to fix this violation
+  first by replacing the random number generation logic..."* —
+  correct root-cause diagnosis, constraint-aware reasoning.
+- Fix was a genuine understanding-based rewrite (deterministic food
+  spawning using snake length as seed offset), not a
+  pattern-matching hack like Round 3's fabricated `int_to_i32`.
+
+**Why this succeeded where Round 3 failed:** the initial code happened
+to produce a simpler error class (missing crate, not type mismatch),
+and the model's fix addressed the actual root cause rather than
+papering over symptoms. Same model, same prompt, different RNG in
+the generation → different outcome. This proves the capability EXISTS
+but is not reliable — it's a dice roll.
+
+### Probe 2 — `.zipcode.md` debug-workflow nudge
+
+Added a `.zipcode.md` in the round directory injecting these rules
+into the system prompt:
+
+```
+1. Always read_file your source code first before attempting any edit.
+2. Try at least 3 distinct fix attempts before giving up.
+3. Trace through tick() logic with exact test inputs before editing.
+4. Prefer grep_search to locate functions rather than guessing lines.
+```
+
+**Result: compile failure, model gave up with 0 fix attempts.**
+
+```
+[2] write_file(Cargo.toml)
+[4] write_file(src/lib.rs)
+[6] read_file(src/lib.rs)       ← NUDGE EFFECT: this call never happened without .zipcode.md
+[8] bash(cargo test --offline)   → E0424: expected value, found module `self`
+[10] model: empty content, 0 tool calls → finish_reason=stop
+```
+
+**What the nudge changed:**
+
+1. ✅ **`read_file` before testing** — the model obeyed rule #1. This
+   call appeared in ZERO prior runs without the nudge. Direct
+   evidence that `.zipcode.md` injection is absorbed and followed.
+2. ❌ **"try ≥3 fixes"** — completely ignored. The model emitted 235
+   chars of thinking that cut off mid-sentence ("...errors:\n1"),
+   then exited with no tool calls. Possible cause: the `read_file`
+   of the 204-line lib.rs consumed context budget, leaving
+   insufficient room for the model to form a fix + tool call.
+3. ❌ **"trace through tick() logic"** — no evidence of step-by-step
+   reasoning about the test's inputs in the thinking channel.
+
+**Why the nudge may have backfired:** at 8K context, every tool call
+eats ~200–800 tokens of overhead (tool result, role tokens, template
+wrapping). The `read_file` step injected the full 204-line lib.rs
+into context — roughly 1500 tokens — BEFORE the cargo test error
+arrived. By the time the model saw the compile error, its remaining
+context budget was smaller than in Probe 1 (which had no read_file
+detour), and it couldn't generate a fix. Paradoxically, the "read
+before edit" rule made the outcome WORSE on an 8K context model.
+
+### Three-run comparison table
+
+| Metric | Round 3 (original) | Probe 1 (verbose) | Probe 2 (nudge) |
+|---|---|---|---|
+| Tool calls | 5 | 5 | 4 |
+| read_file before test? | No | No | **Yes** |
+| First error class | E0308 type mismatch | E0433 missing crate | E0424 `self` misuse |
+| Fix attempted? | Yes (1 hop, bad) | Yes (1 hop, **good**) | **No** |
+| Fix quality | Pattern hack | Root-cause rewrite | N/A |
+| Final tests | 2/5 | **4/4** | Did not compile |
+| Thinking on give-up | 4811 chars (full) | N/A (succeeded) | 235 chars (**truncated**) |
+
+### What these probes prove
+
+1. **E4B's success on Round 3 is a coin flip, not a ceiling.** The
+   model CAN write correct Rust + debug it (Probe 1 proves this),
+   but it can also fail to compile and give up immediately (Probe 2).
+   At temperature 0.2, the dominant variable is which initial code
+   the model happens to generate, not whether it "knows" Rust.
+
+2. **`.zipcode.md` nudges change tool-selection patterns but not
+   reliability.** The `read_file` injection is real and reproducible.
+   But it costs context, and on a context-starved model (8K), that
+   cost can be net-negative. A nudge that says "read before edit"
+   is only safe when the model has headroom to also do the edit.
+
+3. **The thinking channel reveals the failure mode.** In Round 3's
+   give-up turn, 4811 chars of thinking (likely circular reasoning
+   about what to fix) ended in silence. In Probe 2, only 235 chars
+   before mid-sentence truncation — suggesting the model literally
+   ran out of generation budget. Two different failure mechanisms,
+   both resulting in the same "empty turn" externally.
+
+4. **Practical harness implication — auto-retry on empty turns.**
+   If zipcode detected "model exited with empty content after a
+   tool-result containing errors", it could auto-inject a follow-up
+   prompt ("the previous command produced errors — please try
+   again") instead of terminating the turn. This would give the
+   model a fresh generation budget for the fix attempt without
+   requiring any model-side changes. Not implemented yet, but this
+   is the highest-leverage single feature for improving E4B's
+   agentic reliability.
+
+---
+
+## Remaining probes
+
+1. ~~**Re-run Round 3 with `--verbose`**~~ — Done (Probe 1). Model
+   succeeded 4/4 with correct reasoning.
+2. ~~**`.zipcode.md` nudge**~~ — Done (Probe 2). Nudge was absorbed
+   (read_file appeared) but net-negative due to context cost.
 3. **Re-run Round 3 against the 26B A4B build** (Jiunsong's
    `supergemma4-26b-uncensored-gguf-v2`) once 24 GB VRAM is
-   available, and compare second-hop debug behavior. This is the
-   most direct apples-to-apples measurement of the "bigger model
-   fixes this" hypothesis.
-4. **Add a `BASE_SYSTEM_PROMPT` directive** that explicitly tells
-   the model "when tests fail, re-read the file before editing, and
-   do not stop until all tests pass or you have tried at least three
-   distinct fixes". See if that changes Round 3b behavior without
-   touching model weights.
+   available. With 256K context and ~7x more active parameters, the
+   context-budget and reliability problems should both improve.
+4. **Implement auto-retry on empty model turns after error-bearing
+   tool results.** This is a ~20-line change in `ConversationLoop`
+   and would be the single most impactful harness improvement for
+   E4B-class models. File: `crates/runtime/src/conversation.rs`.
