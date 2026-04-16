@@ -81,19 +81,73 @@ fn flash_attention_args(binary: &Path, enabled: bool) -> Vec<&'static str> {
 }
 
 pub struct LlamaServerProvider {
-    child: Child,
+    /// Subprocess handle. `None` when connected to a pre-existing remote
+    /// server via `ZIPCODE_LLAMA_SERVER_URL` — in that mode zipcode is a
+    /// thin client that does not own the inference process lifecycle.
+    child: Option<Child>,
+    /// HTTP host for the server. `"127.0.0.1"` for locally-spawned
+    /// processes, may be a LAN IP / hostname when pointing at a remote
+    /// llama-server (e.g. a beefy Windows / Mac box on the same network).
+    host: String,
     port: u16,
     model_alias: String,
     config: GenerationConfig,
 }
 
 impl LlamaServerProvider {
-    /// Launch a local llama.cpp server for the given GGUF model.
+    /// Launch a local llama.cpp server for the given GGUF model, OR
+    /// connect to a pre-existing remote llama-server if
+    /// `ZIPCODE_LLAMA_SERVER_URL` is set.
     ///
-    /// The binary is resolved from `ZIPCODE_LLAMA_SERVER_BIN`, `LLAMA_SERVER_BIN`,
-    /// or `llama-server` on PATH.
+    /// Remote mode: when `ZIPCODE_LLAMA_SERVER_URL=http://HOST:PORT` is
+    /// exported, subprocess spawning is skipped entirely — `model_path`
+    /// and `options` are ignored because the model is already loaded on
+    /// the remote end. This lets the main dev machine run zipcode as a
+    /// thin client while a bigger GPU elsewhere serves the model.
+    ///
+    /// Local mode: the binary is resolved from `ZIPCODE_LLAMA_SERVER_BIN`,
+    /// `LLAMA_SERVER_BIN`, or `llama-server` on PATH.
     pub fn load(model_path: &Path, options: &ServerOptions) -> Result<Self> {
+        if let Ok(url) = std::env::var("ZIPCODE_LLAMA_SERVER_URL") {
+            if !url.trim().is_empty() {
+                return Self::connect_remote(url.trim());
+            }
+        }
+        Self::spawn_local(model_path, options)
+    }
+
+    /// Connect to an already-running llama-server at the given URL.
+    /// Accepts `http://host:port`, `host:port`, or bare `host` (defaults
+    /// to port 8080). Probes `/health` once to verify the server is
+    /// reachable before returning.
+    fn connect_remote(url: &str) -> Result<Self> {
+        let (host, port) = parse_server_url(url)?;
+        let model_alias = std::env::var("ZIPCODE_LLAMA_SERVER_ALIAS")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_ALIAS.to_string());
+
+        info!(
+            host = %host,
+            port,
+            alias = %model_alias,
+            "connecting to remote llama-server"
+        );
+
+        wait_until_remote_ready(&host, port)?;
+
+        Ok(Self {
+            child: None,
+            host,
+            port,
+            model_alias,
+            config: GenerationConfig::default(),
+        })
+    }
+
+    fn spawn_local(model_path: &Path, options: &ServerOptions) -> Result<Self> {
         let port = reserve_local_port()?;
+        let host = "127.0.0.1".to_string();
         let model_alias = std::env::var("ZIPCODE_LLAMA_SERVER_ALIAS")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -146,10 +200,11 @@ impl LlamaServerProvider {
             .spawn()
             .with_context(|| format!("Failed to start llama-server at {}", binary.display()))?;
 
-        wait_until_ready(&mut child, port)?;
+        wait_until_ready(&mut child, &host, port)?;
 
         Ok(Self {
-            child,
+            child: Some(child),
+            host,
             port,
             model_alias,
             config: GenerationConfig::default(),
@@ -169,10 +224,11 @@ impl LlamaServerProvider {
         let (tx, rx) = mpsc::channel();
 
         let request = build_chat_request(messages, tools, &self.config, &self.model_alias);
+        let host = self.host.clone();
         let port = self.port;
 
         std::thread::spawn(move || {
-            if let Err(e) = stream_sse_events(port, &request, &tx) {
+            if let Err(e) = stream_sse_events(&host, port, &request, &tx) {
                 let _ = tx.send(TokenEvent::Error(InferenceError::GenerationError(
                     e.to_string(),
                 )));
@@ -185,10 +241,14 @@ impl LlamaServerProvider {
 
 impl Drop for LlamaServerProvider {
     fn drop(&mut self) {
-        if let Ok(None) = self.child.try_wait() {
-            let _ = self.child.kill();
+        // Remote mode: no subprocess to clean up.
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if let Ok(None) = child.try_wait() {
+            let _ = child.kill();
         }
-        let _ = self.child.wait();
+        let _ = child.wait();
     }
 }
 
@@ -241,7 +301,7 @@ fn reserve_local_port() -> Result<u16> {
     Ok(port)
 }
 
-fn wait_until_ready(child: &mut Child, port: u16) -> Result<()> {
+fn wait_until_ready(child: &mut Child, host: &str, port: u16) -> Result<()> {
     let deadline = Instant::now() + DEFAULT_STARTUP_TIMEOUT;
     loop {
         if let Some(status) = child.try_wait()? {
@@ -249,18 +309,45 @@ fn wait_until_ready(child: &mut Child, port: u16) -> Result<()> {
         }
 
         if Instant::now() >= deadline {
-            anyhow::bail!("Timed out waiting for llama-server on port {port}");
+            anyhow::bail!("Timed out waiting for llama-server on {host}:{port}");
         }
 
-        match health_check(port) {
+        match health_check(host, port) {
             HealthStatus::Ready => return Ok(()),
             HealthStatus::Loading => {
-                debug!(port, "llama-server model still loading");
+                debug!(host, port, "llama-server model still loading");
                 std::thread::sleep(Duration::from_millis(500));
             }
             HealthStatus::Unreachable(error) => {
-                debug!(port, error = %error, "waiting for llama-server to accept requests");
+                debug!(host, port, error = %error, "waiting for llama-server to accept requests");
                 std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+}
+
+/// Remote-mode readiness probe — no child process to monitor, just poll
+/// `/health` until the server is ready or the timeout expires. A hard
+/// error on `Unreachable` because if the remote endpoint isn't even
+/// accepting TCP connections the user likely mis-typed the URL.
+fn wait_until_remote_ready(host: &str, port: u16) -> Result<()> {
+    let deadline = Instant::now() + DEFAULT_STARTUP_TIMEOUT;
+    loop {
+        if Instant::now() >= deadline {
+            anyhow::bail!("Remote llama-server at {host}:{port} never became ready");
+        }
+
+        match health_check(host, port) {
+            HealthStatus::Ready => return Ok(()),
+            HealthStatus::Loading => {
+                debug!(host, port, "remote llama-server model still loading");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            HealthStatus::Unreachable(error) => {
+                anyhow::bail!(
+                    "Remote llama-server at {host}:{port} is unreachable: {error}. \
+                    Confirm the server is running and `ZIPCODE_LLAMA_SERVER_URL` points at it."
+                );
             }
         }
     }
@@ -272,15 +359,15 @@ enum HealthStatus {
     Unreachable(String),
 }
 
-fn health_check(port: u16) -> HealthStatus {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+fn health_check(host: &str, port: u16) -> HealthStatus {
+    let Ok(mut stream) = TcpStream::connect((host, port)) else {
         return HealthStatus::Unreachable("connection refused".to_string());
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
     let request =
-        format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        format!("GET /health HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() || stream.flush().is_err() {
         return HealthStatus::Unreachable("write failed".to_string());
     }
@@ -294,6 +381,27 @@ fn health_check(port: u16) -> HealthStatus {
     } else {
         HealthStatus::Loading
     }
+}
+
+/// Parse a server URL for remote mode. Accepts `http://host:port`,
+/// `https://host:port`, `host:port`, or bare `host` (defaults to port
+/// 8080). Returns an error only if an explicit `:port` suffix fails to
+/// parse as a `u16`.
+fn parse_server_url(url: &str) -> Result<(String, u16)> {
+    let stripped = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url);
+    let stripped = stripped.trim_end_matches('/');
+
+    if let Some((host, port)) = stripped.rsplit_once(':') {
+        let port: u16 = port
+            .parse()
+            .with_context(|| format!("invalid port in llama-server URL: {url}"))?;
+        return Ok((host.to_string(), port));
+    }
+
+    Ok((stripped.to_string(), 8080))
 }
 
 fn build_chat_request(
@@ -475,17 +583,22 @@ struct ToolCallAccumulator {
     arguments: String,
 }
 
-fn stream_sse_events(port: u16, request: &Value, tx: &mpsc::Sender<TokenEvent>) -> Result<()> {
+fn stream_sse_events(
+    host: &str,
+    port: u16,
+    request: &Value,
+    tx: &mpsc::Sender<TokenEvent>,
+) -> Result<()> {
     let body = serde_json::to_string(request)?;
 
     let mut stream =
-        TcpStream::connect(("127.0.0.1", port)).context("Failed to connect to llama-server")?;
+        TcpStream::connect((host, port)).context("Failed to connect to llama-server")?;
     stream.set_read_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
 
     let http_req = format!(
         "POST /v1/chat/completions HTTP/1.1\r\n\
-         Host: 127.0.0.1:{port}\r\n\
+         Host: {host}:{port}\r\n\
          User-Agent: zipcode/{version}\r\n\
          Accept: text/event-stream\r\n\
          Content-Type: application/json\r\n\
@@ -775,7 +888,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        stream_sse_events(port, &request, &tx).unwrap();
+        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
         drop(tx);
 
         let events: Vec<_> = rx.into_iter().collect();
@@ -809,7 +922,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        stream_sse_events(port, &request, &tx).unwrap();
+        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
         drop(tx);
 
         let events: Vec<_> = rx.into_iter().collect();
@@ -829,7 +942,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        let error = stream_sse_events(port, &request, &tx)
+        let error = stream_sse_events("127.0.0.1", port, &request, &tx)
             .unwrap_err()
             .to_string();
         drop(tx);
@@ -939,7 +1052,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        stream_sse_events(port, &request, &tx).unwrap();
+        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
         drop(tx);
 
         let events: Vec<_> = rx.into_iter().collect();
@@ -1022,6 +1135,43 @@ mod tests {
         assert_eq!(opts.gpu_layers, None);
         assert!(!opts.flash_attention);
         assert_eq!(opts.context_size, DEFAULT_CONTEXT_SIZE);
+    }
+
+    /// `ZIPCODE_LLAMA_SERVER_URL` accepts several convenient shapes so
+    /// users can paste whatever form their remote host documentation
+    /// suggests without having to remember a strict format.
+    #[test]
+    fn parse_server_url_accepts_common_shapes() {
+        assert_eq!(
+            parse_server_url("http://192.168.1.10:8080").unwrap(),
+            ("192.168.1.10".to_string(), 8080)
+        );
+        assert_eq!(
+            parse_server_url("https://gpu-box.lan:5555").unwrap(),
+            ("gpu-box.lan".to_string(), 5555)
+        );
+        assert_eq!(
+            parse_server_url("127.0.0.1:9090").unwrap(),
+            ("127.0.0.1".to_string(), 9090)
+        );
+        // bare host defaults to port 8080
+        assert_eq!(
+            parse_server_url("llamahost").unwrap(),
+            ("llamahost".to_string(), 8080)
+        );
+        // trailing slash is tolerated
+        assert_eq!(
+            parse_server_url("http://10.0.0.1:44444/").unwrap(),
+            ("10.0.0.1".to_string(), 44444)
+        );
+    }
+
+    #[test]
+    fn parse_server_url_rejects_nonnumeric_port() {
+        let err = parse_server_url("http://host:notaport")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid port"));
     }
 
     #[test]

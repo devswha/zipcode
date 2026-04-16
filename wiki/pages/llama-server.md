@@ -78,6 +78,63 @@ impl Drop for LlamaServerProvider {
 
 ---
 
+## Remote mode — connect to a pre-existing server
+
+**EXTRACTED** `llama_server_backend.rs` `connect_remote()` + `parse_server_url()`.
+
+zipcode can skip the subprocess spawn entirely and connect to a llama-server that's already running on a different machine. Useful when the dev machine is too underpowered to host a big model but a bigger GPU / Mac is available on the LAN.
+
+### Trigger
+
+Export `ZIPCODE_LLAMA_SERVER_URL` before invoking zipcode. When set, `LlamaServerProvider::load` skips binary discovery, port reservation, and `Command::spawn`, and instead instantiates with `child: None` pointing at the given URL.
+
+```bash
+# Thin client on Linux laptop:
+export ZIPCODE_LLAMA_SERVER_URL=http://192.168.1.10:8080
+export ZIPCODE_LLAMA_SERVER_ALIAS=remote-probe   # must match `--alias` on the server
+zipcode prompt "What is 2+2?"
+
+# Big GPU box hosts the model separately:
+llama-server -m gemma-4-31B-Claude-Opus-Distill.Q4_K_M.gguf \
+  --host 0.0.0.0 --port 8080 --alias remote-probe --jinja -c 131072 -ngl 999
+```
+
+### Accepted URL shapes
+
+| Input | Parsed host | Parsed port |
+|---|---|---|
+| `http://192.168.1.10:8080` | `192.168.1.10` | `8080` |
+| `https://gpu-box.lan:5555` | `gpu-box.lan` | `5555` |
+| `127.0.0.1:9090` | `127.0.0.1` | `9090` |
+| `llamahost` (bare) | `llamahost` | `8080` (default) |
+| Trailing `/` is tolerated | — | — |
+
+Non-numeric port → hard error with context.
+
+### Lifecycle differences vs local spawn
+
+| Concern | Local spawn | Remote connect |
+|---|---|---|
+| `child` field | `Some(Child)` | `None` |
+| Port | reserved via `TcpListener::bind((…, 0))` | parsed from URL |
+| Host | `"127.0.0.1"` | parsed from URL |
+| Readiness | `wait_until_ready(child, host, port)` — polls `/health`, fails if child exits | `wait_until_remote_ready(host, port)` — polls `/health`, hard-fails on "Unreachable" (no child to monitor) |
+| Drop | kills subprocess | no-op |
+| Binary discovery | required | skipped |
+
+### Security note
+
+Remote mode sends plain HTTP (no TLS, no auth). Only safe on trusted LANs. If the server is exposed to the internet, put a reverse proxy with TLS + auth in front and point `ZIPCODE_LLAMA_SERVER_URL` at the proxy.
+
+### Failure modes
+
+- Empty env var → treated as unset, falls back to local spawn
+- `connection refused` on first health check → hard error with `Confirm the server is running and ZIPCODE_LLAMA_SERVER_URL points at it.`
+- 503 `status: "loading"` → polls up to `DEFAULT_STARTUP_TIMEOUT` (180 s)
+- After connection established, mid-stream connection loss → surfaces through existing `stream_sse_events` error path
+
+---
+
 ## Health check
 
 **EXTRACTED** `llama_server_backend.rs:106` + `wait_until_ready` helper.
