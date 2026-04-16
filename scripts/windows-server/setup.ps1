@@ -25,6 +25,11 @@ param(
     # Pin to a specific llama.cpp release tag (e.g. "b7400"). "latest"
     # queries GitHub's release API.
     [string] $LlamaCppVersion = "latest",
+    # CUDA toolkit version for the llama.cpp Windows binaries. Recent
+    # llama.cpp releases (since ~b7800) ship separate 12.4 and 13.1
+    # variants. Match this to your NVIDIA driver's supported CUDA
+    # version (check `nvidia-smi` top-right "CUDA Version").
+    [string] $CudaVersion = "13.1",
     [switch] $SkipModelDownload,
     [switch] $SkipFirewall
 )
@@ -67,17 +72,18 @@ if (Test-Path $LlamaBin) {
         $tag = $LlamaCppVersion
     }
 
-    # llama.cpp release assets:
-    #   llama-<tag>-bin-win-cuda-x64.zip       (main binaries)
-    #   cudart-llama-bin-win-cuda-x64.zip      (cudart runtime)
+    # llama.cpp release assets (since ~b7800, CUDA is versioned):
+    #   llama-<tag>-bin-win-cuda-<cuda>-x64.zip    (main binaries)
+    #   cudart-llama-bin-win-cuda-<cuda>-x64.zip   (cudart runtime)
     $mainZip   = Join-Path $WorkDir "llama-cuda.zip"
     $cudartZip = Join-Path $WorkDir "llama-cudart.zip"
     $baseUrl   = "https://github.com/ggml-org/llama.cpp/releases/download/$tag"
 
+    Write-Host "  CUDA variant: $CudaVersion"
     Write-Host "  Fetching main binaries..."
-    Invoke-WebRequest -Uri "$baseUrl/llama-$tag-bin-win-cuda-x64.zip" -OutFile $mainZip
+    Invoke-WebRequest -Uri "$baseUrl/llama-$tag-bin-win-cuda-$CudaVersion-x64.zip" -OutFile $mainZip
     Write-Host "  Fetching cudart runtime..."
-    Invoke-WebRequest -Uri "$baseUrl/cudart-llama-bin-win-cuda-x64.zip" -OutFile $cudartZip
+    Invoke-WebRequest -Uri "$baseUrl/cudart-llama-bin-win-cuda-$CudaVersion-x64.zip" -OutFile $cudartZip
 
     Write-Host "  Extracting..."
     Expand-Archive -Force $mainZip   -DestinationPath (Join-Path $WorkDir "llama")
@@ -90,10 +96,19 @@ if (Test-Path $LlamaBin) {
     Write-Host "  OK" -ForegroundColor Green
 }
 
-# Quick sanity run
+# Quick sanity run. llama-server writes init/version info on stderr;
+# under $ErrorActionPreference='Stop' PowerShell promotes native stderr
+# to a terminating error, so downgrade EAP around the probe and discard
+# the noisy output.
 Write-Host "  Version probe: " -NoNewline
-& $LlamaBin --version 2>&1 | Select-Object -First 2
-Write-Host ""
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & $LlamaBin --version 2>$null | Out-Null
+} finally {
+    $ErrorActionPreference = $prevEAP
+}
+Write-Host "OK (exit=$LASTEXITCODE)" -ForegroundColor Green
 
 # ── Step 4: Model download ───────────────────────────────────────────
 $ModelPath = Join-Path $WorkDir "models\$ModelFileName"
@@ -107,7 +122,16 @@ if ($SkipModelDownload) {
     Write-Host "  URL : $ModelUrl"
     Write-Host "  Path: $ModelPath"
     # curl.exe handles HuggingFace's 302 redirects well and shows progress
-    & curl.exe -L --fail -o $ModelPath $ModelUrl
+    # on stderr. Under $ErrorActionPreference='Stop' PowerShell promotes
+    # native stderr into a terminating error on the first progress line,
+    # so downgrade EAP around the call.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & curl.exe -L --fail -o $ModelPath $ModelUrl
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Model download failed (curl exit $LASTEXITCODE). Check the URL or network."
     }
