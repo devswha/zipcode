@@ -7,3 +7,7 @@ models/*.bin
 .omc/
 .omx/
 .hermes-*
+
+# Bench results are machine-generated (session JSON, cargo target/, model
+# outputs). Keep the harness scripts in git, not the artifacts.
+/benches/results/
