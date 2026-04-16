@@ -3,7 +3,7 @@ use tracing::info;
 
 use zipcode_inference::chat_template::ToolSpec;
 use zipcode_inference::{
-    extract_text_content, ChatMessage, FinishReason, InferenceProvider, TokenEvent,
+    extract_text_content, ChatMessage, FinishReason, InferenceProvider, Role, TokenEvent,
 };
 use zipcode_tools::{execute_tool, ToolContext, ToolRegistry};
 
@@ -47,7 +47,9 @@ impl ConversationLoop {
         self.session.push_message(ChatMessage::user(user_input));
 
         const MAX_TOOL_ITERATIONS: usize = 25;
+        const MAX_EMPTY_RETRIES: usize = 2;
         let mut iterations = 0;
+        let mut empty_retries = 0usize;
         loop {
             if iterations >= MAX_TOOL_ITERATIONS {
                 let message = format!(
@@ -111,8 +113,40 @@ impl ConversationLoop {
                     ));
             }
 
-            // No tool calls → turn is complete
+            // No tool calls → turn is complete, unless auto-retry applies.
+            //
+            // When a small model (E4B-class) sees error output from a tool
+            // result, it sometimes produces an empty turn — thousands of
+            // chars of reasoning followed by zero tool calls and no visible
+            // text. This is the "give-up" pattern observed empirically in
+            // docs/experiments/2026-04-16-gemma4-e4b-gamedev-probe.md. Rather
+            // than terminating the turn immediately, we replace the silent
+            // exit with a brief self-nudge ("Let me re-read the error…") and
+            // give the model one more generation attempt with a fresh token
+            // budget. Capped at MAX_EMPTY_RETRIES to avoid burning iterations
+            // on a genuinely stuck model.
             if tool_calls.is_empty() {
+                if full_text.trim().is_empty()
+                    && empty_retries < MAX_EMPTY_RETRIES
+                    && recent_tool_results_contain_errors(&self.session.messages)
+                {
+                    empty_retries += 1;
+                    // Replace the empty assistant message (pushed above) with
+                    // a self-nudge so the model sees stated intent rather than
+                    // silence in its history.
+                    if let Some(last) = self.session.messages.last_mut() {
+                        if last.role == Role::Model && last.content.is_empty() {
+                            last.content =
+                                "Let me re-read the error output and try a different approach."
+                                    .to_string();
+                        }
+                    }
+                    info!(
+                        retry = empty_retries,
+                        "auto-retry: empty model turn after error"
+                    );
+                    continue;
+                }
                 break;
             }
 
@@ -164,4 +198,27 @@ impl ConversationLoop {
         self.session.save()?;
         Ok(())
     }
+}
+
+/// Walk backwards through recent messages looking for tool results that
+/// contain error indicators. Stops at the first user or system message
+/// so we only consider tool output from the current agentic cycle.
+fn recent_tool_results_contain_errors(messages: &[ChatMessage]) -> bool {
+    for msg in messages.iter().rev() {
+        match msg.role {
+            Role::Model => continue,
+            Role::Tool => {
+                let c = &msg.content;
+                if c.contains("error")
+                    || c.contains("Error")
+                    || c.contains("FAILED")
+                    || c.contains("panicked")
+                {
+                    return true;
+                }
+            }
+            _ => break,
+        }
+    }
+    false
 }

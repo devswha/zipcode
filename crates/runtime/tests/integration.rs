@@ -703,3 +703,98 @@ fn compacted_session_roundtrip_can_continue_turns() {
 
     std::fs::remove_file(session_path).ok();
 }
+
+// ---------------------------------------------------------------------------
+// Test 11: auto-retry nudges the model when it gives an empty turn after
+// a tool result that contains errors
+// ---------------------------------------------------------------------------
+
+#[test]
+fn auto_retry_nudges_model_after_empty_turn_on_error() {
+    let dir = TempDir::new().unwrap();
+
+    // Sequence:
+    //  1. Model calls bash(echo "error: compilation failed")
+    //  2. Tool result contains "error" keyword
+    //  3. Model gives up → empty turn (Done with no tokens/tool_calls)
+    //  4. Auto-retry injects "Let me re-read the error…" nudge
+    //  5. Model tries again → produces "Fixed!" text
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "echo 'error: compilation failed'" }),
+        },
+        // Model gives up: empty turn
+        MockResponse::Events(vec![TokenEvent::Done(FinishReason::Stop)]),
+        // After auto-retry nudge, model recovers
+        MockResponse::Text("Fixed the issue.".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    let mut cb = TestCallback::new();
+
+    conv.run_turn("build and test", &mut cb).unwrap();
+
+    // The nudge message should appear in session history
+    let has_nudge = conv
+        .session
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Model && m.content.contains("re-read the error"));
+    assert!(
+        has_nudge,
+        "expected auto-retry nudge in session history, got: {:?}",
+        conv.session
+            .messages
+            .iter()
+            .map(|m| format!(
+                "{}:{}",
+                m.role == Role::Model,
+                &m.content[..m.content.len().min(60)]
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    // The final answer should be present
+    assert!(
+        cb.all_tokens().contains("Fixed"),
+        "expected model to produce 'Fixed' after auto-retry, got: {:?}",
+        cb.tokens
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: auto-retry does NOT fire when the tool result has no errors
+// ---------------------------------------------------------------------------
+
+#[test]
+fn auto_retry_skips_when_tool_result_has_no_errors() {
+    let dir = TempDir::new().unwrap();
+
+    // Tool result is clean (no error keywords) → empty model turn should
+    // NOT trigger auto-retry; the turn should just end silently.
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "echo 'all good'" }),
+        },
+        // Model gives an empty turn — but tool result was clean
+        MockResponse::Events(vec![TokenEvent::Done(FinishReason::Stop)]),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    let mut cb = TestCallback::new();
+
+    conv.run_turn("run something", &mut cb).unwrap();
+
+    // No nudge should appear
+    let has_nudge = conv
+        .session
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Model && m.content.contains("re-read the error"));
+    assert!(
+        !has_nudge,
+        "auto-retry must NOT fire when tool result has no error indicators"
+    );
+}
