@@ -1503,11 +1503,24 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
     let indent = " ".repeat(prefix.len() + 2);
     let mut out = Vec::new();
     let mut first = true;
+    // Track fenced code blocks (```) so lines inside them render in a
+    // distinct color. Only applies to Assistant entries — other roles
+    // don't produce markdown.
+    let is_assistant = matches!(entry.kind, EntryKind::Assistant);
+    let mut in_code_block = false;
     for raw_line in entry.content.lines() {
+        if is_assistant && raw_line.trim_start().starts_with("```") {
+            in_code_block = !in_code_block;
+        }
+        let line_color = if is_assistant && in_code_block {
+            Color::DarkYellow
+        } else {
+            color
+        };
         let wrapped = wrap_plain(raw_line, width.saturating_sub(indent.len()).max(1));
         if wrapped.is_empty() {
             out.push(StyledLine {
-                color,
+                color: line_color,
                 text: format!("{prefix}: "),
             });
             first = false;
@@ -1520,7 +1533,7 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
                 format!("{indent}{line}")
             };
             out.push(StyledLine {
-                color,
+                color: line_color,
                 text: rendered,
             });
             first = false;
