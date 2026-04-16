@@ -17,11 +17,14 @@
 param(
     [string] $WorkDir = "C:\zipcode-server",
     [int]    $Port = 8080,
-    # Default model: TeichAI Gemma 4 26B A4B Claude Opus Distill v2, Q4_K_M.
-    # Override with -ModelUrl to pick a different quant or variant.
-    # The script detects whether the repo has a `v2` suffix and adapts.
-    [string] $ModelUrl = "https://huggingface.co/TeichAI/gemma-4-26B-A4B-it-Claude-Opus-Distill-GGUF/resolve/main/gemma-4-26B-A4B-it-Claude-Opus-Distill-Q4_K_M.gguf",
-    [string] $ModelFileName = "gemma-4-26B-A4B-Opus-Distill-Q4_K_M.gguf",
+    # Default model: TeichAI Gemma 4 26B A4B Claude Opus Distill, Q4_K_M
+    # (~16.8 GB, fits RTX 4080 Super 16 GB VRAM comfortably). The
+    # repository uses dot-separated lowercase quant suffixes — do NOT
+    # change `.q4_k_m.gguf` to `-Q4_K_M.gguf`, HuggingFace is
+    # case-sensitive. Override with -ModelUrl for a different quant or
+    # variant (e.g. Q5_K_M for slightly better quality if VRAM allows).
+    [string] $ModelUrl = "https://huggingface.co/TeichAI/gemma-4-26B-A4B-it-Claude-Opus-Distill-GGUF/resolve/main/gemma-4-26B-A4B-it-Claude-Opus-Distill.q4_k_m.gguf",
+    [string] $ModelFileName = "gemma-4-26B-A4B-it-Claude-Opus-Distill.q4_k_m.gguf",
     # Pin to a specific llama.cpp release tag (e.g. "b7400"). "latest"
     # queries GitHub's release API.
     [string] $LlamaCppVersion = "latest",

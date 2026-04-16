@@ -10,7 +10,7 @@ that the main Linux dev box can point zipcode at via
 - Windows 10/11
 - NVIDIA GPU with recent driver (RTX 4080 Super tested; anything with
   CUDA 12 support works). Verify with `nvidia-smi` in PowerShell.
-- ~20 GB free disk space (llama.cpp + 15 GB model)
+- ~20 GB free disk space (llama.cpp + ~17 GB model)
 - Same LAN as the Linux client
 - PowerShell 7+ recommended (built-in 5.1 also works)
 
@@ -25,7 +25,7 @@ cd <path-where-you-cloned-the-scripts>\windows-server
 # Allow unsigned local scripts for this session only
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
-# Full install — downloads llama.cpp (~300 MB) + model (~15 GB) + firewall rule
+# Full install — downloads llama.cpp (~300 MB) + model (~17 GB) + firewall rule
 .\setup.ps1
 ```
 
