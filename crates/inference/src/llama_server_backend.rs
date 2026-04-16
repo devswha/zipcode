@@ -18,7 +18,13 @@ use crate::{InferenceProvider, Role};
 const DEFAULT_ALIAS: &str = "zipcode";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
-const DEFAULT_CONTEXT_SIZE: usize = 8192;
+/// Gemma 4 E2B/E4B support up to 128K native context; 26B/31B support
+/// 256K. On an RTX 2070 SUPER 8 GB with E4B Q4_K_M, 128K context uses
+/// ~5.8 GB VRAM — still within budget. The previous 8K default caused
+/// context overflows during agentic loops where the model reads back
+/// files it just wrote. Users with tighter VRAM can override via
+/// `ZIPCODE_LLAMA_SERVER_CTX`.
+const DEFAULT_CONTEXT_SIZE: usize = 131_072;
 
 #[derive(Debug, Clone)]
 pub struct ServerOptions {

@@ -130,7 +130,13 @@ impl Default for GenerationConfig {
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
-            max_tokens: 4096,
+            // Agentic workflows need room for thinking tokens + tool-call
+            // arguments that carry entire file contents. 4096 was too small
+            // — a 300-line write_file argument alone can exceed 3000 tokens,
+            // and thinking eats another ~300. Setting this to the context
+            // window size (8192) lets the model use whatever budget the
+            // prompt leaves free; llama-server enforces the real ceiling.
+            max_tokens: 8192,
             repeat_penalty: 1.1,
             repeat_last_n: 64,
             enable_thinking: true,
@@ -160,7 +166,7 @@ mod tests {
     fn test_generation_config_defaults() {
         let config = GenerationConfig::default();
         assert!((config.temperature - 0.7).abs() < f64::EPSILON);
-        assert_eq!(config.max_tokens, 4096);
+        assert_eq!(config.max_tokens, 8192);
     }
 
     #[test]
