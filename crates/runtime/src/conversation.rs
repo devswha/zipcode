@@ -222,3 +222,90 @@ fn recent_tool_results_contain_errors(messages: &[ChatMessage]) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn returns_true_when_recent_tool_result_contains_error() {
+        let messages = vec![
+            ChatMessage::user("do something"),
+            ChatMessage::tool_result("c1", "compilation error in main.rs"),
+        ];
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn returns_true_when_recent_tool_result_contains_uppercase_error() {
+        let messages = vec![
+            ChatMessage::user("do something"),
+            ChatMessage::tool_result("c1", "Error: file not found"),
+        ];
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn returns_true_when_recent_tool_result_contains_failed_keyword() {
+        let messages = vec![
+            ChatMessage::user("run tests"),
+            ChatMessage::tool_result("c1", "FAILED test_foo_bar"),
+        ];
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn returns_true_when_recent_tool_result_contains_panicked() {
+        let messages = vec![
+            ChatMessage::user("run tests"),
+            ChatMessage::tool_result("c1", "thread 'main' panicked at 'assertion failed'"),
+        ];
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn returns_false_when_no_tool_results() {
+        let messages = vec![
+            ChatMessage::system("you are a helper"),
+            ChatMessage::user("hello"),
+            ChatMessage::assistant("hi there"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn returns_false_when_tool_results_have_no_errors() {
+        let messages = vec![
+            ChatMessage::user("read file"),
+            ChatMessage::tool_result("c1", "file contents: all good here"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn stops_scanning_at_user_message() {
+        // Tool errors before a user message should be ignored — they belong
+        // to a previous agentic cycle.
+        let messages = vec![
+            ChatMessage::tool_result("c_old", "error from previous cycle"),
+            ChatMessage::user("new request"),
+            ChatMessage::tool_result("c_new", "all clear"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn skips_model_messages_while_scanning() {
+        // Model reasoning messages between tool results are transparent to
+        // the scan — only tool-role messages are checked for error keywords.
+        let messages = vec![
+            ChatMessage::user("run tests"),
+            ChatMessage::tool_result("c1", "error: build failed"),
+            ChatMessage::assistant("I see the build failed, let me fix it."),
+            ChatMessage::tool_result("c2", "fixed"),
+        ];
+        // The most recent tool result is clean, so the function should
+        // continue scanning past the model message and find the error in c1.
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+}

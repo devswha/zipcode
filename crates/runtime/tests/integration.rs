@@ -798,3 +798,60 @@ fn auto_retry_skips_when_tool_result_has_no_errors() {
         "auto-retry must NOT fire when tool result has no error indicators"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 13: FinishReason::MaxTokens regression baseline (see issue #40)
+//
+// ConversationLoop currently treats MaxTokens identically to Stop — it
+// persists the partial text as a regular assistant message and returns
+// Ok(()) with no warning. This test documents that behavior as a
+// regression baseline. When #40 is fixed, this test should be updated
+// to assert the new contract (error / warning / annotation).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn max_tokens_finish_persists_partial_reply_as_regular_assistant_message() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![MockResponse::Events(vec![
+        TokenEvent::Token("partial answer".to_string()),
+        TokenEvent::Done(FinishReason::MaxTokens),
+    ])]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    let mut cb = TestCallback::new();
+
+    // Current behavior: run_turn succeeds silently
+    conv.run_turn("tell me something long", &mut cb).unwrap();
+
+    // The partial text must reach the callback
+    assert!(
+        cb.all_tokens().contains("partial answer"),
+        "expected partial tokens in callback, got: {:?}",
+        cb.tokens
+    );
+
+    // No errors are surfaced for the truncation
+    assert!(
+        cb.errors.is_empty(),
+        "current behavior: MaxTokens should produce no callback errors, got: {:?}",
+        cb.errors
+    );
+
+    // The partial text is persisted as a normal assistant message
+    let assistant = conv
+        .session
+        .messages
+        .iter()
+        .find(|m| m.role == Role::Model)
+        .expect("expected an assistant message in session");
+
+    assert_eq!(
+        assistant.content, "partial answer",
+        "current behavior: partial text is stored as a regular assistant reply"
+    );
+    assert!(
+        assistant.tool_calls.is_none(),
+        "MaxTokens turn should not produce tool calls"
+    );
+}
