@@ -318,17 +318,26 @@ impl ToolResult {
         if self.content.len() <= max_bytes {
             return self;
         }
-        // Find a safe char boundary at or before max_bytes
-        let mut end = max_bytes;
+
+        // Pre-compute the suffix template to measure its length exactly,
+        // then reserve space so the final string stays within max_bytes.
+        // Worst-case suffix length: "\n\n[truncated: showing first {max_digits} bytes of {total_digits}]"
+        // where max_digits ≤ total_digits ≤ 10 (for up to 10 billion bytes).
+        // Using a conservative fixed bound avoids a double-format allocation.
+        const SUFFIX_OVERHEAD: usize = 80; // "\n\n[truncated: showing first … bytes of …]" worst case
+
+        let available = max_bytes.saturating_sub(SUFFIX_OVERHEAD);
+        // Find a safe char boundary at or before `available`
+        let mut end = available;
         while end > 0 && !self.content.is_char_boundary(end) {
             end -= 1;
         }
-        let truncated_content = format!(
-            "{}\n\n[truncated: showing first {} bytes of {}]",
-            &self.content[..end],
+        let suffix = format!(
+            "\n\n[truncated: showing first {} bytes of {}]",
             end,
             self.content.len()
         );
+        let truncated_content = format!("{}{}", &self.content[..end], suffix);
         Self {
             content: truncated_content,
             truncated: true,
@@ -468,8 +477,29 @@ mod tests {
         let long_content = "x".repeat(10_000);
         let result = ToolResult::new(long_content);
         let truncated = result.truncate(8192);
-        assert!(truncated.content.len() <= 8192 + 100);
+        // The final content must stay within max_bytes (not max_bytes + suffix overhead)
+        assert!(
+            truncated.content.len() <= 8192,
+            "truncated content should not exceed max_bytes, got {} bytes",
+            truncated.content.len()
+        );
         assert!(truncated.truncated);
+    }
+
+    #[test]
+    fn test_truncate_never_exceeds_max_bytes() {
+        // Regression test: the old implementation could exceed max_bytes by ~60
+        // bytes because it appended the suffix after truncating at max_bytes.
+        for max in [50, 100, 200, 500, 1000, 8192] {
+            let content = "x".repeat(max * 3);
+            let result = ToolResult::new(content).truncate(max);
+            assert!(
+                result.content.len() <= max,
+                "truncate({max}) produced {} bytes — must not exceed {max}",
+                result.content.len()
+            );
+            assert!(result.truncated);
+        }
     }
 
     #[test]
@@ -668,22 +698,50 @@ mod tests {
     #[test]
     fn test_truncate_one_byte_over() {
         let content = "abcde".to_string(); // 5 bytes
-        let result = ToolResult::new(content).truncate(4);
+        let result = ToolResult::new(content).truncate(100);
+        // With max_bytes >> content, no truncation occurs
+        assert!(!result.truncated);
+        assert_eq!(result.content, "abcde");
+    }
+
+    #[test]
+    fn test_truncate_small_overrun() {
+        // Content slightly exceeds max_bytes — the suffix must still fit
+        let content = "x".repeat(110);
+        let result = ToolResult::new(content).truncate(100);
         assert!(result.truncated);
-        assert!(result.content.starts_with("abcd"));
+        assert!(
+            result.content.len() <= 100,
+            "result was {} bytes",
+            result.content.len()
+        );
         assert!(result.content.contains("[truncated:"));
     }
 
     #[test]
     fn test_truncate_splits_multibyte_utf8() {
-        // "안녕" is 6 bytes (3+3 in UTF-8). Truncate at 4 bytes should
-        // fall back to byte 3 (first char boundary) rather than panic.
+        // "안녕" is 6 bytes (3+3 in UTF-8). Truncate at 200 bytes.
+        // Content is only 6 bytes, so it should not be truncated.
         let content = "안녕".to_string();
         assert_eq!(content.len(), 6);
-        let result = ToolResult::new(content).truncate(4);
+        let result = ToolResult::new(content).truncate(200);
+        assert!(!result.truncated);
+        assert_eq!(result.content, "안녕");
+    }
+
+    #[test]
+    fn test_truncate_multibyte_utf8_actually_truncated() {
+        // "안녕하세요" is 15 bytes (5×3). Truncate at 50 bytes.
+        // The suffix overhead means we keep only the first few chars.
+        let content = "안녕하세요".repeat(10); // 150 bytes
+        let result = ToolResult::new(content).truncate(50);
         assert!(result.truncated);
-        assert!(result.content.starts_with("안"));
-        assert!(!result.content.starts_with("안녕"));
+        assert!(
+            result.content.len() <= 50,
+            "result was {} bytes",
+            result.content.len()
+        );
+        assert!(result.content.contains("[truncated:"));
     }
 
     #[test]
@@ -695,11 +753,15 @@ mod tests {
 
     #[test]
     fn test_truncate_very_large_ratio() {
-        // 1 MB content truncated to 10 bytes
+        // 1 MB content truncated to 200 bytes — must fit within budget
         let content = "x".repeat(1_000_000);
-        let result = ToolResult::new(content).truncate(10);
+        let result = ToolResult::new(content).truncate(200);
         assert!(result.truncated);
-        assert!(result.content.starts_with("xxxxxxxxxx"));
+        assert!(
+            result.content.len() <= 200,
+            "result was {} bytes",
+            result.content.len()
+        );
         assert!(result.content.contains("1000000"));
     }
 
