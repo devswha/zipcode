@@ -105,4 +105,108 @@ mod tests {
         assert!(!prompt.contains("# Git Status"));
         assert!(!prompt.contains("dirty.txt"));
     }
+
+    #[test]
+    fn test_tool_specs_populated_from_registry() {
+        use zipcode_tools::{bash::BashTool, read_file::ReadFileTool, write_file::WriteFileTool};
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(BashTool));
+        registry.register(Box::new(ReadFileTool));
+        registry.register(Box::new(WriteFileTool));
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let (_, specs) = build_system_prompt(dir.path(), &registry, "full-access");
+
+        assert!(
+            !specs.is_empty(),
+            "tool specs should not be empty when tools are registered"
+        );
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"bash"),
+            "expected 'bash' in tool specs, got: {names:?}"
+        );
+        assert!(
+            names.contains(&"read_file"),
+            "expected 'read_file' in tool specs, got: {names:?}"
+        );
+        assert!(
+            names.contains(&"write_file"),
+            "expected 'write_file' in tool specs, got: {names:?}"
+        );
+
+        // Each spec should have a non-empty description and valid parameters schema
+        for spec in &specs {
+            assert!(!spec.name.is_empty(), "tool spec name should not be empty");
+            assert!(
+                !spec.description.is_empty(),
+                "tool spec description should not be empty for {}",
+                spec.name
+            );
+            assert!(
+                spec.parameters.is_object(),
+                "tool spec parameters should be a JSON object for {}",
+                spec.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_empty_zipcode_md_does_not_corrupt_prompt() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".zipcode.md"), "").unwrap();
+
+        let registry = ToolRegistry::new();
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write");
+
+        // Should still have the "# Project Instructions" header even with empty file
+        assert!(
+            prompt.contains("# Project Instructions"),
+            "empty .zipcode.md should still add the Project Instructions header"
+        );
+        // The prompt should be well-formed overall
+        assert!(prompt.contains("zipcode"));
+        assert!(prompt.contains("workspace-write"));
+    }
+
+    #[test]
+    fn test_cwd_displayed_in_prompt() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let registry = ToolRegistry::new();
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access");
+
+        let expected_path = dir.path().display().to_string();
+        assert!(
+            prompt.contains(&expected_path),
+            "prompt should contain the CWD path '{}', got prompt starting with: {}",
+            expected_path,
+            &prompt[..prompt.len().min(200)]
+        );
+    }
+
+    #[test]
+    fn test_no_zipcode_md_does_not_add_project_instructions_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Do NOT create .zipcode.md
+        let registry = ToolRegistry::new();
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write");
+
+        assert!(
+            !prompt.contains("# Project Instructions"),
+            "prompt should not contain Project Instructions section when .zipcode.md is absent"
+        );
+    }
+
+    #[test]
+    fn test_empty_registry_produces_empty_tool_specs() {
+        let registry = ToolRegistry::new();
+        let dir = tempfile::TempDir::new().unwrap();
+        let (_, specs) = build_system_prompt(dir.path(), &registry, "read-only");
+
+        assert!(
+            specs.is_empty(),
+            "empty registry should produce zero tool specs"
+        );
+    }
 }

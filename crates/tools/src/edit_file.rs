@@ -140,4 +140,151 @@ mod tests {
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("2 times") || msg.contains("unique"));
     }
+
+    #[test]
+    fn test_empty_old_string_matches_everywhere() {
+        // Empty old_string matches at every position in the content.
+        // `content.matches("")` returns count = len + 1 (including trailing
+        // boundary), so this should always exceed 1 and be rejected as
+        // non-unique, even for a one-character file.
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "x").unwrap();
+
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "old_string": "",
+            "new_string": "y"
+        });
+        let result = tool.execute(args, &ctx());
+        assert!(
+            result.is_err(),
+            "empty old_string should fail because it matches multiple times"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("times") || msg.contains("unique"),
+            "error message should mention multiple matches, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_identical_old_and_new_string_is_noop() {
+        let mut f = NamedTempFile::new().unwrap();
+        let original = "unchanged content\n";
+        write!(f, "{original}").unwrap();
+
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "old_string": "unchanged content",
+            "new_string": "unchanged content"
+        });
+        let result = tool.execute(args, &ctx()).unwrap();
+        assert!(result.content.contains("edited"));
+
+        let after = std::fs::read_to_string(f.path()).unwrap();
+        assert_eq!(
+            after, original,
+            "file content should be identical after same-string replacement"
+        );
+    }
+
+    #[test]
+    fn test_multiline_replacement() {
+        let mut f = NamedTempFile::new().unwrap();
+        let original = "fn main() {\n    println!(\"hello\");\n}\n";
+        write!(f, "{original}").unwrap();
+
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "old_string": "    println!(\"hello\");",
+            "new_string": "    println!(\"world\");\n    println!(\"done\");"
+        });
+        let result = tool.execute(args, &ctx()).unwrap();
+        assert!(result.content.contains("edited"));
+
+        let after = std::fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains("world"));
+        assert!(after.contains("done"));
+        assert!(!after.contains("hello"));
+    }
+
+    #[test]
+    fn test_nonexistent_file_path() {
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": "/tmp/zipcode_test_nonexistent_abcdef123.rs",
+            "old_string": "foo",
+            "new_string": "bar"
+        });
+        let result = tool.execute(args, &ctx());
+        assert!(result.is_err(), "editing a nonexistent file should fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("failed to read file") || msg.contains("No such file"),
+            "error message should mention file read failure, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_path_traversal_rejected() {
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": "../../etc/passwd",
+            "old_string": "root",
+            "new_string": "blocked"
+        });
+        let result = tool.execute(args, &ctx());
+        assert!(result.is_err(), "path traversal attempt should be rejected");
+    }
+
+    #[test]
+    fn test_missing_path_parameter() {
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "old_string": "foo",
+            "new_string": "bar"
+        });
+        let result = tool.execute(args, &ctx());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("missing required parameter: path"),
+            "expected missing path error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_old_string_parameter() {
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": "/tmp/dummy.txt",
+            "new_string": "bar"
+        });
+        let result = tool.execute(args, &ctx());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("missing required parameter: old_string"),
+            "expected missing old_string error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_new_string_parameter() {
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": "/tmp/dummy.txt",
+            "old_string": "foo"
+        });
+        let result = tool.execute(args, &ctx());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("missing required parameter: new_string"),
+            "expected missing new_string error, got: {msg}"
+        );
+    }
 }
