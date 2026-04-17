@@ -842,7 +842,9 @@ fn max_tokens_finish_appends_truncation_notice() {
         assistant.content
     );
     assert!(
-        assistant.content.contains("[...output truncated due to token limit]"),
+        assistant
+            .content
+            .contains("[...output truncated due to token limit]"),
         "expected truncation notice in assistant message, got: {:?}",
         assistant.content
     );
