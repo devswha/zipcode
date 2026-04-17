@@ -800,17 +800,14 @@ fn auto_retry_skips_when_tool_result_has_no_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 13: FinishReason::MaxTokens regression baseline (see issue #40)
+// Test 13: FinishReason::MaxTokens regression test (see issue #40)
 //
-// ConversationLoop currently treats MaxTokens identically to Stop — it
-// persists the partial text as a regular assistant message and returns
-// Ok(()) with no warning. This test documents that behavior as a
-// regression baseline. When #40 is fixed, this test should be updated
-// to assert the new contract (error / warning / annotation).
+// ConversationLoop detects MaxTokens and appends a truncation notice to the
+// assistant text so the user is informed that output was cut short.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn max_tokens_finish_persists_partial_reply_as_regular_assistant_message() {
+fn max_tokens_finish_appends_truncation_notice() {
     let dir = TempDir::new().unwrap();
 
     let mock = MockInferenceProvider::new(vec![MockResponse::Events(vec![
@@ -821,24 +818,17 @@ fn max_tokens_finish_persists_partial_reply_as_regular_assistant_message() {
     let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
     let mut cb = TestCallback::new();
 
-    // Current behavior: run_turn succeeds silently
+    // run_turn should still succeed (not an error), but annotate the text
     conv.run_turn("tell me something long", &mut cb).unwrap();
 
-    // The partial text must reach the callback
+    // The partial tokens must reach the callback
     assert!(
         cb.all_tokens().contains("partial answer"),
         "expected partial tokens in callback, got: {:?}",
         cb.tokens
     );
 
-    // No errors are surfaced for the truncation
-    assert!(
-        cb.errors.is_empty(),
-        "current behavior: MaxTokens should produce no callback errors, got: {:?}",
-        cb.errors
-    );
-
-    // The partial text is persisted as a normal assistant message
+    // The persisted assistant message must contain the truncation notice
     let assistant = conv
         .session
         .messages
@@ -846,9 +836,15 @@ fn max_tokens_finish_persists_partial_reply_as_regular_assistant_message() {
         .find(|m| m.role == Role::Model)
         .expect("expected an assistant message in session");
 
-    assert_eq!(
-        assistant.content, "partial answer",
-        "current behavior: partial text is stored as a regular assistant reply"
+    assert!(
+        assistant.content.contains("partial answer"),
+        "expected partial text in assistant message, got: {:?}",
+        assistant.content
+    );
+    assert!(
+        assistant.content.contains("[...output truncated due to token limit]"),
+        "expected truncation notice in assistant message, got: {:?}",
+        assistant.content
     );
     assert!(
         assistant.tool_calls.is_none(),

@@ -535,26 +535,24 @@ fn parse_sse_events(line: &str) -> Vec<SseEvent> {
         return Vec::new();
     };
 
+    let mut events: Vec<SseEvent> = Vec::new();
+
     if let Some(reason) = choice["finish_reason"].as_str() {
         if reason != "null" {
-            return vec![SseEvent::FinishReason(reason.to_string())];
+            events.push(SseEvent::FinishReason(reason.to_string()));
         }
     }
 
     let delta = &choice["delta"];
 
     if let Some(tool_calls) = delta["tool_calls"].as_array() {
-        let events = tool_calls
-            .iter()
-            .map(|tc| SseEvent::ToolCallDelta {
+        for tc in tool_calls {
+            events.push(SseEvent::ToolCallDelta {
                 index: tc["index"].as_u64().unwrap_or(0) as usize,
                 id: tc["id"].as_str().map(String::from),
                 name: tc["function"]["name"].as_str().map(String::from),
                 arguments: tc["function"]["arguments"].as_str().map(String::from),
-            })
-            .collect::<Vec<_>>();
-        if !events.is_empty() {
-            return events;
+            });
         }
     }
 
@@ -563,17 +561,17 @@ fn parse_sse_events(line: &str) -> Vec<SseEvent> {
     // `content` deltas so the runtime can render it in a distinct UI lane.
     if let Some(reasoning) = delta["reasoning_content"].as_str() {
         if !reasoning.is_empty() {
-            return vec![SseEvent::Thinking(reasoning.to_string())];
+            events.push(SseEvent::Thinking(reasoning.to_string()));
         }
     }
 
     if let Some(content) = delta["content"].as_str() {
         if !content.is_empty() {
-            return vec![SseEvent::Token(content.to_string())];
+            events.push(SseEvent::Token(content.to_string()));
         }
     }
 
-    Vec::new()
+    events
 }
 
 #[derive(Default)]
@@ -817,6 +815,31 @@ mod tests {
         let line = "data: [DONE]";
         let events = parse_sse_events(line);
         assert!(matches!(events.as_slice(), [SseEvent::Done]));
+    }
+
+    /// Regression test for issue #46: when a chunk carries both a non-null
+    /// `finish_reason` *and* `delta.content`, the parser must emit both
+    /// `Token` and `FinishReason` events — previously it short-circuited on
+    /// `finish_reason` and silently dropped the final assistant content.
+    #[test]
+    fn parse_sse_data_line_emits_token_and_finish_reason() {
+        let line = r#"data: {"choices":[{"finish_reason":"stop","delta":{"content":"world"}}]}"#;
+        let events = parse_sse_events(line);
+        assert!(matches!(
+            events.as_slice(),
+            [SseEvent::FinishReason(r), SseEvent::Token(t)] if r == "stop" && t == "world"
+        ));
+    }
+
+    /// Also ensure a finish_reason-only chunk (no content) still works.
+    #[test]
+    fn parse_sse_data_line_finish_reason_without_content() {
+        let line = r#"data: {"choices":[{"finish_reason":"stop","delta":{}}]}"#;
+        let events = parse_sse_events(line);
+        assert!(matches!(
+            events.as_slice(),
+            [SseEvent::FinishReason(r)] if r == "stop"
+        ));
     }
 
     #[test]

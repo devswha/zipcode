@@ -133,7 +133,14 @@ impl ZipcodeConfig {
                 }
             }
             if let Some(layers) = project["gpu_layers"].as_i64() {
-                config.gpu_layers = Some(layers as i32);
+                config.gpu_layers = Some(i32::try_from(layers).map_err(|_| {
+                    anyhow::anyhow!(
+                        "gpu_layers value {} is out of range (must be between {} and {})",
+                        layers,
+                        i32::MIN,
+                        i32::MAX
+                    )
+                })?);
             }
             if let Some(fa) = project["flash_attention"].as_bool() {
                 config.flash_attention = fa;
@@ -271,6 +278,27 @@ mod tests {
         let config = ZipcodeConfig::load(dir.path()).unwrap();
         assert_eq!(config.gpu_layers, Some(99));
         assert!(config.flash_attention);
+    }
+
+    #[test]
+    fn test_load_project_override_gpu_layers_overflow_rejected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"gpu_layers": 2147483648}"#,
+        )
+        .unwrap();
+        let result = ZipcodeConfig::load(dir.path());
+        let err = result.expect_err("gpu_layers overflow should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gpu_layers"),
+            "error message should mention gpu_layers, got: {msg}"
+        );
+        assert!(
+            msg.contains("out of range"),
+            "error message should say out of range, got: {msg}"
+        );
     }
 
     #[test]

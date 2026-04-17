@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tracing::info;
+use tracing::{info, warn};
 
 use zipcode_inference::chat_template::ToolSpec;
 use zipcode_inference::{
@@ -68,7 +68,7 @@ impl ConversationLoop {
 
             let mut full_text = String::new();
             let mut tool_calls = Vec::new();
-            let mut _finish_reason = FinishReason::Stop;
+            let mut finish_reason = FinishReason::Stop;
 
             for event in rx {
                 match event {
@@ -89,7 +89,7 @@ impl ConversationLoop {
                         tool_calls.push(call);
                     }
                     TokenEvent::Done(reason) => {
-                        _finish_reason = reason;
+                        finish_reason = reason;
                         break;
                     }
                     TokenEvent::Error(e) => {
@@ -98,6 +98,12 @@ impl ConversationLoop {
                         return Err(anyhow::anyhow!("Inference error: {e}"));
                     }
                 }
+            }
+
+            // Detect truncation due to token limit
+            if finish_reason == FinishReason::MaxTokens {
+                warn!("model output truncated due to token limit");
+                full_text.push_str("\n[...output truncated due to token limit]");
             }
 
             // Store the assistant's response
