@@ -5,6 +5,8 @@ use serde_json::Value;
 
 use crate::{wait_with_output_timeout, Tool, ToolContext, ToolResult};
 
+const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
+
 pub struct BashTool;
 
 impl Tool for BashTool {
@@ -34,7 +36,7 @@ impl Tool for BashTool {
             .as_str()
             .context("missing 'command' argument")?;
 
-        let timeout_ms = args["timeout"].as_u64().unwrap_or(120_000);
+        let timeout_ms = args["timeout"].as_u64().unwrap_or(BASH_DEFAULT_TIMEOUT_MS);
         let timeout = std::time::Duration::from_millis(timeout_ms);
 
         let child = Command::new("bash")

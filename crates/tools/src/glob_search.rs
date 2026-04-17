@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::path::{Component, Path};
 
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{validate_glob_pattern, Tool, ToolContext, ToolResult};
 
 pub struct GlobSearchTool;
 
@@ -67,24 +66,6 @@ impl Tool for GlobSearchTool {
         matches.sort();
         Ok(ToolResult::new(matches.join("\n")))
     }
-}
-
-fn validate_glob_pattern(pattern: &str) -> Result<()> {
-    let path = Path::new(pattern);
-    if path.is_absolute() {
-        anyhow::bail!("Glob pattern must stay within the workspace");
-    }
-
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        anyhow::bail!("Glob pattern must not escape the workspace");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

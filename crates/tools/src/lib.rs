@@ -94,6 +94,26 @@ fn canonicalize_even_if_missing(path: &std::path::Path) -> anyhow::Result<PathBu
     Ok(normalize_path(&canonical))
 }
 
+/// Validate that a glob pattern stays within the workspace.
+/// Rejects absolute paths and any component that escapes the workspace.
+pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
+    let path = Path::new(pattern);
+    if path.is_absolute() {
+        anyhow::bail!("Glob pattern must stay within the workspace");
+    }
+
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        anyhow::bail!("Glob pattern must not escape the workspace");
+    }
+
+    Ok(())
+}
+
 fn normalize_path(path: &std::path::Path) -> PathBuf {
     let mut normalized = PathBuf::new();
 

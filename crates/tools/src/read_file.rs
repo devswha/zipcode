@@ -5,6 +5,7 @@ use std::fs;
 use crate::{Tool, ToolContext, ToolResult};
 
 const MAX_READ_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+const BINARY_SCAN_BYTES: usize = 8192;
 
 pub struct ReadFileTool;
 
@@ -81,7 +82,7 @@ impl Tool for ReadFileTool {
         let bytes =
             fs::read(&path).with_context(|| format!("failed to read file: {}", path.display()))?;
 
-        if bytes[..bytes.len().min(8192)].contains(&0u8) {
+        if bytes[..bytes.len().min(BINARY_SCAN_BYTES)].contains(&0u8) {
             anyhow::bail!("file appears to be binary: {}", path.display());
         }
 

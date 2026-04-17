@@ -2,13 +2,14 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Seek};
-use std::path::{Component, Path};
+use std::path::Path;
 
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{validate_glob_pattern, Tool, ToolContext, ToolResult};
 
 pub struct GrepSearchTool;
 
 const MAX_SEARCH_OUTPUT_BYTES: usize = 8_192;
+const BINARY_HEADER_SCAN_SIZE: usize = 8192;
 const SEARCH_STOP_MESSAGE: &str =
     "[stopped after collecting enough matches; refine the pattern/path for more]";
 
@@ -124,24 +125,6 @@ fn search_directory(
     Ok(false)
 }
 
-fn validate_glob_pattern(pattern: &str) -> Result<()> {
-    let path = Path::new(pattern);
-    if path.is_absolute() {
-        anyhow::bail!("Glob pattern must stay within the workspace");
-    }
-
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        anyhow::bail!("Glob pattern must not escape the workspace");
-    }
-
-    Ok(())
-}
-
 /// Search a single file for regex matches, appending results to output_lines.
 /// Returns true when the output budget has been exhausted and the caller should stop.
 /// Silently skips binary or unreadable files.
@@ -156,7 +139,7 @@ fn search_file(
         Err(_) => return false,
     };
 
-    let mut header = [0_u8; 8192];
+    let mut header = [0_u8; BINARY_HEADER_SCAN_SIZE];
     let header_len = match file.read(&mut header) {
         Ok(len) => len,
         Err(_) => return false,

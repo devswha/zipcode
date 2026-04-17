@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{Tool, ToolContext, ToolResult};
+use crate::{resolve_and_validate_path, Tool, ToolContext, ToolResult};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct TodoItem {
@@ -46,7 +46,7 @@ impl Tool for TodoWriteTool {
         let todos: Vec<TodoItem> =
             serde_json::from_value(args["todos"].clone()).context("Failed to parse todos")?;
 
-        let path = ctx.cwd.join(".zipcode-todos.json");
+        let path = resolve_and_validate_path(".zipcode-todos.json", &ctx.cwd)?;
         let json = serde_json::to_string_pretty(&todos).context("Failed to serialize todos")?;
         std::fs::write(&path, &json)
             .with_context(|| format!("Failed to write todos to {}", path.display()))?;
