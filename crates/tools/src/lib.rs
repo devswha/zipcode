@@ -537,4 +537,235 @@ mod tests {
         assert!(recover_duplicated_workspace_prefix("README.md", dir.path()).is_none());
         assert!(recover_duplicated_workspace_prefix("../README.md", dir.path()).is_none());
     }
+
+    // ── validate_glob_pattern tests ──────────────────────────────────
+
+    #[test]
+    fn test_glob_valid_simple_wildcard() {
+        assert!(validate_glob_pattern("*.rs").is_ok());
+    }
+
+    #[test]
+    fn test_glob_valid_nested_pattern() {
+        assert!(validate_glob_pattern("src/**/*.ts").is_ok());
+    }
+
+    #[test]
+    fn test_glob_valid_single_filename() {
+        assert!(validate_glob_pattern("main.rs").is_ok());
+    }
+
+    #[test]
+    fn test_glob_valid_deeply_nested() {
+        assert!(validate_glob_pattern("crates/tools/src/lib.rs").is_ok());
+    }
+
+    #[test]
+    fn test_glob_valid_empty_pattern() {
+        // Empty string has no components — nothing to escape through
+        assert!(validate_glob_pattern("").is_ok());
+    }
+
+    #[test]
+    fn test_glob_rejects_absolute_path() {
+        assert!(validate_glob_pattern("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_glob_rejects_parent_traversal() {
+        assert!(validate_glob_pattern("../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_glob_rejects_single_parent() {
+        assert!(validate_glob_pattern("../secret").is_err());
+    }
+
+    #[test]
+    fn test_glob_rejects_parent_in_middle() {
+        assert!(validate_glob_pattern("foo/../bar/../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_glob_rejects_trailing_parent() {
+        assert!(validate_glob_pattern("foo/..").is_err());
+    }
+
+    // ── normalize_path tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_removes_curdir() {
+        assert_eq!(
+            normalize_path(std::path::Path::new("foo/./bar")),
+            PathBuf::from("foo/bar")
+        );
+    }
+
+    #[test]
+    fn test_normalize_resolves_parentdir() {
+        assert_eq!(
+            normalize_path(std::path::Path::new("foo/bar/../baz")),
+            PathBuf::from("foo/baz")
+        );
+    }
+
+    #[test]
+    fn test_normalize_already_clean() {
+        assert_eq!(
+            normalize_path(std::path::Path::new("foo/bar/baz")),
+            PathBuf::from("foo/bar/baz")
+        );
+    }
+
+    #[test]
+    fn test_normalize_mixed_dots() {
+        assert_eq!(
+            normalize_path(std::path::Path::new("foo/./bar/../baz/./qux")),
+            PathBuf::from("foo/baz/qux")
+        );
+    }
+
+    #[test]
+    fn test_normalize_empty_path() {
+        assert_eq!(normalize_path(std::path::Path::new("")), PathBuf::new());
+    }
+
+    #[test]
+    fn test_normalize_leading_curdir() {
+        assert_eq!(
+            normalize_path(std::path::Path::new("./foo")),
+            PathBuf::from("foo")
+        );
+    }
+
+    #[test]
+    fn test_normalize_double_parentdir() {
+        assert_eq!(
+            normalize_path(std::path::Path::new("a/b/c/../../d")),
+            PathBuf::from("a/d")
+        );
+    }
+
+    #[test]
+    fn test_normalize_parentdir_beyond_root_relative() {
+        // Popping beyond the start results in an empty PathBuf
+        assert_eq!(
+            normalize_path(std::path::Path::new("foo/../../bar")),
+            PathBuf::from("bar")
+        );
+    }
+
+    // ── ToolResult::truncate edge cases ──────────────────────────────
+
+    #[test]
+    fn test_truncate_exact_byte_boundary() {
+        let content = "abcd".to_string(); // exactly 4 bytes
+        let result = ToolResult::new(content).truncate(4);
+        assert!(!result.truncated);
+        assert_eq!(result.content, "abcd");
+    }
+
+    #[test]
+    fn test_truncate_one_byte_over() {
+        let content = "abcde".to_string(); // 5 bytes
+        let result = ToolResult::new(content).truncate(4);
+        assert!(result.truncated);
+        assert!(result.content.starts_with("abcd"));
+        assert!(result.content.contains("[truncated:"));
+    }
+
+    #[test]
+    fn test_truncate_splits_multibyte_utf8() {
+        // "안녕" is 6 bytes (3+3 in UTF-8). Truncate at 4 bytes should
+        // fall back to byte 3 (first char boundary) rather than panic.
+        let content = "안녕".to_string();
+        assert_eq!(content.len(), 6);
+        let result = ToolResult::new(content).truncate(4);
+        assert!(result.truncated);
+        assert!(result.content.starts_with("안"));
+        assert!(!result.content.starts_with("안녕"));
+    }
+
+    #[test]
+    fn test_truncate_empty_content() {
+        let result = ToolResult::new(String::new()).truncate(100);
+        assert!(!result.truncated);
+        assert!(result.content.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_very_large_ratio() {
+        // 1 MB content truncated to 10 bytes
+        let content = "x".repeat(1_000_000);
+        let result = ToolResult::new(content).truncate(10);
+        assert!(result.truncated);
+        assert!(result.content.starts_with("xxxxxxxxxx"));
+        assert!(result.content.contains("1000000"));
+    }
+
+    #[test]
+    fn test_truncate_preserves_content_under_limit() {
+        let content = "hello world".to_string();
+        let result = ToolResult::new(content.clone()).truncate(100);
+        assert!(!result.truncated);
+        assert_eq!(result.content, content);
+    }
+
+    #[test]
+    fn test_truncate_zero_max() {
+        // Edge case: truncate with max_bytes = 0
+        let content = "hello".to_string();
+        let result = ToolResult::new(content).truncate(0);
+        // With 0 bytes, the suffix message still appears but no prefix
+        assert!(result.truncated);
+        assert!(result.content.contains("[truncated:"));
+    }
+
+    // ── ToolResult::error tests ──────────────────────────────────────
+
+    #[test]
+    fn test_error_result_has_prefix() {
+        let result = ToolResult::error("something went wrong".to_string());
+        assert!(result.content.starts_with("Error: "));
+        assert!(result.content.contains("something went wrong"));
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn test_error_result_empty_message() {
+        let result = ToolResult::error(String::new());
+        assert_eq!(result.content, "Error: ");
+        assert!(!result.truncated);
+    }
+
+    // ── ToolRegistry::names tests ────────────────────────────────────
+
+    #[test]
+    fn test_registry_names_empty() {
+        let registry = ToolRegistry::new();
+        assert!(registry.names().is_empty());
+    }
+
+    #[test]
+    fn test_registry_names_after_register() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let names = registry.names();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0], "echo");
+    }
+
+    #[test]
+    fn test_registry_overwrite_on_duplicate_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        registry.register(Box::new(EchoTool)); // same name overwrites
+        assert_eq!(registry.names().len(), 1);
+    }
+
+    #[test]
+    fn test_registry_default() {
+        let registry = ToolRegistry::default();
+        assert!(registry.names().is_empty());
+    }
 }
