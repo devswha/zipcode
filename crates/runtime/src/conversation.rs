@@ -94,7 +94,18 @@ impl ConversationLoop {
                     }
                     TokenEvent::Error(e) => {
                         callback.on_error(&e.to_string());
-                        self.session.save()?;
+                        // Best-effort save: a session save failure should not
+                        // mask the original inference error. Log the save
+                        // failure but always return the inference error as the
+                        // primary cause. This fixes the error-masking bug where
+                        // a "Failed to save session" would replace the much more
+                        // useful "Inference error: CUDA out of memory" message.
+                        if let Err(save_err) = self.session.save() {
+                            warn!(
+                                error = %save_err,
+                                "failed to save session after inference error (inference error takes priority)"
+                            );
+                        }
                         return Err(anyhow::anyhow!("Inference error: {e}"));
                     }
                 }

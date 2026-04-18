@@ -800,7 +800,47 @@ fn auto_retry_skips_when_tool_result_has_no_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 13: FinishReason::MaxTokens regression test (see issue #40)
+// Test 13: session save failure does not mask inference error (issue #63-E)
+//
+// When both inference fails AND session.save() fails, the returned error
+// must describe the *inference* failure — not the session save failure.
+// The session save error is logged but must not become the primary error.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inference_error_is_not_masked_by_session_save_failure() {
+    let dir = TempDir::new().unwrap();
+    let mock = MockInferenceProvider::new(vec![MockResponse::Error(
+        InferenceError::GenerationError("CUDA out of memory".to_string()),
+    )]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+
+    // Corrupt the session id so save() will fail — but only after messages
+    // are pushed (push_message doesn't validate, only save does).
+    // We set an invalid id that contains a path-traversal character.
+    conv.session.id = "../bad/id".to_string();
+
+    let mut cb = TestCallback::new();
+
+    let error = conv
+        .run_turn("please fail", &mut cb)
+        .unwrap_err()
+        .to_string();
+
+    // The primary error must be the inference error, NOT a session save error.
+    assert!(
+        error.contains("CUDA out of memory"),
+        "expected inference error in message, got: {error}"
+    );
+    assert!(
+        !error.contains("save session") && !error.contains("Failed to save"),
+        "session save failure must NOT mask the inference error, got: {error}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: FinishReason::MaxTokens regression test (see issue #40)
 //
 // ConversationLoop detects MaxTokens and appends a truncation notice to the
 // assistant text so the user is informed that output was cut short.
