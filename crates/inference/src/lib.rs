@@ -75,124 +75,70 @@ pub fn create_engine(
     config: GenerationConfig,
     server_options: ServerOptions,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
-    create_engine_inner(backend, model_path, tokenizer_path, config, server_options)
+    match backend {
+        Backend::LlamaServer => {
+            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
+            provider.set_config(config);
+            Ok(Box::new(provider))
+        }
+        Backend::LlamaCpp => create_llama_cpp(model_path, config, server_options),
+        Backend::Candle => create_candle(model_path, tokenizer_path, config, server_options),
+    }
 }
 
-#[cfg(all(feature = "llama-cpp", feature = "candle"))]
-fn create_engine_inner(
-    backend: Backend,
+/// Load a llama-cpp backend provider.
+///
+/// Returns an error if the `llama-cpp` feature is not enabled.
+#[cfg(feature = "llama-cpp")]
+fn create_llama_cpp(
+    model_path: &std::path::Path,
+    config: GenerationConfig,
+    _server_options: ServerOptions,
+) -> anyhow::Result<Box<dyn InferenceProvider>> {
+    let mut provider = LlamaCppProvider::load(model_path)?;
+    provider.set_config(config);
+    Ok(Box::new(provider))
+}
+
+#[cfg(not(feature = "llama-cpp"))]
+fn create_llama_cpp(
+    _model_path: &std::path::Path,
+    _config: GenerationConfig,
+    _server_options: ServerOptions,
+) -> anyhow::Result<Box<dyn InferenceProvider>> {
+    anyhow::bail!(
+        "llama-cpp backend requested but the `llama-cpp` feature is not enabled. \
+         Rebuild with: cargo build --features llama-cpp"
+    )
+}
+
+/// Load a Candle (pure-Rust) backend.
+///
+/// Returns an error if the `candle` feature is not enabled.
+#[cfg(feature = "candle")]
+fn create_candle(
     model_path: &std::path::Path,
     tokenizer_path: &std::path::Path,
     config: GenerationConfig,
-    server_options: ServerOptions,
+    _server_options: ServerOptions,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
-    match backend {
-        Backend::LlamaCpp => {
-            let _ = &server_options;
-            let mut provider = LlamaCppProvider::load(model_path)?;
-            provider.set_config(config);
-            Ok(Box::new(provider))
-        }
-        Backend::LlamaServer => {
-            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
-            provider.set_config(config);
-            Ok(Box::new(provider))
-        }
-        Backend::Candle => {
-            let _ = &server_options;
-            let device = select_device();
-            let mut engine = InferenceEngine::load(model_path, tokenizer_path, device)?;
-            engine.set_config(config);
-            Ok(Box::new(engine))
-        }
-    }
+    let device = select_device();
+    let mut engine = InferenceEngine::load(model_path, tokenizer_path, device)?;
+    engine.set_config(config);
+    Ok(Box::new(engine))
 }
 
-#[cfg(all(feature = "llama-cpp", not(feature = "candle")))]
-fn create_engine_inner(
-    backend: Backend,
-    model_path: &std::path::Path,
+#[cfg(not(feature = "candle"))]
+fn create_candle(
+    _model_path: &std::path::Path,
     _tokenizer_path: &std::path::Path,
-    config: GenerationConfig,
-    server_options: ServerOptions,
+    _config: GenerationConfig,
+    _server_options: ServerOptions,
 ) -> anyhow::Result<Box<dyn InferenceProvider>> {
-    match backend {
-        Backend::LlamaCpp => {
-            let _ = &server_options;
-            let mut provider = LlamaCppProvider::load(model_path)?;
-            provider.set_config(config);
-            Ok(Box::new(provider))
-        }
-        Backend::LlamaServer => {
-            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
-            provider.set_config(config);
-            Ok(Box::new(provider))
-        }
-        Backend::Candle => {
-            let _ = config;
-            let _ = &server_options;
-            anyhow::bail!(
-                "candle backend requested but the `candle` feature is not enabled. \
-                 Rebuild with: cargo build --features candle"
-            );
-        }
-    }
-}
-
-#[cfg(all(not(feature = "llama-cpp"), feature = "candle"))]
-fn create_engine_inner(
-    backend: Backend,
-    model_path: &std::path::Path,
-    tokenizer_path: &std::path::Path,
-    config: GenerationConfig,
-    server_options: ServerOptions,
-) -> anyhow::Result<Box<dyn InferenceProvider>> {
-    match backend {
-        Backend::LlamaServer => {
-            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
-            provider.set_config(config);
-            Ok(Box::new(provider))
-        }
-        Backend::Candle => {
-            let _ = &server_options;
-            let device = select_device();
-            let mut engine = InferenceEngine::load(model_path, tokenizer_path, device)?;
-            engine.set_config(config);
-            Ok(Box::new(engine))
-        }
-        Backend::LlamaCpp => {
-            let _ = config;
-            let _ = &server_options;
-            anyhow::bail!(
-                "llama-cpp backend requested but the `llama-cpp` feature is not enabled. \
-                 Rebuild with: cargo build --features llama-cpp"
-            );
-        }
-    }
-}
-
-#[cfg(all(not(feature = "llama-cpp"), not(feature = "candle")))]
-fn create_engine_inner(
-    backend: Backend,
-    model_path: &std::path::Path,
-    _tokenizer_path: &std::path::Path,
-    config: GenerationConfig,
-    server_options: ServerOptions,
-) -> anyhow::Result<Box<dyn InferenceProvider>> {
-    match backend {
-        Backend::LlamaServer => {
-            let mut provider = LlamaServerProvider::load(model_path, &server_options)?;
-            provider.set_config(config);
-            Ok(Box::new(provider))
-        }
-        Backend::LlamaCpp | Backend::Candle => {
-            let _ = config;
-            let _ = &server_options;
-            anyhow::bail!(
-                "No native inference backend enabled. Enable at least one of the `candle` or `llama-cpp` features, or use `llama-server`."
-            )
-        }
-    }
+    anyhow::bail!(
+        "candle backend requested but the `candle` feature is not enabled. \
+         Rebuild with: cargo build --features candle"
+    )
 }
 
 #[cfg(test)]
