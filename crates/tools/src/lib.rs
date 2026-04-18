@@ -830,4 +830,77 @@ mod tests {
         let registry = ToolRegistry::default();
         assert!(registry.names().is_empty());
     }
+
+    // ── PermissionMode serde roundtrip tests ─────────────────────
+
+    #[test]
+    fn test_permission_mode_serde_roundtrip() {
+        for (variant, expected_json) in [
+            (PermissionMode::ReadOnly, "\"read-only\""),
+            (PermissionMode::WorkspaceWrite, "\"workspace-write\""),
+            (PermissionMode::FullAccess, "\"full-access\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(
+                json, expected_json,
+                "PermissionMode::{variant:?} serialization mismatch"
+            );
+            let back: PermissionMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                back, variant,
+                "PermissionMode deserialization roundtrip failed for {variant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_permission_mode_deserialize_rejects_danger_full_access() {
+        // "danger-full-access" is NOT a serde variant — it's mapped only by
+        // parse_permission_mode() in the runtime crate, not by serde.
+        let result = serde_json::from_str::<PermissionMode>("\"danger-full-access\"");
+        assert!(result.is_err(), "serde should reject 'danger-full-access'");
+    }
+
+    #[test]
+    fn test_tool_result_new_not_truncated() {
+        let result = ToolResult::new("hello".to_string());
+        assert_eq!(result.content, "hello");
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn test_tool_result_error_format() {
+        let result = ToolResult::error("something failed".to_string());
+        assert_eq!(result.content, "Error: something failed");
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn test_tool_result_truncate_preserves_short_content() {
+        let result = ToolResult::new("short".to_string());
+        let truncated = result.truncate(100);
+        assert_eq!(truncated.content, "short");
+        assert!(!truncated.truncated);
+    }
+
+    #[test]
+    fn test_tool_result_truncate_at_char_boundary() {
+        // Korean characters are 3 bytes each in UTF-8.
+        // Create content that is mostly multi-byte to force a mid-character boundary.
+        let korean = "안녕하세요".repeat(200); // ~3000 bytes
+        let result = ToolResult::new(korean);
+        // Truncate to a size that will land in the middle of a multi-byte char
+        let truncated = result.truncate(500);
+        assert!(
+            truncated.truncated,
+            "content should be truncated for oversized Korean text"
+        );
+        // Must not panic — the content must be valid UTF-8
+        assert!(std::str::from_utf8(truncated.content.as_bytes()).is_ok());
+        assert!(
+            truncated.content.len() <= 500,
+            "truncated content must not exceed max_bytes, got {}",
+            truncated.content.len()
+        );
+    }
 }

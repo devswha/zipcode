@@ -176,4 +176,62 @@ mod tests {
         let error = parse_permission_mode("workspace").unwrap_err().to_string();
         assert!(error.contains("unsupported permission mode"));
     }
+
+    #[test]
+    fn test_parse_permission_mode_accepts_danger_full_access() {
+        assert!(matches!(
+            parse_permission_mode("danger-full-access").unwrap(),
+            PermissionMode::FullAccess
+        ));
+    }
+
+    #[test]
+    fn test_read_only_allows_all_read_tools() {
+        let policy = PermissionPolicy::new(PermissionMode::ReadOnly);
+        for tool in &["read_file", "glob_search", "grep_search", "tool_search"] {
+            assert_eq!(
+                policy.check(tool, &serde_json::json!({})),
+                PermissionCheck::Allowed,
+                "ReadOnly should allow '{tool}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_workspace_write_allows_all_write_tools() {
+        let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        for tool in &["write_file", "edit_file", "todo_write"] {
+            assert_eq!(
+                policy.check(tool, &serde_json::json!({})),
+                PermissionCheck::Allowed,
+                "WorkspaceWrite should allow '{tool}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_full_access_check_returns_allowed_for_unknown() {
+        let policy = PermissionPolicy::new(PermissionMode::FullAccess);
+        assert_eq!(
+            policy.check("nonexistent_future_tool", &serde_json::json!({})),
+            PermissionCheck::Allowed,
+            "FullAccess should allow unknown tool names"
+        );
+    }
+
+    #[test]
+    fn test_permission_policy_set_mode_changes_behavior() {
+        let mut policy = PermissionPolicy::new(PermissionMode::FullAccess);
+        // Bash is allowed under FullAccess
+        assert_eq!(
+            policy.check("bash", &serde_json::json!({})),
+            PermissionCheck::Allowed
+        );
+        // Switch to ReadOnly — bash should now be denied
+        policy.set_mode(PermissionMode::ReadOnly);
+        match policy.check("bash", &serde_json::json!({})) {
+            PermissionCheck::Denied(_) => {}
+            other => panic!("Expected Denied after set_mode(ReadOnly), got {other:?}"),
+        }
+    }
 }

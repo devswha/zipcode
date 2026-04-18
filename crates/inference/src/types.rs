@@ -179,4 +179,162 @@ mod tests {
         let msg = ChatMessage::assistant_with_tool_calls("", vec![call]);
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
     }
+
+    // ── Serde roundtrip tests ─────────────────────────────────────
+
+    #[test]
+    fn test_role_serde_roundtrip() {
+        for (variant, expected_json) in [
+            (Role::User, "\"user\""),
+            (Role::Model, "\"model\""),
+            (Role::Tool, "\"tool\""),
+            (Role::System, "\"system\""),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(
+                json, expected_json,
+                "Role::{variant:?} serialization mismatch"
+            );
+            let back: Role = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                back, variant,
+                "Role deserialization roundtrip failed for {variant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_chat_message_serde_roundtrip_user() {
+        let msg = ChatMessage::user("hello world");
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.role, Role::User);
+        assert_eq!(back.content, "hello world");
+        assert!(back.tool_call_id.is_none());
+        assert!(back.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_chat_message_serde_roundtrip_tool_result() {
+        let msg = ChatMessage::tool_result("call_42", "file contents here");
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.role, Role::Tool);
+        assert_eq!(back.content, "file contents here");
+        assert_eq!(back.tool_call_id.as_deref(), Some("call_42"));
+        assert!(back.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_chat_message_serde_roundtrip_with_tool_calls() {
+        let call = ToolCallParsed {
+            id: "call_99".to_string(),
+            name: "write_file".to_string(),
+            arguments: serde_json::json!({"path": "test.txt", "content": "hi"}),
+        };
+        let msg = ChatMessage::assistant_with_tool_calls("writing file", vec![call]);
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.role, Role::Model);
+        assert_eq!(back.content, "writing file");
+        assert!(back.tool_call_id.is_none());
+        let calls = back.tool_calls.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_99");
+        assert_eq!(calls[0].name, "write_file");
+        assert_eq!(calls[0].arguments["path"], "test.txt");
+    }
+
+    #[test]
+    fn test_chat_message_skip_serializing_none() {
+        let msg = ChatMessage::user("hello");
+        let json = serde_json::to_string(&msg).unwrap();
+        // tool_call_id and tool_calls are None — should NOT appear in JSON
+        assert!(
+            !json.contains("tool_call_id"),
+            "tool_call_id should be absent when None: {json}"
+        );
+        assert!(
+            !json.contains("tool_calls"),
+            "tool_calls should be absent when None: {json}"
+        );
+        // But role and content must be present
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"content\":\"hello\""));
+    }
+
+    #[test]
+    fn test_tool_call_parsed_serde_roundtrip() {
+        let call = ToolCallParsed {
+            id: "call_abc".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({
+                "command": "echo hello",
+                "timeout": 5000
+            }),
+        };
+        let json = serde_json::to_string(&call).unwrap();
+        let back: ToolCallParsed = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "call_abc");
+        assert_eq!(back.name, "bash");
+        assert_eq!(back.arguments["command"], "echo hello");
+        assert_eq!(back.arguments["timeout"], 5000);
+    }
+
+    #[test]
+    fn test_finish_reason_equality() {
+        assert_eq!(FinishReason::Stop, FinishReason::Stop);
+        assert_eq!(FinishReason::MaxTokens, FinishReason::MaxTokens);
+        assert_eq!(FinishReason::ToolUse, FinishReason::ToolUse);
+        assert_ne!(FinishReason::Stop, FinishReason::MaxTokens);
+        assert_ne!(FinishReason::MaxTokens, FinishReason::ToolUse);
+        assert_ne!(FinishReason::ToolUse, FinishReason::Stop);
+    }
+
+    #[test]
+    fn test_inference_error_display() {
+        assert_eq!(
+            InferenceError::ModelNotFound("model.gguf".to_string()).to_string(),
+            "Model file not found: model.gguf"
+        );
+        assert_eq!(
+            InferenceError::OutOfMemory.to_string(),
+            "CUDA out of memory"
+        );
+        assert!(InferenceError::TokenizerError("bad token".to_string())
+            .to_string()
+            .contains("bad token"));
+        assert!(InferenceError::GenerationError("overflow".to_string())
+            .to_string()
+            .contains("overflow"));
+    }
+
+    #[test]
+    fn test_generation_config_custom_values() {
+        let config = GenerationConfig {
+            temperature: 0.3,
+            top_p: 0.5,
+            top_k: 10,
+            max_tokens: 4096,
+            repeat_penalty: 1.2,
+            repeat_last_n: 32,
+            enable_thinking: false,
+        };
+        assert!((config.temperature - 0.3).abs() < f64::EPSILON);
+        assert!((config.top_p - 0.5).abs() < f64::EPSILON);
+        assert_eq!(config.top_k, 10);
+        assert_eq!(config.max_tokens, 4096);
+        assert!((config.repeat_penalty - 1.2).abs() < f32::EPSILON);
+        assert_eq!(config.repeat_last_n, 32);
+        assert!(!config.enable_thinking);
+    }
+
+    #[test]
+    fn test_generation_config_enable_thinking_defaults_to_true() {
+        let config = GenerationConfig::default();
+        assert!(
+            config.enable_thinking,
+            "enable_thinking should default to true"
+        );
+    }
 }
