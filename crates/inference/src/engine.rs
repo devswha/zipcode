@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use candle_core::{Device, Tensor};
 use candle_transformers::models::quantized_llama as gemma;
 use tokenizers::Tokenizer;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::chat_template::{self, ToolSpec};
 use crate::sampler::Sampler;
@@ -104,12 +104,18 @@ impl InferenceEngine {
             }
         };
 
-        // Resolve stop token IDs
-        let eos_token = self.tokenizer.token_to_id("<eos>").unwrap_or(1);
-        let end_of_turn = self
-            .tokenizer
-            .token_to_id("<end_of_turn>")
-            .unwrap_or(eos_token);
+        // Resolve stop token IDs — prefer explicit token lookup over hardcoded fallbacks.
+        // If the tokenizer doesn't know the stop tokens (e.g. non-Gemma model),
+        // log a warning and use None so the generation loop only stops on max_tokens.
+        let eos_token = self.tokenizer.token_to_id("<eos>");
+        let end_of_turn = self.tokenizer.token_to_id("<end_of_turn>").or(eos_token);
+
+        if eos_token.is_none() && end_of_turn.is_none() {
+            warn!(
+                "Tokenizer has neither <eos> nor <end_of_turn> tokens. \
+                 Generation will only stop at max_tokens limit."
+            );
+        }
 
         // Autoregressive generation loop
         let mut finished = false;
@@ -146,7 +152,7 @@ impl InferenceEngine {
             };
 
             // Check for stop tokens (EOS or <end_of_turn>)
-            if token == eos_token || token == end_of_turn {
+            if end_of_turn == Some(token) {
                 let tool_calls = chat_template::parse_tool_calls(&generated_text);
                 if !tool_calls.is_empty() {
                     for call in tool_calls {

@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::mpsc;
 
 use anyhow::{Context, Result};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::chat_template::{self, ToolSpec};
 use crate::types::{ChatMessage, FinishReason, GenerationConfig, InferenceError, TokenEvent};
@@ -25,6 +25,29 @@ use llama_cpp::llama_batch::LlamaBatch;
 use llama_cpp::model::params::LlamaModelParams;
 use llama_cpp::model::{AddBos, LlamaModel};
 use llama_cpp::sampling::LlamaSampler;
+
+/// Minimum context window size — prevents degenerate tiny contexts.
+const MIN_CTX: u32 = 4096;
+
+/// Compute a safe context window size, clamping to `[MIN_CTX, u32::MAX]`.
+///
+/// Uses saturating arithmetic to prevent overflow when `n_prompt + max_tokens + slack`
+/// exceeds `usize::MAX`, and falls back gracefully instead of panicking.
+fn safe_ctx_size(n_prompt: usize, max_tokens: usize) -> u32 {
+    const SLACK: usize = 64;
+
+    let needed = n_prompt.saturating_add(max_tokens).saturating_add(SLACK);
+    match u32::try_from(needed) {
+        Ok(v) => v.max(MIN_CTX),
+        Err(_) => {
+            warn!(
+                "Context size ({needed}) exceeds u32::MAX, clamping to u32::MAX. \
+                 Consider reducing prompt length or max_tokens."
+            );
+            u32::MAX
+        }
+    }
+}
 
 pub struct LlamaCppProvider {
     model: LlamaModel,
@@ -84,10 +107,10 @@ impl LlamaCppProvider {
 
         let n_prompt = tokens.len();
 
-        // Create context
-        let ctx_params = LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(
-            u32::try_from(n_prompt + self.config.max_tokens + 64).unwrap_or(4096),
-        ));
+        // Create context with overflow-safe size calculation
+        let ctx_size = safe_ctx_size(n_prompt, self.config.max_tokens);
+        let ctx_params =
+            LlamaContextParams::default().with_n_ctx(std::num::NonZeroU32::new(ctx_size));
 
         let mut ctx = match self.model.new_context(&self.backend, ctx_params) {
             Ok(c) => c,
@@ -108,8 +131,8 @@ impl LlamaCppProvider {
             LlamaSampler::dist(fastrand::u32(..)),
         ]);
 
-        // Feed the prompt in one batch
-        let batch_size = n_prompt + self.config.max_tokens + 64;
+        // Feed the prompt in one batch — use the same safe size
+        let batch_size = safe_ctx_size(n_prompt, self.config.max_tokens) as usize;
         let mut batch = LlamaBatch::new(batch_size, 1);
 
         for (i, token) in tokens.iter().enumerate() {
@@ -201,5 +224,64 @@ impl InferenceProvider for LlamaCppProvider {
         tools: &[ToolSpec],
     ) -> mpsc::Receiver<TokenEvent> {
         self.generate_stream(messages, tools)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_ctx_size_normal_values() {
+        // Typical usage: prompt 1000 tokens, max_tokens 512 → 1576 < MIN_CTX, clamped to 4096
+        assert_eq!(safe_ctx_size(1000, 512), MIN_CTX); // 1576 → 4096
+    }
+
+    #[test]
+    fn safe_ctx_size_above_minimum() {
+        // Above MIN_CTX: should be exact value
+        assert_eq!(safe_ctx_size(5000, 512), 5576); // 5000 + 512 + 64
+    }
+
+    #[test]
+    fn safe_ctx_size_enforces_minimum() {
+        // Very small inputs should still get at least MIN_CTX
+        assert_eq!(safe_ctx_size(0, 0), MIN_CTX); // 0 + 0 + 64 = 64, clamped to 4096
+        assert_eq!(safe_ctx_size(10, 10), MIN_CTX); // 10 + 10 + 64 = 84, clamped to 4096
+    }
+
+    #[test]
+    fn safe_ctx_size_near_minimum_boundary() {
+        // Just below and at MIN_CTX
+        assert_eq!(safe_ctx_size(4000, 0), MIN_CTX); // 4000 + 0 + 64 = 4064 → 4096
+        assert_eq!(safe_ctx_size(4032, 0), MIN_CTX); // 4032 + 0 + 64 = 4096
+    }
+
+    #[test]
+    fn safe_ctx_size_saturates_on_overflow() {
+        // Max values should saturate to u32::MAX instead of panicking
+        let result = safe_ctx_size(usize::MAX, usize::MAX);
+        assert_eq!(result, u32::MAX);
+    }
+
+    #[test]
+    fn safe_ctx_size_saturates_with_one_max() {
+        // One huge value should still saturate
+        let result = safe_ctx_size(usize::MAX, 100);
+        assert_eq!(result, u32::MAX);
+    }
+
+    #[test]
+    fn safe_ctx_size_large_but_valid() {
+        // Large values that still fit in u32
+        let result = safe_ctx_size(1_000_000, 4096);
+        assert_eq!(result, 1_004_160); // 1_000_000 + 4096 + 64
+    }
+
+    #[test]
+    fn safe_ctx_size_exceeds_u32() {
+        // Value that overflows u32 but doesn't saturate usize
+        let result = safe_ctx_size(u32::MAX as usize + 1, 0);
+        assert_eq!(result, u32::MAX);
     }
 }
