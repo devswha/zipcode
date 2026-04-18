@@ -40,7 +40,13 @@ pub fn format_message(msg: &ChatMessage, tools: &[ToolSpec]) -> String {
         Role::User => {
             let mut parts = String::new();
             if !tools.is_empty() {
-                let tools_json = serde_json::to_string_pretty(tools).unwrap_or_default();
+                let tools_json = match serde_json::to_string_pretty(tools) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        tracing::warn!("Failed to serialize tool specs to JSON: {e}");
+                        String::new()
+                    }
+                };
                 parts.push_str(&format!(
                     "You have access to the following tools:\n{tools_json}\n\n"
                 ));
@@ -106,7 +112,27 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
                     found = true;
                     break;
                 }
-                let arguments = parsed["arguments"].clone();
+                // Validate that arguments is a JSON object (not null, string, array, etc.)
+                let arguments = match parsed.get("arguments") {
+                    Some(v) if v.is_object() => v.clone(),
+                    Some(other) => {
+                        let type_name = match other {
+                            serde_json::Value::Null => "null",
+                            serde_json::Value::Bool(_) => "bool",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::String(_) => "string",
+                            serde_json::Value::Array(_) => "array",
+                            serde_json::Value::Object(_) => unreachable!(),
+                        };
+                        tracing::warn!(
+                            "Tool call '{name}' has non-object arguments (type: {type_name}), skipping"
+                        );
+                        search_from = json_start + actual_end + 12;
+                        found = true;
+                        break;
+                    }
+                    None => serde_json::Value::Object(Default::default()),
+                };
                 calls.push(ToolCallParsed {
                     id: format!("call_{}", calls.len()),
                     name,
@@ -134,56 +160,72 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
 
     calls
 }
-
-/// Extract plain text from model output, stripping all `<tool_call>` blocks.
-/// Handles nested `</tool_call>` within JSON strings by validating JSON before stripping.
+/// Extract plain text from model output, stripping all tool-call blocks.
+/// Handles nested closing tags within JSON strings by validating JSON before stripping.
+///
+/// Uses an O(n) single-pass approach: builds the result buffer incrementally
+/// instead of reallocating the entire string on each block removal.
 pub fn extract_text_content(output: &str) -> String {
-    let mut result = output.to_string();
-    loop {
-        let Some(start) = result.find("<tool_call>") else {
-            break;
-        };
-        let after_tag = start + "<tool_call>".len();
+    let mut result = String::with_capacity(output.len());
+    let mut pos = 0;
+
+    while let Some(start) = output[pos..].find("<tool_call>") {
+        // Copy everything before this opening tag
+        result.push_str(&output[pos..pos + start]);
+        let after_tag = pos + start + 11;
+
         let mut inner_search = 0;
         let mut found = false;
 
-        while let Some(end_offset) = result[after_tag + inner_search..].find("</tool_call>") {
+        while let Some(end_offset) = output[after_tag + inner_search..].find("</tool_call>") {
             let actual_end = inner_search + end_offset;
-            let json_str = result[after_tag..after_tag + actual_end].trim();
+            let json_str = output[after_tag..after_tag + actual_end].trim();
 
             // Accept either valid JSON or skip to the next closing tag
             if json_str.is_empty() || serde_json::from_str::<serde_json::Value>(json_str).is_ok() {
-                let block_end = after_tag + actual_end + "</tool_call>".len();
-                result = format!("{}{}", &result[..start], &result[block_end..]);
+                pos = after_tag + actual_end + 12;
                 found = true;
                 break;
             }
-            inner_search = actual_end + "</tool_call>".len();
+            inner_search = actual_end + 12;
         }
 
         if !found {
-            let next_open = result[after_tag..]
+            let next_open = output[after_tag..]
                 .find("<tool_call>")
                 .map(|offset| after_tag + offset);
-            let next_close = result[after_tag..]
+            let next_close = output[after_tag..]
                 .find("</tool_call>")
                 .map(|offset| after_tag + offset);
 
             match (next_open, next_close) {
                 (None, Some(close)) => {
-                    let block_end = close + "</tool_call>".len();
-                    result = format!("{}{}", &result[..start], &result[block_end..]);
+                    pos = close + 12;
                 }
-                (Some(open), Some(close)) if close < open => {
-                    let block_end = close + "</tool_call>".len();
-                    result = format!("{}{}", &result[..start], &result[block_end..]);
+                (Some(_open), Some(close)) if close < _open => {
+                    pos = close + 12;
                 }
                 _ => {
-                    result = format!("{}{}", &result[..start], &result[after_tag..]);
+                    // No closing tag or next open tag comes first.
+                    // Keep content after opening tag up to next open tag (if any),
+                    // then continue processing from that next open tag.
+                    if let Some(next_open_abs) = next_open {
+                        result.push_str(&output[after_tag..next_open_abs]);
+                        pos = next_open_abs;
+                    } else {
+                        result.push_str(&output[after_tag..]);
+                        pos = output.len();
+                    }
                 }
             }
         }
     }
+
+    // Copy remaining text after last block
+    if pos < output.len() {
+        result.push_str(&output[pos..]);
+    }
+
     result.trim().to_string()
 }
 
@@ -390,5 +432,77 @@ mod tests {
         let output = "Hello <tool_call>partial content";
         let text = extract_text_content(output);
         assert_eq!(text, "Hello partial content");
+    }
+
+    // --- New tests for code quality improvements ---
+
+    #[test]
+    fn test_parse_tool_calls_rejects_string_arguments() {
+        let output = "<tool_call>\n{\"name\": \"bash\", \"arguments\": \"invalid\"}\n</tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert!(parsed.is_empty(), "String arguments should be rejected");
+    }
+
+    #[test]
+    fn test_parse_tool_calls_rejects_array_arguments() {
+        let output = "<tool_call>\n{\"name\": \"bash\", \"arguments\": [1, 2, 3]}\n</tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert!(parsed.is_empty(), "Array arguments should be rejected");
+    }
+
+    #[test]
+    fn test_parse_tool_calls_rejects_number_arguments() {
+        let output = "<tool_call>\n{\"name\": \"bash\", \"arguments\": 42}\n</tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert!(parsed.is_empty(), "Numeric arguments should be rejected");
+    }
+
+    #[test]
+    fn test_parse_tool_calls_accepts_empty_object_arguments() {
+        let output = "<tool_call>\n{\"name\": \"bash\", \"arguments\": {}}\n</tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "bash");
+        assert!(parsed[0].arguments.is_object());
+    }
+
+    #[test]
+    fn test_parse_tool_calls_missing_arguments_gets_empty_object() {
+        let output = "<tool_call>\n{\"name\": \"bash\"}\n</tool_call>";
+        let parsed = parse_tool_calls(output);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].arguments.is_object());
+        assert_eq!(parsed[0].arguments.as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_extract_text_content_multiple_blocks() {
+        let mut output = String::from("Start ");
+        for i in 0..10u32 {
+            let json = serde_json::json!({"name": format!("tool_{i}"), "arguments": {"n": i}});
+            output.push_str(&format!("<tool_call>\n{json}\n</tool_call> between{i} "));
+        }
+        output.push_str("End");
+
+        let text = extract_text_content(&output);
+
+        assert!(text.starts_with("Start "));
+        assert!(text.ends_with("End"));
+        assert!(!text.contains("<tool_call>"));
+        assert!(!text.contains("</tool_call>"));
+        for i in 0..10u32 {
+            assert!(text.contains(&format!("between{i}")));
+        }
+    }
+
+    #[test]
+    fn test_extract_text_content_preserves_spacing() {
+        let bash_json = serde_json::json!({"name": "bash", "arguments": {}});
+        let read_json = serde_json::json!({"name": "read", "arguments": {}});
+        let output = format!(
+            "Hello <tool_call>{bash_json}</tool_call> world <tool_call>{read_json}</tool_call> end"
+        );
+        let text = extract_text_content(&output);
+        assert_eq!(text, "Hello  world  end");
     }
 }
