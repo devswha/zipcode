@@ -353,6 +353,7 @@ fn wait_until_remote_ready(host: &str, port: u16) -> Result<()> {
     }
 }
 
+#[derive(Debug)]
 enum HealthStatus {
     Ready,
     Loading,
@@ -376,11 +377,20 @@ fn health_check(host: &str, port: u16) -> HealthStatus {
     let _ = stream.read_to_end(&mut buf);
     let response = String::from_utf8_lossy(&buf);
 
-    if response.contains("\"ok\"") {
-        HealthStatus::Ready
-    } else {
-        HealthStatus::Loading
+    // Parse the JSON body (after the blank line separating headers from body)
+    let body = response
+        .split("\r\n\r\n")
+        .nth(1)
+        .or_else(|| response.split("\n\n").nth(1))
+        .unwrap_or("");
+
+    if let Ok(json) = serde_json::from_str::<Value>(body.trim()) {
+        if json["status"].as_str() == Some("ok") {
+            return HealthStatus::Ready;
+        }
     }
+
+    HealthStatus::Loading
 }
 
 /// Parse a server URL for remote mode. Accepts `http://host:port`,
@@ -393,6 +403,21 @@ fn parse_server_url(url: &str) -> Result<(String, u16)> {
         .or_else(|| url.strip_prefix("https://"))
         .unwrap_or(url);
     let stripped = stripped.trim_end_matches('/');
+
+    // Handle IPv6 bracket notation: [::1]:8080 or [::1]
+    if let Some(bracketed) = stripped.strip_prefix('[') {
+        if let Some(bracket_end) = bracketed.find(']') {
+            let host = format!("[{}]", &bracketed[..bracket_end]);
+            let rest = &bracketed[bracket_end + 1..];
+            if let Some(port_str) = rest.strip_prefix(':') {
+                let port: u16 = port_str
+                    .parse()
+                    .with_context(|| format!("invalid port in llama-server URL: {url}"))?;
+                return Ok((host, port));
+            }
+            return Ok((host, 8080));
+        }
+    }
 
     if let Some((host, port)) = stripped.rsplit_once(':') {
         let port: u16 = port
@@ -1242,5 +1267,123 @@ mod tests {
 
         assert!(got_token, "expected at least one token event");
         assert!(got_done, "expected done event");
+    }
+
+    // ── openai_message tests ────────────────────────────────────────
+
+    #[test]
+    fn openai_message_system_role() {
+        let msg = ChatMessage::system("you are helpful");
+        let value = openai_message(&msg);
+        assert_eq!(value["role"], "system");
+        assert_eq!(value["content"], "you are helpful");
+    }
+
+    #[test]
+    fn openai_message_user_role() {
+        let msg = ChatMessage::user("hello");
+        let value = openai_message(&msg);
+        assert_eq!(value["role"], "user");
+        assert_eq!(value["content"], "hello");
+    }
+
+    #[test]
+    fn openai_message_tool_result_role() {
+        let msg = ChatMessage::tool_result("call_42", "file contents");
+        let value = openai_message(&msg);
+        assert_eq!(value["role"], "tool");
+        assert_eq!(value["tool_call_id"], "call_42");
+        assert_eq!(value["content"], "file contents");
+    }
+
+    #[test]
+    fn openai_message_model_with_tool_calls() {
+        let call = ToolCallParsed {
+            id: "call_1".to_string(),
+            name: "bash".to_string(),
+            arguments: json!({"command": "ls"}),
+        };
+        let msg = ChatMessage::assistant_with_tool_calls("thinking", vec![call]);
+        let value = openai_message(&msg);
+        assert_eq!(value["role"], "assistant");
+        assert_eq!(value["content"], "thinking");
+        let tc = &value["tool_calls"][0];
+        assert_eq!(tc["id"], "call_1");
+        assert_eq!(tc["function"]["name"], "bash");
+        assert_eq!(tc["type"], "function");
+        // arguments should be a JSON string, not an object
+        let args: Value =
+            serde_json::from_str(tc["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["command"], "ls");
+    }
+
+    #[test]
+    fn openai_message_model_without_tool_calls() {
+        let msg = ChatMessage::assistant("here is the answer");
+        let value = openai_message(&msg);
+        assert_eq!(value["role"], "assistant");
+        assert_eq!(value["content"], "here is the answer");
+        assert!(value.get("tool_calls").is_none());
+    }
+
+    // ── parse_server_url IPv6 tests ─────────────────────────────────
+
+    #[test]
+    fn parse_server_url_handles_ipv6_with_port() {
+        assert_eq!(
+            parse_server_url("http://[::1]:8080").unwrap(),
+            ("[::1]".to_string(), 8080)
+        );
+    }
+
+    #[test]
+    fn parse_server_url_handles_ipv6_without_port() {
+        assert_eq!(
+            parse_server_url("[::1]").unwrap(),
+            ("[::1]".to_string(), 8080)
+        );
+    }
+
+    #[test]
+    fn parse_server_url_handles_ipv6_full_address_with_port() {
+        assert_eq!(
+            parse_server_url("http://[2001:db8::1]:5555").unwrap(),
+            ("[2001:db8::1]".to_string(), 5555)
+        );
+    }
+
+    #[test]
+    fn parse_server_url_handles_ipv6_https() {
+        assert_eq!(
+            parse_server_url("https://[::1]:443").unwrap(),
+            ("[::1]".to_string(), 443)
+        );
+    }
+
+    // ── health_check JSON parsing test ──────────────────────────────
+
+    #[test]
+    fn health_check_parses_json_body_not_headers() {
+        // Verify that a response where "ok" appears in a header but
+        // the body says "loading" correctly reports Loading.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response = "HTTP/1.1 200 OK\r\nX-Status: \"ok\"\r\nContent-Type: application/json\r\n\r\n{\"status\":\"loading\"}";
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = health_check("127.0.0.1", port);
+        assert!(
+            matches!(result, HealthStatus::Loading),
+            "health_check should parse JSON body, not match headers — got {result:?}"
+        );
     }
 }
