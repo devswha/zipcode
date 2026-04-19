@@ -453,4 +453,408 @@ mod tests {
         assert!(validate_session_id("simple-id").is_ok());
         assert!(validate_session_id("test_session_123").is_ok());
     }
+
+    // ── truncate_inline tests ──────────────────────────────────────
+
+    #[test]
+    fn test_truncate_inline_empty_string() {
+        assert_eq!(truncate_inline("", 80), "");
+    }
+
+    #[test]
+    fn test_truncate_inline_short_string_unchanged() {
+        assert_eq!(truncate_inline("hello world", 80), "hello world");
+    }
+
+    #[test]
+    fn test_truncate_inline_long_string_truncated() {
+        let input = "x".repeat(200);
+        let result = truncate_inline(&input, 100);
+        // Ellipsis '…' is 3 bytes in UTF-8; check char count, not byte count
+        assert!(
+            result.chars().count() <= 101,
+            "result should be at most max_chars + 1 char (ellipsis), got {} chars",
+            result.chars().count()
+        );
+        assert!(
+            result.ends_with('…'),
+            "truncated string should end with ellipsis"
+        );
+        assert!(
+            !result.starts_with('…'),
+            "should have some content before ellipsis"
+        );
+    }
+
+    #[test]
+    fn test_truncate_inline_collapses_whitespace() {
+        let input = "hello   world\t\tfoo\nbar";
+        let result = truncate_inline(input, 80);
+        assert_eq!(result, "hello world foo bar");
+    }
+
+    #[test]
+    fn test_truncate_inline_multibyte_utf8() {
+        // Korean characters: 3 bytes each, but .chars() counts codepoints
+        let input = "안녕하세요";
+        let result = truncate_inline(input, 3);
+        assert_eq!(result, "안녕하…");
+    }
+
+    #[test]
+    fn test_truncate_inline_exact_boundary() {
+        let input = "abcde";
+        // Exactly 5 chars → should NOT be truncated
+        let result = truncate_inline(input, 5);
+        assert_eq!(result, "abcde");
+        assert!(!result.contains('…'));
+    }
+
+    #[test]
+    fn test_truncate_inline_one_over_boundary() {
+        let input = "abcdef"; // 6 chars
+        let result = truncate_inline(input, 5);
+        assert!(result.contains('…'));
+        assert!(result.starts_with("abcde"));
+    }
+
+    #[test]
+    fn test_truncate_inline_zero_max() {
+        let result = truncate_inline("hello", 0);
+        // With max_chars=0, take(0) returns empty, but chars.next() is Some → ellipsis
+        assert_eq!(result, "…");
+    }
+
+    #[test]
+    fn test_truncate_inline_single_char_at_limit() {
+        assert_eq!(truncate_inline("a", 1), "a");
+        assert_eq!(truncate_inline("ab", 1), "a…");
+    }
+
+    // ── build_compacted_summary tests ─────────────────────────────
+
+    #[test]
+    fn test_build_compacted_summary_empty_messages() {
+        let policy = CompactPolicy::default();
+        let summary = build_compacted_summary(&[], policy);
+        assert!(summary.starts_with(COMPACTED_SUMMARY_MARKER));
+        assert!(summary.contains("Compacted 0 earlier messages"));
+        assert!(summary.contains("Earlier transcript content was compacted."));
+    }
+
+    #[test]
+    fn test_build_compacted_summary_skips_system_messages() {
+        let messages = vec![
+            ChatMessage::system("system prompt"),
+            ChatMessage::user("hello"),
+        ];
+        let policy = CompactPolicy {
+            max_summary_bullets: 10,
+            max_summary_line_chars: 80,
+            ..CompactPolicy::default()
+        };
+        let summary = build_compacted_summary(&messages, policy);
+        assert!(summary.starts_with(COMPACTED_SUMMARY_MARKER));
+        assert!(
+            !summary.contains("system prompt"),
+            "system messages should be skipped"
+        );
+        assert!(summary.contains("User: hello"));
+    }
+
+    #[test]
+    fn test_build_compacted_summary_overflow_count() {
+        let mut messages = Vec::new();
+        for i in 0..15 {
+            messages.push(ChatMessage::user(&format!("request {i}")));
+        }
+        let policy = CompactPolicy {
+            max_summary_bullets: 5,
+            max_summary_line_chars: 80,
+            ..CompactPolicy::default()
+        };
+        let summary = build_compacted_summary(&messages, policy);
+        assert!(summary.contains("additional earlier messages were compacted"));
+        // Should still have at most max_summary_bullets bullet points + the overflow line
+        let bullet_count = summary.lines().filter(|l| l.starts_with("- ")).count();
+        assert!(
+            bullet_count <= 6,
+            "should have at most 5 bullets + 1 overflow line, got {bullet_count}"
+        );
+    }
+
+    #[test]
+    fn test_build_compacted_summary_starts_with_marker() {
+        let messages = vec![ChatMessage::user("test")];
+        let policy = CompactPolicy::default();
+        let summary = build_compacted_summary(&messages, policy);
+        assert!(summary.starts_with(COMPACTED_SUMMARY_MARKER));
+        assert!(summary.contains("Compacted 1 earlier messages"));
+    }
+
+    #[test]
+    fn test_build_compacted_summary_includes_all_roles_except_system() {
+        let tool_call = ToolCallParsed {
+            id: "call_1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let messages = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("do stuff"),
+            ChatMessage::assistant_with_tool_calls("thinking", vec![tool_call]),
+            ChatMessage::tool_result("call_1", "file1.rs\nfile2.rs"),
+            ChatMessage::assistant("done"),
+        ];
+        let policy = CompactPolicy {
+            max_summary_bullets: 10,
+            max_summary_line_chars: 80,
+            ..CompactPolicy::default()
+        };
+        let summary = build_compacted_summary(&messages, policy);
+        assert!(summary.contains("User:"));
+        assert!(summary.contains("Assistant invoked tools:"));
+        assert!(summary.contains("Tool result"));
+        assert!(summary.contains("Assistant:"));
+        assert!(
+            !summary.contains("sys"),
+            "system message should be excluded"
+        );
+    }
+
+    // ── summarize_message tests ───────────────────────────────────
+
+    #[test]
+    fn test_summarize_message_system_returns_none() {
+        let msg = ChatMessage::system("you are helpful");
+        assert!(summarize_message(&msg, 80).is_none());
+    }
+
+    #[test]
+    fn test_summarize_message_user() {
+        let msg = ChatMessage::user("fix the bug");
+        let result = summarize_message(&msg, 80).unwrap();
+        assert_eq!(result, "User: fix the bug");
+    }
+
+    #[test]
+    fn test_summarize_message_assistant() {
+        let msg = ChatMessage::assistant("the fix is applied");
+        let result = summarize_message(&msg, 80).unwrap();
+        assert_eq!(result, "Assistant: the fix is applied");
+    }
+
+    #[test]
+    fn test_summarize_message_tool_result() {
+        let msg = ChatMessage::tool_result("call_42", "output line 1\noutput line 2");
+        let result = summarize_message(&msg, 80).unwrap();
+        assert!(result.starts_with("Tool result (call_42):"));
+        assert!(result.contains("output line 1"));
+    }
+
+    #[test]
+    fn test_summarize_message_assistant_with_tool_calls() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let msg = ChatMessage::assistant_with_tool_calls("thinking", vec![call]);
+        let result = summarize_message(&msg, 80).unwrap();
+        assert!(result.contains("Assistant invoked tools: bash"));
+        assert!(result.contains("note: thinking"));
+    }
+
+    #[test]
+    fn test_summarize_message_assistant_with_tool_calls_empty_note() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "foo.rs"}),
+        };
+        let msg = ChatMessage::assistant_with_tool_calls("", vec![call]);
+        let result = summarize_message(&msg, 80).unwrap();
+        assert_eq!(result, "Assistant invoked tools: read_file");
+    }
+
+    #[test]
+    fn test_summarize_message_compacted_summary_merged() {
+        let prior = format!(
+            "{COMPACTED_SUMMARY_MARKER}\n- User asked about tests\n- Assistant ran cargo test"
+        );
+        let msg = ChatMessage::assistant(&prior);
+        let result = summarize_message(&msg, 200).unwrap();
+        assert!(result.starts_with("Prior summary:"));
+        assert!(result.contains("User asked about tests"));
+    }
+
+    // ── compact() edge cases ──────────────────────────────────────
+
+    #[test]
+    fn test_compact_no_system_message() {
+        let mut session = Session {
+            id: "session".to_string(),
+            messages: vec![
+                ChatMessage::user("first"),
+                ChatMessage::assistant("first response"),
+                ChatMessage::user("second"),
+                ChatMessage::assistant("second response"),
+                ChatMessage::user("third"),
+                ChatMessage::assistant("third response"),
+            ],
+            created_at: timestamp_now(),
+            updated_at: timestamp_now(),
+        };
+
+        let result = session.compact(CompactPolicy {
+            retain_user_turns: 2,
+            ..CompactPolicy::default()
+        });
+
+        assert!(result.changed);
+        // No system message, so compacted summary should be at index 0
+        assert_eq!(session.messages[0].role, Role::Model);
+        assert!(session.messages[0]
+            .content
+            .starts_with(COMPACTED_SUMMARY_MARKER));
+        // First retained user message at index 1
+        assert_eq!(session.messages[1].role, Role::User);
+        assert_eq!(session.messages[1].content, "second");
+        assert_eq!(result.before_messages, 6);
+        assert!(result.after_messages < 6);
+        assert!(result.pruned_messages > 0);
+    }
+
+    #[test]
+    fn test_compact_exact_threshold_no_compaction() {
+        // Exactly 2 user turns → retain_user_turns=2 means no compaction
+        let mut session = Session {
+            id: "session".to_string(),
+            messages: vec![
+                ChatMessage::system("sys"),
+                ChatMessage::user("one"),
+                ChatMessage::assistant("response one"),
+                ChatMessage::user("two"),
+                ChatMessage::assistant("response two"),
+            ],
+            created_at: timestamp_now(),
+            updated_at: timestamp_now(),
+        };
+
+        let result = session.compact(CompactPolicy {
+            retain_user_turns: 2,
+            ..CompactPolicy::default()
+        });
+
+        assert!(!result.changed);
+        assert_eq!(result.before_messages, 5);
+        assert_eq!(result.after_messages, 5);
+        assert_eq!(result.pruned_messages, 0);
+    }
+
+    #[test]
+    fn test_compact_zero_user_messages_no_compaction() {
+        let mut session = Session {
+            id: "session".to_string(),
+            messages: vec![ChatMessage::system("sys"), ChatMessage::assistant("hello")],
+            created_at: timestamp_now(),
+            updated_at: timestamp_now(),
+        };
+
+        let result = session.compact(CompactPolicy {
+            retain_user_turns: 2,
+            ..CompactPolicy::default()
+        });
+
+        assert!(!result.changed);
+    }
+
+    #[test]
+    fn test_compact_re_compaction_merges_prior_summary() {
+        let mut session = Session {
+            id: "session".to_string(),
+            messages: vec![
+                ChatMessage::system("sys"),
+                ChatMessage::assistant(&format!("{COMPACTED_SUMMARY_MARKER}\n- Prior work done")),
+                ChatMessage::user("cycle2 request"),
+                ChatMessage::assistant("cycle2 response"),
+                ChatMessage::user("cycle3 request"),
+                ChatMessage::assistant("cycle3 response"),
+                ChatMessage::user("cycle4 request"),
+                ChatMessage::assistant("cycle4 response"),
+            ],
+            created_at: timestamp_now(),
+            updated_at: timestamp_now(),
+        };
+
+        let result = session.compact(CompactPolicy {
+            retain_user_turns: 2,
+            max_summary_bullets: 10,
+            max_summary_line_chars: 80,
+        });
+
+        assert!(result.changed);
+        // The new summary should contain a "Prior summary:" bullet from the old summary
+        let summary = &session.messages[1].content;
+        assert!(summary.starts_with(COMPACTED_SUMMARY_MARKER));
+        assert!(
+            summary.contains("Prior summary:"),
+            "re-compaction should merge the prior summary, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn test_compact_result_counts_are_consistent() {
+        let mut session = Session {
+            id: "session".to_string(),
+            messages: vec![
+                ChatMessage::system("sys"),
+                ChatMessage::user("u1"),
+                ChatMessage::assistant("a1"),
+                ChatMessage::user("u2"),
+                ChatMessage::assistant("a2"),
+                ChatMessage::user("u3"),
+                ChatMessage::assistant("a3"),
+                ChatMessage::user("u4"),
+                ChatMessage::assistant("a4"),
+            ],
+            created_at: timestamp_now(),
+            updated_at: timestamp_now(),
+        };
+
+        let result = session.compact(CompactPolicy {
+            retain_user_turns: 2,
+            ..CompactPolicy::default()
+        });
+
+        assert!(result.changed);
+        assert_eq!(
+            result.before_messages,
+            result.pruned_messages + result.retained_messages + 1, // +1 for summary message
+            "before = pruned + retained + summary message"
+        );
+        assert_eq!(
+            result.after_messages,
+            result.retained_messages + 2, // system + summary + retained
+            "after = system + summary + retained"
+        );
+    }
+
+    // ── updated_at mutation tests ─────────────────────────────────
+
+    #[test]
+    fn test_push_message_updates_timestamp() {
+        let mut session = Session::new();
+        let before = session.updated_at.clone();
+        // Small sleep to ensure timestamp could differ
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.push_message(ChatMessage::user("hello"));
+        // updated_at should have been refreshed
+        assert_eq!(session.messages.len(), 1);
+        // Timestamps are RFC3339 and monotonically increasing within a test
+        assert!(
+            session.updated_at >= before,
+            "updated_at should be >= before push"
+        );
+    }
 }
