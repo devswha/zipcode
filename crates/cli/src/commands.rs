@@ -1442,4 +1442,310 @@ mod tests {
         let error = ensure_update_is_safe(&status).unwrap_err().to_string();
         assert!(error.contains("ahead"));
     }
+
+    // --- Tests for previously-untested pure utility functions ---
+
+    #[test]
+    fn backend_name_maps_all_variants() {
+        assert_eq!(backend_name(Backend::LlamaCpp), "llama-cpp");
+        assert_eq!(backend_name(Backend::LlamaServer), "llama-server");
+        assert_eq!(backend_name(Backend::Candle), "candle");
+    }
+
+    #[test]
+    fn friendly_engine_name_maps_all_variants() {
+        assert_eq!(
+            friendly_engine_name(Backend::LlamaCpp),
+            "local engine (llama-cpp)"
+        );
+        assert_eq!(
+            friendly_engine_name(Backend::LlamaServer),
+            "compatibility helper (llama-server)"
+        );
+        assert_eq!(
+            friendly_engine_name(Backend::Candle),
+            "pure Rust engine (candle)"
+        );
+    }
+
+    #[test]
+    fn format_search_paths_joins_multiple_paths() {
+        let paths = vec![
+            PathBuf::from("/home/user/.zipcode/models"),
+            PathBuf::from("/project/models"),
+        ];
+        assert_eq!(
+            format_search_paths(&paths),
+            "/home/user/.zipcode/models, /project/models"
+        );
+    }
+
+    #[test]
+    fn format_search_paths_returns_empty_string_for_empty_slice() {
+        let paths: Vec<PathBuf> = vec![];
+        assert_eq!(format_search_paths(&paths), "");
+    }
+
+    #[test]
+    fn format_search_paths_handles_single_path() {
+        let paths = vec![PathBuf::from("/only/path")];
+        assert_eq!(format_search_paths(&paths), "/only/path");
+    }
+
+    #[test]
+    fn tokenizer_path_for_model_returns_parent_dir_tokenizer() {
+        let model = Path::new("/home/user/.zipcode/models/gemma-4.gguf");
+        assert_eq!(
+            tokenizer_path_for_model(model),
+            PathBuf::from("/home/user/.zipcode/models/tokenizer.json")
+        );
+    }
+
+    #[test]
+    fn tokenizer_path_for_model_handles_root_path() {
+        // Model at root like /model.gguf → parent is /
+        let model = Path::new("/model.gguf");
+        assert_eq!(
+            tokenizer_path_for_model(model),
+            PathBuf::from("/tokenizer.json")
+        );
+    }
+
+    #[test]
+    fn tokenizer_path_for_model_handles_relative_path() {
+        let model = Path::new("models/test.gguf");
+        assert_eq!(
+            tokenizer_path_for_model(model),
+            PathBuf::from("models/tokenizer.json")
+        );
+    }
+
+    #[test]
+    fn helper_is_required_true_for_llama_server() {
+        assert!(helper_is_required(Backend::LlamaServer, None));
+    }
+
+    #[test]
+    fn helper_is_required_true_for_gemma4_model() {
+        assert!(helper_is_required(
+            Backend::LlamaCpp,
+            Some(Path::new("/tmp/gemma-4-it.gguf"))
+        ));
+    }
+
+    #[test]
+    fn helper_is_required_true_for_gemma4_model_case_insensitive() {
+        assert!(helper_is_required(
+            Backend::LlamaCpp,
+            Some(Path::new("/tmp/Gemma-4-it.gguf"))
+        ));
+    }
+
+    #[test]
+    fn helper_is_required_false_for_non_gemma4_with_llama_cpp() {
+        assert!(!helper_is_required(
+            Backend::LlamaCpp,
+            Some(Path::new("/tmp/codeqwen.gguf"))
+        ));
+    }
+
+    #[test]
+    fn helper_is_required_false_for_candle_without_model() {
+        assert!(!helper_is_required(Backend::Candle, None));
+    }
+
+    #[test]
+    fn tokenizer_is_required_is_inverse_of_helper_is_required() {
+        // LlamaServer backend → helper required → tokenizer NOT required
+        assert!(!tokenizer_is_required(Backend::LlamaServer, None));
+        // Candle backend without model → helper NOT required → tokenizer required
+        assert!(tokenizer_is_required(Backend::Candle, None));
+        // Gemma4 model → helper required → tokenizer NOT required
+        assert!(!tokenizer_is_required(
+            Backend::LlamaCpp,
+            Some(Path::new("/tmp/gemma-4.gguf"))
+        ));
+        // Non-gemma model → helper NOT required → tokenizer required
+        assert!(tokenizer_is_required(
+            Backend::LlamaCpp,
+            Some(Path::new("/tmp/phi.gguf"))
+        ));
+    }
+
+    #[test]
+    fn config_field_missing_or_null_returns_true_when_none() {
+        assert!(config_field_missing_or_null(None, "gpu_layers"));
+    }
+
+    #[test]
+    fn config_field_missing_or_null_returns_true_when_field_absent() {
+        let json = serde_json::json!({"other_field": 42});
+        assert!(config_field_missing_or_null(Some(&json), "gpu_layers"));
+    }
+
+    #[test]
+    fn config_field_missing_or_null_returns_true_when_null() {
+        let json = serde_json::json!({"gpu_layers": null});
+        assert!(config_field_missing_or_null(Some(&json), "gpu_layers"));
+    }
+
+    #[test]
+    fn config_field_missing_or_null_returns_false_when_present() {
+        let json = serde_json::json!({"gpu_layers": 999});
+        assert!(!config_field_missing_or_null(Some(&json), "gpu_layers"));
+    }
+
+    #[test]
+    fn config_field_missing_or_null_returns_false_for_false_bool() {
+        let json = serde_json::json!({"flash_attention": false});
+        assert!(!config_field_missing_or_null(Some(&json), "flash_attention"));
+    }
+
+    #[test]
+    fn should_upgrade_flash_attention_when_no_raw_config() {
+        let config = ZipcodeConfig {
+            flash_attention: false,
+            ..ZipcodeConfig::default()
+        };
+        // No raw config → treat as missing → upgrade
+        assert!(should_upgrade_flash_attention(&config, None));
+    }
+
+    #[test]
+    fn should_upgrade_flash_attention_when_already_enabled() {
+        let config = ZipcodeConfig {
+            flash_attention: true,
+            ..ZipcodeConfig::default()
+        };
+        let raw = serde_json::json!({});
+        assert!(!should_upgrade_flash_attention(&config, Some(&raw)));
+    }
+
+    #[test]
+    fn should_upgrade_flash_attention_when_field_null() {
+        let config = ZipcodeConfig {
+            flash_attention: false,
+            ..ZipcodeConfig::default()
+        };
+        let raw = serde_json::json!({"flash_attention": null});
+        assert!(should_upgrade_flash_attention(&config, Some(&raw)));
+    }
+
+    #[test]
+    fn should_upgrade_flash_attention_when_explicit_false_without_gpu_layers() {
+        let config = ZipcodeConfig {
+            flash_attention: false,
+            ..ZipcodeConfig::default()
+        };
+        let raw = serde_json::json!({
+            "flash_attention": false,
+            "gpu_layers": null
+        });
+        // gpu_layers is null (missing from user's config) → upgrade
+        assert!(should_upgrade_flash_attention(&config, Some(&raw)));
+    }
+
+    #[test]
+    fn should_upgrade_flash_attention_when_explicit_false_with_gpu_layers_set() {
+        let config = ZipcodeConfig {
+            flash_attention: false,
+            ..ZipcodeConfig::default()
+        };
+        let raw = serde_json::json!({
+            "flash_attention": false,
+            "gpu_layers": 64
+        });
+        // gpu_layers is explicitly set by user → don't override their FA preference
+        assert!(!should_upgrade_flash_attention(&config, Some(&raw)));
+    }
+
+    #[test]
+    fn should_upgrade_flash_attention_when_explicit_true() {
+        let config = ZipcodeConfig {
+            flash_attention: false,
+            ..ZipcodeConfig::default()
+        };
+        let raw = serde_json::json!({"flash_attention": true});
+        // User explicitly set FA=true in JSON but config has false? Should not upgrade
+        // (config.flash_attention is already handled by the first check)
+        assert!(!should_upgrade_flash_attention(&config, Some(&raw)));
+    }
+
+    #[test]
+    fn missing_model_message_shows_misconfigured_issue_when_flag_set() {
+        let mut report = sample_report(ReadinessStatus::MissingModel);
+        report.model = None;
+        report.model_issue = Some("configured model path does not exist".to_string());
+        report.model_issue_is_misconfigured = true;
+
+        let msg = missing_model_message(&report);
+        assert_eq!(msg, "configured model path does not exist");
+    }
+
+    #[test]
+    fn missing_model_message_falls_through_to_search_paths() {
+        let mut report = sample_report(ReadinessStatus::MissingModel);
+        report.model = None;
+        report.model_issue = None;
+        report.model_issue_is_misconfigured = false;
+        report.model_search = vec![
+            PathBuf::from("/home/user/.zipcode/models"),
+            PathBuf::from("/project/models"),
+        ];
+
+        let msg = missing_model_message(&report);
+        assert!(msg.starts_with("No .gguf AI model found."));
+        assert!(msg.contains("/home/user/.zipcode/models"));
+        assert!(msg.contains("/project/models"));
+    }
+
+    #[test]
+    fn missing_model_message_with_empty_search_paths() {
+        let mut report = sample_report(ReadinessStatus::MissingModel);
+        report.model = None;
+        report.model_search = vec![];
+
+        let msg = missing_model_message(&report);
+        assert!(msg.starts_with("No .gguf AI model found."));
+    }
+
+    #[test]
+    fn resolve_path_from_cwd_keeps_absolute_paths() {
+        let path = Path::new("/absolute/path/model.gguf");
+        let cwd = Path::new("/some/cwd");
+        assert_eq!(
+            resolve_path_from_cwd(path, cwd),
+            PathBuf::from("/absolute/path/model.gguf")
+        );
+    }
+
+    #[test]
+    fn resolve_path_from_cwd_joins_relative_paths() {
+        let path = Path::new("relative/model.gguf");
+        let cwd = Path::new("/working/dir");
+        assert_eq!(
+            resolve_path_from_cwd(path, cwd),
+            PathBuf::from("/working/dir/relative/model.gguf")
+        );
+    }
+
+    #[test]
+    fn resolve_path_from_cwd_resolves_tilde() {
+        let path = Path::new("~/models/model.gguf");
+        let cwd = Path::new("/some/cwd");
+        let result = resolve_path_from_cwd(path, cwd);
+        // Tilde should be expanded and result should be absolute
+        assert!(result.is_absolute());
+        assert!(result.to_string_lossy().contains("models/model.gguf"));
+    }
+
+    #[test]
+    fn resolve_path_from_cwd_bare_filename() {
+        let path = Path::new("model.gguf");
+        let cwd = Path::new("/working/dir");
+        assert_eq!(
+            resolve_path_from_cwd(path, cwd),
+            PathBuf::from("/working/dir/model.gguf")
+        );
+    }
 }
