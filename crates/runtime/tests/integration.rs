@@ -893,3 +893,356 @@ fn max_tokens_finish_appends_truncation_notice() {
         "MaxTokens turn should not produce tool calls"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 15: mixed permissions across tool calls in a single turn
+//
+// In WorkspaceWrite mode, the model calls read_file (always allowed),
+// then bash (needs approval — approved by callback), then read_file again
+// (always allowed). All three should execute and session should have all
+// results.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mixed_permission_partial_flow() {
+    let dir = TempDir::new().unwrap();
+    let test_file = dir.path().join("data.txt");
+    std::fs::write(&test_file, "hello from file").unwrap();
+    let abs_path = test_file.to_str().unwrap().to_string();
+
+    // First call: read_file; Second call: bash; Third call: read_file; Fourth: text
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "read_file".to_string(),
+            args: serde_json::json!({ "path": abs_path.clone() }),
+        },
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "echo approved-bash" }),
+        },
+        MockResponse::ToolCall {
+            name: "read_file".to_string(),
+            args: serde_json::json!({ "path": abs_path }),
+        },
+        MockResponse::Text("All done.".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::WorkspaceWrite);
+    let mut cb = TestCallback::with_permission_response(true);
+
+    conv.run_turn("read and run", &mut cb).unwrap();
+
+    // bash needs approval, read_file doesn't
+    assert_eq!(
+        cb.permission_prompts.len(),
+        1,
+        "expected exactly 1 permission prompt (for bash), got {:?}",
+        cb.permission_prompts
+    );
+
+    // All 3 tool calls should have been dispatched
+    assert_eq!(
+        cb.tool_calls.len(),
+        3,
+        "expected 3 tool calls, got {}",
+        cb.tool_calls.len()
+    );
+    assert_eq!(cb.tool_calls[0].0, "read_file");
+    assert_eq!(cb.tool_calls[1].0, "bash");
+    assert_eq!(cb.tool_calls[2].0, "read_file");
+
+    // Final text response
+    assert!(cb.all_tokens().contains("All done."));
+
+    // Session should have: system + user + 3*(assistant+tool_result) + final assistant = 9
+    assert_eq!(
+        conv.session.messages.len(),
+        9,
+        "expected 9 messages in session, got {}: {:?}",
+        conv.session.messages.len(),
+        conv.session
+            .messages
+            .iter()
+            .map(|m| format!("{:?}", m.role))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: denied tool still saves session and model continues
+//
+// Model calls bash (needs approval in WorkspaceWrite), user denies it,
+// then model responds with text. Verify session is saved correctly with
+// the denial and final text.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn denied_tool_still_saves_session_and_continues() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "rm -rf /" }),
+        },
+        MockResponse::Text("I understand, I won't delete anything.".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::WorkspaceWrite);
+    let mut cb = TestCallback::with_permission_response(false); // deny
+
+    conv.run_turn("delete everything", &mut cb).unwrap();
+
+    // Permission prompt was issued and denied
+    assert_eq!(cb.permission_prompts.len(), 1);
+    assert!(cb.tool_calls.is_empty(), "denied tool should not execute");
+
+    // Session should have denial message
+    let has_denial = conv
+        .session
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Tool && m.content.contains("User denied permission"));
+    assert!(
+        has_denial,
+        "expected denial message in session, got: {:?}",
+        conv.session.messages
+    );
+
+    // Final text response should be in session
+    let has_final_text = conv
+        .session
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Model && m.content.contains("I won't delete"));
+    assert!(
+        has_final_text,
+        "expected final model text in session, got: {:?}",
+        conv.session
+            .messages
+            .iter()
+            .map(|m| format!("{:?}: {}", m.role, &m.content[..m.content.len().min(50)]))
+            .collect::<Vec<_>>()
+    );
+
+    // Session file should exist on disk
+    assert!(
+        conv.session.path().is_file(),
+        "expected session file to be saved"
+    );
+    std::fs::remove_file(conv.session.path()).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: tool error does not break session save
+//
+// Model calls bash with a command that will fail (non-zero exit), then
+// model responds with text. Verify session is saved with the tool error
+// in history and the final text response.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tool_error_does_not_break_session_save() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "exit 42" }),
+        },
+        MockResponse::Text("The command failed, but I'll handle it.".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    let mut cb = TestCallback::new();
+
+    conv.run_turn("run failing command", &mut cb).unwrap();
+
+    // Tool should have been executed (even though it failed)
+    assert_eq!(cb.tool_calls.len(), 1);
+    assert_eq!(cb.tool_calls[0].0, "bash");
+
+    // Tool result should contain error indicator
+    assert_eq!(cb.tool_results.len(), 1);
+    assert!(
+        cb.tool_results[0].1.contains("42"),
+        "expected exit code 42 in result, got: {}",
+        cb.tool_results[0].1
+    );
+
+    // Session should have the tool error in history
+    let has_tool_error = conv
+        .session
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Tool && m.content.contains("42"));
+    assert!(has_tool_error, "expected tool error in session history");
+
+    // Final text should be in session
+    let has_final = conv
+        .session
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Model && m.content.contains("handle it"));
+    assert!(has_final, "expected final model text in session");
+
+    // Session file should exist
+    assert!(
+        conv.session.path().is_file(),
+        "session file must be saved even after tool error"
+    );
+    std::fs::remove_file(conv.session.path()).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: empty text response saves correctly
+//
+// Model generates only a Done(Stop) event with no Token events, producing
+// an empty full_text. Verify session saves the empty assistant message
+// without crashing.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_text_response_saves_correctly() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![MockResponse::Events(vec![TokenEvent::Done(
+        FinishReason::Stop,
+    )])]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    let mut cb = TestCallback::new();
+
+    conv.run_turn("say nothing", &mut cb).unwrap();
+
+    // No tokens received by callback
+    assert!(
+        cb.all_tokens().is_empty(),
+        "expected no tokens, got: {:?}",
+        cb.tokens
+    );
+
+    // Session should have empty assistant message
+    let assistant_msgs: Vec<_> = conv
+        .session
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::Model)
+        .collect();
+    assert_eq!(
+        assistant_msgs.len(),
+        1,
+        "expected exactly 1 assistant message"
+    );
+    assert!(
+        assistant_msgs[0].content.is_empty(),
+        "expected empty assistant content, got: {:?}",
+        assistant_msgs[0].content
+    );
+    assert!(
+        assistant_msgs[0].tool_calls.is_none(),
+        "empty response should have no tool calls"
+    );
+
+    // Total: system + user + assistant = 3
+    assert_eq!(conv.session.messages.len(), 3);
+
+    // Session file should exist
+    assert!(
+        conv.session.path().is_file(),
+        "session file must be saved for empty response"
+    );
+    std::fs::remove_file(conv.session.path()).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: consecutive turns accumulate messages correctly
+//
+// Two consecutive run_turn calls on the same ConversationLoop.
+// First turn: text response. Second turn: tool call then text.
+// Verify system prompt is only added once and messages accumulate.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn consecutive_turns_accumulate_messages() {
+    let dir = TempDir::new().unwrap();
+    let test_file = dir.path().join("info.txt");
+    std::fs::write(&test_file, "important data").unwrap();
+    let abs_path = test_file.to_str().unwrap().to_string();
+
+    let mock = MockInferenceProvider::new(vec![
+        // Turn 1: plain text
+        MockResponse::Text("Hello! How can I help?".to_string()),
+        // Turn 2: tool call then text
+        MockResponse::ToolCall {
+            name: "read_file".to_string(),
+            args: serde_json::json!({ "path": abs_path }),
+        },
+        MockResponse::Text("I read the file.".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+    let mut cb1 = TestCallback::new();
+
+    // First turn
+    conv.run_turn("greet me", &mut cb1).unwrap();
+    assert!(cb1.all_tokens().contains("Hello!"));
+    assert!(cb1.errors.is_empty());
+
+    // After turn 1: system + user + assistant = 3
+    assert_eq!(
+        conv.session.messages.len(),
+        3,
+        "after turn 1, expected 3 messages, got {}",
+        conv.session.messages.len()
+    );
+
+    // System prompt should appear exactly once
+    let system_count = conv
+        .session
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::System)
+        .count();
+    assert_eq!(
+        system_count, 1,
+        "system prompt should appear exactly once after turn 1"
+    );
+
+    // Second turn with a fresh callback
+    let mut cb2 = TestCallback::new();
+    conv.run_turn("read the file", &mut cb2).unwrap();
+
+    // Tool call should have been executed
+    assert_eq!(cb2.tool_calls.len(), 1);
+    assert_eq!(cb2.tool_calls[0].0, "read_file");
+    assert!(cb2.all_tokens().contains("I read the file."));
+
+    // After turn 2:
+    // system + user1 + assistant1 + user2 + assistant_with_tool_calls + tool_result + assistant2 = 7
+    assert_eq!(
+        conv.session.messages.len(),
+        7,
+        "after turn 2, expected 7 messages, got {}: {:?}",
+        conv.session.messages.len(),
+        conv.session
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| format!("{}:{:?}", i, m.role))
+            .collect::<Vec<_>>()
+    );
+
+    // System prompt still appears exactly once
+    let system_count_after = conv
+        .session
+        .messages
+        .iter()
+        .filter(|m| m.role == Role::System)
+        .count();
+    assert_eq!(
+        system_count_after, 1,
+        "system prompt must not be duplicated across turns"
+    );
+    std::fs::remove_file(conv.session.path()).ok();
+}
