@@ -146,6 +146,18 @@ impl ZipcodeConfig {
         if project_path.exists() {
             let content = std::fs::read_to_string(&project_path)?;
             let project: serde_json::Value = serde_json::from_str(&content)?;
+            // Validate field types and warn on mismatches before reading values.
+            // This addresses the silent-ignore problem: a typo like
+            // {"permission_mode": 123} or {"gpu_layers": "many"} would previously
+            // be swallowed with no feedback.
+            warn_type_mismatch(&project, "permission_mode", "string");
+            warn_type_mismatch(&project, "model_dir", "string");
+            warn_type_mismatch(&project, "model_file", "string");
+            warn_type_mismatch(&project, "llama_server_bin", "string");
+            warn_type_mismatch(&project, "generation", "object");
+            warn_type_mismatch(&project, "gpu_layers", "number");
+            warn_type_mismatch(&project, "flash_attention", "boolean");
+
             if let Some(perm) = project["permission_mode"].as_str() {
                 config.permission_mode = perm.to_string();
             }
@@ -159,6 +171,9 @@ impl ZipcodeConfig {
                 config.llama_server_bin = Some(resolve_project_path(Path::new(bin), &project_root));
             }
             if let Some(gen) = project.get("generation") {
+                warn_type_mismatch(gen, "temperature", "number");
+                warn_type_mismatch(gen, "top_p", "number");
+                warn_type_mismatch(gen, "max_tokens", "number");
                 if let Some(t) = gen["temperature"].as_f64() {
                     config.generation.temperature = Some(t);
                 }
@@ -219,6 +234,39 @@ pub fn global_config_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".zipcode/config.json")
+}
+
+/// Return a human-readable name for the JSON value's type.
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// Warn if a field exists in `obj` but is not the expected JSON type.
+fn warn_type_mismatch(obj: &serde_json::Value, field: &str, expected: &str) {
+    if let Some(v) = obj.get(field) {
+        let matches = match expected {
+            "string" => v.is_string(),
+            "number" => v.is_number(),
+            "boolean" => v.is_boolean(),
+            "object" => v.is_object(),
+            _ => false,
+        };
+        if !matches {
+            tracing::warn!(
+                field,
+                expected_type = expected,
+                actual_type = json_type_name(v),
+                "project .zipcode.json field has wrong type — ignoring"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -575,5 +623,160 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_ok());
+    }
+
+    // ── warn_type_mismatch / json_type_name tests ────────────────────
+
+    #[test]
+    fn test_json_type_name_all_variants() {
+        assert_eq!(json_type_name(&serde_json::json!(null)), "null");
+        assert_eq!(json_type_name(&serde_json::json!(true)), "boolean");
+        assert_eq!(json_type_name(&serde_json::json!(42)), "number");
+        assert_eq!(json_type_name(&serde_json::json!("hello")), "string");
+        assert_eq!(json_type_name(&serde_json::json!([1, 2])), "array");
+        assert_eq!(json_type_name(&serde_json::json!({"a": 1})), "object");
+    }
+
+    #[test]
+    fn test_warn_type_mismatch_no_warning_for_correct_type() {
+        // string field with string value — no panic, no output to check
+        // (tracing capture would be needed for a deeper test, but we
+        // verify the function does not panic and handles the happy path)
+        let obj = serde_json::json!({"permission_mode": "read-only"});
+        warn_type_mismatch(&obj, "permission_mode", "string");
+    }
+
+    #[test]
+    fn test_warn_type_mismatch_no_warning_for_missing_field() {
+        // Field doesn't exist — function should do nothing
+        let obj = serde_json::json!({});
+        warn_type_mismatch(&obj, "nonexistent", "string");
+    }
+
+    #[test]
+    fn test_warn_type_mismatch_warns_on_wrong_type() {
+        // number instead of string — function logs a warning but doesn't panic
+        let obj = serde_json::json!({"permission_mode": 123});
+        warn_type_mismatch(&obj, "permission_mode", "string");
+        // We can't easily capture tracing output in unit tests without
+        // additional infrastructure, but we verify it doesn't panic.
+    }
+
+    #[test]
+    fn test_warn_type_mismatch_null_field_is_not_string() {
+        let obj = serde_json::json!({"permission_mode": null});
+        warn_type_mismatch(&obj, "permission_mode", "string");
+    }
+
+    // ── .zipcode.json wrong-type fields still load valid fields ───────
+
+    #[test]
+    fn test_load_permission_mode_as_number_uses_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"permission_mode": 123}"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        // Invalid type silently ignored → stays at default "workspace-write"
+        assert_eq!(config.permission_mode, "workspace-write");
+    }
+
+    #[test]
+    fn test_load_gpu_layers_as_string_uses_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"gpu_layers": "many"}"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(config.gpu_layers, None);
+    }
+
+    #[test]
+    fn test_load_flash_attention_as_number_uses_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"flash_attention": 1}"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert!(!config.flash_attention);
+    }
+
+    #[test]
+    fn test_load_model_dir_as_number_uses_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".zipcode.json"), r#"{"model_dir": 42}"#).unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        // model_dir should remain the default
+        assert!(config.model_dir.to_str().unwrap().contains(".zipcode"));
+    }
+
+    #[test]
+    fn test_load_mixed_valid_and_invalid_fields() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{
+                "permission_mode": "read-only",
+                "gpu_layers": "invalid",
+                "flash_attention": true,
+                "model_dir": 42,
+                "generation": "not an object",
+                "model_file": "my-model.gguf"
+            }"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        // Valid fields should be loaded
+        assert_eq!(config.permission_mode, "read-only");
+        assert!(config.flash_attention);
+        assert_eq!(config.model_file, Some("my-model.gguf".to_string()));
+        // Invalid fields should be silently ignored (default values kept)
+        assert_eq!(config.gpu_layers, None);
+        assert!(config.model_dir.to_str().unwrap().contains(".zipcode"));
+        assert_eq!(config.generation.temperature, None);
+    }
+
+    #[test]
+    fn test_load_generation_temperature_as_string_ignored() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"generation": {"temperature": "hot"}}"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(config.generation.temperature, None);
+    }
+
+    #[test]
+    fn test_load_generation_as_array_ignored() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"generation": [1, 2, 3]}"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(config.generation.temperature, None);
+        assert_eq!(config.generation.top_p, None);
+        assert_eq!(config.generation.max_tokens, None);
+    }
+
+    #[test]
+    fn test_load_llama_server_bin_as_number_uses_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.json"),
+            r#"{"llama_server_bin": 42}"#,
+        )
+        .unwrap();
+        let config = ZipcodeConfig::load(dir.path()).unwrap();
+        assert_eq!(config.llama_server_bin, None);
     }
 }
