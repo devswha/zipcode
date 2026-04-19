@@ -66,7 +66,7 @@ cli → runtime → inference
 
 - `ZIPCODE_LLAMA_SERVER_BIN` — Path to llama-server binary
 - `ZIPCODE_LLAMA_SERVER_ALIAS` — Model alias (default: "zipcode")
-- `ZIPCODE_LLAMA_SERVER_CTX` — Context window size (default: 8192)
+- `ZIPCODE_LLAMA_SERVER_CTX` — Context window size (default: 131072, i.e. Gemma 4 128K native)
 - `ZIPCODE_GPU_LAYERS` — Number of layers to offload to GPU (e.g., 99)
 - `ZIPCODE_FLASH_ATTENTION` — Enable flash attention ("1" or "true")
 

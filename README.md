@@ -429,7 +429,7 @@ Place in any project root. Contents are injected into the system prompt.
 | `ZIPCODE_LLAMA_SERVER_BIN` | Path to llama-server binary | auto-detect |
 | `ZIPCODE_LLAMA_SERVER_CMAKE_ARGS` | Extra cmake flags for `build_llama_server.sh` | none |
 | `ZIPCODE_LLAMA_SERVER_CUDA_ARCHITECTURES` | Override detected CUDA arch list (example: `75`) | auto-detect when possible |
-| `ZIPCODE_LLAMA_SERVER_CTX` | Context window size | 8192 |
+| `ZIPCODE_LLAMA_SERVER_CTX` | Context window size | 131072 (Gemma 4 128K native) |
 | `ZIPCODE_GPU_LAYERS` | GPU layers to offload (e.g., 99 for all) | none (CPU) |
 | `ZIPCODE_FLASH_ATTENTION` | Enable flash attention (`1` or `true`) | false |
 

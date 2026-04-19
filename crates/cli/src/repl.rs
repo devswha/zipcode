@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use zipcode_inference::{create_engine, Backend, GenerationConfig, ServerOptions};
+use zipcode_inference::{
+    create_engine, Backend, GenerationConfig, ServerOptions, DEFAULT_CONTEXT_SIZE,
+};
 use zipcode_runtime::config::{expand_user_path, find_project_root, resolve_project_path};
 use zipcode_runtime::prompt::build_system_prompt;
 use zipcode_runtime::{
@@ -597,7 +599,7 @@ pub(crate) fn server_options_from_config(config: &ZipcodeConfig) -> ServerOption
         context_size: std::env::var("ZIPCODE_LLAMA_SERVER_CTX")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(8192),
+            .unwrap_or(DEFAULT_CONTEXT_SIZE),
     }
 }
 

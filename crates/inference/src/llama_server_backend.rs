@@ -24,7 +24,7 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 /// context overflows during agentic loops where the model reads back
 /// files it just wrote. Users with tighter VRAM can override via
 /// `ZIPCODE_LLAMA_SERVER_CTX`.
-const DEFAULT_CONTEXT_SIZE: usize = 131_072;
+pub const DEFAULT_CONTEXT_SIZE: usize = 131_072;
 
 #[derive(Debug, Clone)]
 pub struct ServerOptions {

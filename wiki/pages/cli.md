@@ -114,7 +114,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 2. Load `ZipcodeConfig::load(cwd)` — see [config](config.md).
 3. Resolve model path (flag > project config > global config > scan `model_dir`).
 4. Detect Gemma 4 by filename pattern.
-5. Build `ServerOptions` from env vars + config (`ZIPCODE_GPU_LAYERS`, `ZIPCODE_FLASH_ATTENTION`, `DEFAULT_CONTEXT_SIZE = 8192`).
+5. Build `ServerOptions` from env vars + config (`ZIPCODE_GPU_LAYERS`, `ZIPCODE_FLASH_ATTENTION`, `DEFAULT_CONTEXT_SIZE = 131_072`).
 6. Call `create_engine(backend, model_path, tokenizer_path, config, server_options)` — returns `Box<dyn InferenceProvider>`.
 7. Build `ToolRegistry` with all 10 tools from `zipcode-tools`.
 8. Build system prompt via `prompt::build(...)` — see [conversation-loop › run_turn](conversation-loop.md#run_turn-flow) for how it's consumed.

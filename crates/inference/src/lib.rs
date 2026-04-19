@@ -20,7 +20,7 @@ pub use device::select_device;
 pub use engine::InferenceEngine;
 #[cfg(feature = "llama-cpp")]
 pub use llama_cpp_backend::LlamaCppProvider;
-pub use llama_server_backend::{LlamaServerProvider, ServerOptions};
+pub use llama_server_backend::{LlamaServerProvider, ServerOptions, DEFAULT_CONTEXT_SIZE};
 pub use mock::{MockInferenceProvider, MockResponse};
 pub use types::*;
 

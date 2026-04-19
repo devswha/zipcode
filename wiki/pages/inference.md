@@ -138,7 +138,7 @@ Dispatches on `Backend` enum, returns `Box<dyn InferenceProvider>`.
 Parameters (from `ServerOptions` struct):
 - `gpu_layers: Option<i32>` — `-ngl` for llama-server/llama-cpp
 - `flash_attention: bool` — `--flash-attn on`
-- `context_size: usize` — default 8192
+- `context_size: usize` — default 131_072 (Gemma 4 128K native)
 
 **INFERRED:** CLI reads env vars (`ZIPCODE_GPU_LAYERS`, `ZIPCODE_FLASH_ATTENTION`) before calling `create_engine()` — env takes precedence over config.
 
