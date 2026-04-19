@@ -132,6 +132,7 @@ fn build_test_loop_with_engine(
         system_prompt: "You are a test assistant.".to_string(),
         tool_specs,
         cwd: dir.path().to_path_buf(),
+        last_sent_idx: 0,
     }
 }
 
@@ -1244,5 +1245,150 @@ fn consecutive_turns_accumulate_messages() {
         system_count_after, 1,
         "system prompt must not be duplicated across turns"
     );
+    std::fs::remove_file(conv.session.path()).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: full history sent when provider does not manage context (default)
+//
+// Two consecutive run_turn calls with manages_own_context = false (default).
+// On the 2nd turn's generate_stream call, the captured messages slice must
+// include the system message AND the first user turn — i.e. the full
+// accumulated history.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn conversation_loop_sends_full_history_when_provider_does_not_manage_context() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::Text("First response.".to_string()),
+        MockResponse::Text("Second response.".to_string()),
+    ])
+    .with_manages_own_context(false); // explicit default
+
+    let captured = mock.captured_messages.clone();
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+
+    conv.run_turn("first user message", &mut TestCallback::new())
+        .unwrap();
+    conv.run_turn("second user message", &mut TestCallback::new())
+        .unwrap();
+
+    let calls = captured.lock().unwrap().clone();
+    // Two generate_stream calls (one per turn, no tool iterations)
+    assert_eq!(calls.len(), 2, "expected 2 generate_stream calls");
+
+    // On the 2nd call, full history must be present: system + user1 + assistant1 + user2 = 4
+    let second_call_msgs = &calls[1];
+    assert!(
+        second_call_msgs.len() >= 4,
+        "expected at least 4 messages on 2nd call (full history), got {}: {:?}",
+        second_call_msgs.len(),
+        second_call_msgs
+            .iter()
+            .map(|m| format!("{:?}", m.role))
+            .collect::<Vec<_>>()
+    );
+
+    // System message must be present
+    assert!(
+        second_call_msgs.iter().any(|m| m.role == Role::System),
+        "2nd call must include system message for non-managing provider"
+    );
+
+    // First user message must be present
+    assert!(
+        second_call_msgs
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("first user message")),
+        "2nd call must include first user turn for non-managing provider"
+    );
+
+    std::fs::remove_file(conv.session.path()).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Test 21: only new segment sent when provider manages its own context
+//
+// Two consecutive run_turn calls with manages_own_context = true.
+// On the 2nd turn's generate_stream call, the captured slice must contain
+// ONLY the second user message — the system prompt and first turn were
+// already sent on turn 1 and must not be re-sent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn conversation_loop_sends_only_new_segment_when_provider_manages_context() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::Text("First response.".to_string()),
+        MockResponse::Text("Second response.".to_string()),
+    ])
+    .with_manages_own_context(true);
+
+    let captured = mock.captured_messages.clone();
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::FullAccess);
+
+    conv.run_turn("first user message", &mut TestCallback::new())
+        .unwrap();
+    conv.run_turn("second user message", &mut TestCallback::new())
+        .unwrap();
+
+    let calls = captured.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2, "expected 2 generate_stream calls");
+
+    // Turn 1: provider gets system + user1 (everything from idx 0)
+    let first_call_msgs = &calls[0];
+    assert!(
+        first_call_msgs.iter().any(|m| m.role == Role::System),
+        "1st call must include system message"
+    );
+    assert!(
+        first_call_msgs
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("first user message")),
+        "1st call must include first user message"
+    );
+
+    // Turn 2: provider gets ONLY the new segment — the assistant reply from
+    // turn 1 plus the second user message (everything added since the last
+    // generate_stream call). System prompt and user1 must NOT be re-sent.
+    let second_call_msgs = &calls[1];
+    assert_eq!(
+        second_call_msgs.len(),
+        2,
+        "expected exactly 2 new messages on 2nd call (assistant1 + user2), got {}: {:?}",
+        second_call_msgs.len(),
+        second_call_msgs
+            .iter()
+            .map(|m| format!("{:?}: {}", m.role, &m.content))
+            .collect::<Vec<_>>()
+    );
+    // The last message in the slice must be the new user turn
+    let last = second_call_msgs.last().unwrap();
+    assert_eq!(last.role, Role::User);
+    assert!(
+        last.content.contains("second user message"),
+        "last message on 2nd call must be second user turn, got: {:?}",
+        last.content
+    );
+
+    // System message must NOT be re-sent
+    assert!(
+        !second_call_msgs.iter().any(|m| m.role == Role::System),
+        "system message must not be re-sent when provider manages context"
+    );
+
+    // First user message must NOT be re-sent
+    assert!(
+        !second_call_msgs
+            .iter()
+            .any(|m| m.content.contains("first user message")),
+        "first user turn must not be re-sent when provider manages context"
+    );
+
     std::fs::remove_file(conv.session.path()).ok();
 }

@@ -286,10 +286,20 @@ pub enum PermissionMode {
 }
 
 /// Context passed to every tool execution
+#[derive(Debug, Clone)]
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub permission: PermissionMode,
     pub session_id: String,
+    /// Parent session ID when running inside a sub-agent spawned from
+    /// another session. None at the top level.
+    pub parent_session_id: Option<String>,
+    /// Nesting depth of the owning conversation. 0 = top-level user
+    /// session, 1 = sub-agent; deeper nesting is reserved.
+    pub depth: u32,
+    /// Soft token budget for the owning conversation. None means no
+    /// explicit cap (inherit from parent or use provider default).
+    pub budget_tokens: Option<usize>,
 }
 
 /// Result from a tool execution
@@ -452,6 +462,9 @@ mod tests {
             cwd: std::path::PathBuf::from("/tmp"),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         }
     }
 

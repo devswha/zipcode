@@ -806,6 +806,7 @@ pub fn prepare_loop(
             system_prompt,
             tool_specs,
             cwd,
+            last_sent_idx: 0,
         },
         effective_backend,
         startup_notices,
@@ -1014,6 +1015,10 @@ pub(crate) fn clear_session(conv: &mut ConversationLoop) -> Result<String> {
     session.save()?;
     let session_id = session.id.clone();
     conv.session = session;
+    // Reset so a context-owning provider (e.g. llama-server) sees the
+    // fresh session from turn 1 instead of slicing past the old cursor
+    // into an empty Vec (which would panic on `messages[idx..]`).
+    conv.last_sent_idx = 0;
     Ok(format!(
         "Conversation cleared. New session started: {session_id}"
     ))
@@ -1022,6 +1027,13 @@ pub(crate) fn clear_session(conv: &mut ConversationLoop) -> Result<String> {
 pub(crate) fn compact_session(conv: &mut ConversationLoop) -> Result<CompactFeedback> {
     let result = conv.session.compact(CompactPolicy::default());
     if result.changed {
+        // Compaction rewrites `messages` in place and the vec shrinks.
+        // Clamp the cursor so the next slice never indexes past the end.
+        // Resetting to 0 also forces the provider to re-prime with the
+        // compacted history on the next turn, which is the correct
+        // behaviour because the provider-side KV may reference pruned
+        // messages that no longer exist locally.
+        conv.last_sent_idx = 0;
         conv.session.save()?;
         Ok(CompactFeedback::Compacted(format_compact_result(
             &conv.session,
@@ -1046,6 +1058,10 @@ pub(crate) fn load_session_into_loop(
     let message_count = loaded.messages.len();
     let path = loaded.path();
     conv.session = loaded;
+    // Restored session is new state for the current provider instance,
+    // so the provider has no cached prefix matching these messages.
+    // Send the full restored history on the next turn.
+    conv.last_sent_idx = 0;
     Ok(format!(
         "Loaded session {loaded_id} ({message_count} messages) from {}",
         path.display()

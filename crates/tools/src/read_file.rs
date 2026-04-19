@@ -157,6 +157,9 @@ mod tests {
             cwd: std::path::PathBuf::from("/tmp"),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         }
     }
 
@@ -269,6 +272,9 @@ mod tests {
             cwd: workspace.clone(),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         };
 
         let tool = ReadFileTool;

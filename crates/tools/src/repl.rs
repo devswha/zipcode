@@ -124,6 +124,9 @@ mod tests {
             cwd: std::env::temp_dir(),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         }
     }
 
@@ -188,6 +191,9 @@ mod tests {
             cwd: tmpdir.clone(),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         };
         let result = tool
             .execute(
@@ -227,6 +233,9 @@ mod tests {
             cwd: dir.path().to_path_buf(),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         };
 
         let result = tool

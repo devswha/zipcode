@@ -31,6 +31,17 @@ pub trait InferenceProvider: Send {
         messages: &[ChatMessage],
         tools: &[chat_template::ToolSpec],
     ) -> std::sync::mpsc::Receiver<TokenEvent>;
+
+    /// Returns true if this provider manages its own conversation context
+    /// (KV cache) on the server side and does not need the caller to pass
+    /// the full accumulated message history on every turn.
+    ///
+    /// Default: false. Callers that see true should send only the newest
+    /// turn (latest user message + new tool results), not the full history,
+    /// to avoid double-history accumulation.
+    fn manages_own_context(&self) -> bool {
+        false
+    }
 }
 
 /// Which inference backend to use.

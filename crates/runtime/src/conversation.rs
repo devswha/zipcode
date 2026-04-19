@@ -34,6 +34,11 @@ pub struct ConversationLoop {
     pub system_prompt: String,
     pub tool_specs: Vec<ToolSpec>,
     pub cwd: std::path::PathBuf,
+    /// Index into `session.messages` of the first message not yet sent to the
+    /// provider. Only meaningful when `engine.manages_own_context()` is true;
+    /// advances after each `generate_stream` call so subsequent calls send
+    /// only the new slice rather than the full accumulated history.
+    pub last_sent_idx: usize,
 }
 
 impl ConversationLoop {
@@ -61,10 +66,18 @@ impl ConversationLoop {
                 return Err(anyhow::anyhow!(message));
             }
             iterations += 1;
-            // Generate next response
+            // Generate next response — send only the messages the provider
+            // hasn't seen yet when it manages its own context, otherwise send
+            // the full history.
+            let msgs_for_provider: &[ChatMessage] = if self.engine.manages_own_context() {
+                &self.session.messages[self.last_sent_idx..]
+            } else {
+                &self.session.messages
+            };
             let rx = self
                 .engine
-                .generate_stream(&self.session.messages, &self.tool_specs);
+                .generate_stream(msgs_for_provider, &self.tool_specs);
+            self.last_sent_idx = self.session.messages.len();
 
             let mut full_text = String::new();
             let mut tool_calls = Vec::new();
@@ -196,6 +209,9 @@ impl ConversationLoop {
                     cwd: self.cwd.clone(),
                     permission: self.permission.mode(),
                     session_id: self.session.id.clone(),
+                    parent_session_id: None,
+                    depth: 0,
+                    budget_tokens: None,
                 };
 
                 let result = execute_tool(&self.tools, &call.name, call.arguments.clone(), &ctx);

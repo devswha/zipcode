@@ -44,6 +44,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         }
     }
 

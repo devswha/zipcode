@@ -104,6 +104,9 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         }
     }
 
@@ -152,6 +155,9 @@ mod tests {
             cwd: dir.path().to_path_buf(),
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         };
         let command = format!(
             "python3 -c 'import pathlib, time; time.sleep(1); pathlib.Path(r\"{}\").write_text(\"leaked\")' & sleep 60",

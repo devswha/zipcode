@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 
 use crate::chat_template::ToolSpec;
 use crate::types::{ChatMessage, FinishReason, InferenceError, TokenEvent, ToolCallParsed};
@@ -21,22 +21,45 @@ pub enum MockResponse {
 
 pub struct MockInferenceProvider {
     responses: VecDeque<MockResponse>,
+    manages_own_context_flag: bool,
+    pub captured_messages: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
 }
 
 impl MockInferenceProvider {
     pub fn new(responses: Vec<MockResponse>) -> Self {
         Self {
             responses: VecDeque::from(responses),
+            manages_own_context_flag: false,
+            captured_messages: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Set whether this mock reports that it manages its own context.
+    pub fn with_manages_own_context(mut self, v: bool) -> Self {
+        self.manages_own_context_flag = v;
+        self
+    }
+
+    /// Returns a clone of the message slices captured by each `generate_stream` call.
+    pub fn captured_messages(&self) -> Vec<Vec<ChatMessage>> {
+        self.captured_messages.lock().unwrap().clone()
     }
 }
 
 impl InferenceProvider for MockInferenceProvider {
+    fn manages_own_context(&self) -> bool {
+        self.manages_own_context_flag
+    }
+
     fn generate_stream(
         &mut self,
-        _messages: &[ChatMessage],
+        messages: &[ChatMessage],
         _tools: &[ToolSpec],
     ) -> mpsc::Receiver<TokenEvent> {
+        self.captured_messages
+            .lock()
+            .unwrap()
+            .push(messages.to_vec());
         let (tx, rx) = mpsc::channel();
 
         match self.responses.pop_front() {
@@ -214,6 +237,12 @@ mod tests {
             }
             other => panic!("expected ToolCall, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn mock_provider_does_not_manage_own_context() {
+        let provider = MockInferenceProvider::new(vec![]);
+        assert!(!provider.manages_own_context());
     }
 
     #[test]

@@ -80,6 +80,9 @@ mod tests {
             cwd: dir.path().to_path_buf(),
             permission: PermissionMode::ReadOnly,
             session_id: "test".to_string(),
+            parent_session_id: None,
+            depth: 0,
+            budget_tokens: None,
         }
     }
 

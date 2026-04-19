@@ -260,6 +260,15 @@ impl InferenceProvider for LlamaServerProvider {
     ) -> mpsc::Receiver<TokenEvent> {
         self.generate_stream(messages, tools)
     }
+
+    fn manages_own_context(&self) -> bool {
+        // llama-server retains conversation state via slot-save-path when
+        // `--slot-save-path` is configured, and more importantly, it keeps
+        // the KV cache across requests to the same slot. Combined with
+        // server-side Jinja chat-template rendering (`--jinja`), this
+        // provider does not need the caller to re-send full history.
+        true
+    }
 }
 
 fn resolve_llama_server_binary() -> Result<PathBuf> {
