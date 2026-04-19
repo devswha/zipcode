@@ -10,6 +10,35 @@ mod tui;
 mod tui_composer;
 mod width;
 
+/// CLI-validated permission mode.
+///
+/// Uses clap's `ValueEnum` to reject invalid values at parse time,
+/// consistent with `--backend` and `--ui`.  Internally converted to
+/// the kebab-case string that the rest of the codebase expects.
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum CliPermissionMode {
+    ReadOnly,
+    WorkspaceWrite,
+    FullAccess,
+}
+
+impl CliPermissionMode {
+    /// Return the kebab-case string accepted by `parse_permission_mode()`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::FullAccess => "full-access",
+        }
+    }
+}
+
+impl std::fmt::Display for CliPermissionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "zipcode", version, about = "Local AI coding assistant")]
 struct Cli {
@@ -19,7 +48,7 @@ struct Cli {
 
     /// Permission mode: read-only, workspace-write, full-access
     #[arg(long, value_name = "MODE", global = true)]
-    permission_mode: Option<String>,
+    permission_mode: Option<CliPermissionMode>,
 
     /// Inference backend override: llama-cpp, llama-server, or candle (auto-selects when omitted)
     #[arg(long, value_name = "BACKEND", global = true)]
@@ -105,7 +134,7 @@ fn main() -> Result<()> {
     render::set_verbose(cli.verbose || verbose_env);
 
     let model_path = cli.model.as_deref();
-    let permission_mode = cli.permission_mode.as_deref();
+    let permission_mode = cli.permission_mode.map(|m| m.as_str());
     let backend = cli.backend.as_deref();
     let session_id = cli.session.as_deref();
 
@@ -131,4 +160,106 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    // --- CliPermissionMode unit tests ---
+
+    #[test]
+    fn cli_permission_mode_as_str() {
+        assert_eq!(CliPermissionMode::ReadOnly.as_str(), "read-only");
+        assert_eq!(
+            CliPermissionMode::WorkspaceWrite.as_str(),
+            "workspace-write"
+        );
+        assert_eq!(CliPermissionMode::FullAccess.as_str(), "full-access");
+    }
+
+    #[test]
+    fn cli_permission_mode_display() {
+        assert_eq!(CliPermissionMode::ReadOnly.to_string(), "read-only");
+        assert_eq!(
+            CliPermissionMode::WorkspaceWrite.to_string(),
+            "workspace-write"
+        );
+        assert_eq!(CliPermissionMode::FullAccess.to_string(), "full-access");
+    }
+
+    #[test]
+    fn cli_permission_mode_all_variants_roundtrip() {
+        // Verify every ValueEnum variant maps to a string that parse_permission_mode accepts
+        let variants = [
+            CliPermissionMode::ReadOnly,
+            CliPermissionMode::WorkspaceWrite,
+            CliPermissionMode::FullAccess,
+        ];
+        for v in variants {
+            let s = v.as_str();
+            let parsed = zipcode_runtime::parse_permission_mode(s);
+            assert!(
+                parsed.is_ok(),
+                "parse_permission_mode({s:?}) should succeed"
+            );
+        }
+    }
+
+    // --- Clap parse-time rejection tests ---
+
+    fn extract_clap_error(result: Result<Cli, clap::Error>) -> clap::Error {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected clap error but parsing succeeded"),
+        }
+    }
+
+    #[test]
+    fn clap_rejects_invalid_permission_mode() {
+        let err = extract_clap_error(Cli::try_parse_from([
+            "zipcode",
+            "--permission-mode",
+            "invalid",
+        ]));
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn clap_rejects_typo_permission_mode() {
+        let err = extract_clap_error(Cli::try_parse_from([
+            "zipcode",
+            "--permission-mode",
+            "workspae-write",
+        ]));
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn clap_rejects_underscore_permission_mode() {
+        let err = extract_clap_error(Cli::try_parse_from([
+            "zipcode",
+            "--permission-mode",
+            "full_access",
+        ]));
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn clap_accepts_valid_permission_modes() {
+        for mode in &["read-only", "workspace-write", "full-access"] {
+            let result = Cli::try_parse_from(["zipcode", "--permission-mode", mode, "doctor"]);
+            assert!(result.is_ok(), "should accept {mode}");
+            let cli = result.unwrap();
+            let pm = cli.permission_mode.expect("should be set");
+            assert_eq!(pm.as_str(), *mode);
+        }
+    }
+
+    #[test]
+    fn clap_permission_mode_unset_by_default() {
+        let result = Cli::try_parse_from(["zipcode", "doctor"]).unwrap();
+        assert!(result.permission_mode.is_none());
+    }
 }
