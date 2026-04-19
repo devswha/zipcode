@@ -5,6 +5,10 @@ use serde_json::Value;
 
 use crate::{wait_with_output_timeout, Tool, ToolContext, ToolResult};
 
+/// Minimum allowed timeout in milliseconds. Values below this are clamped up.
+const BASH_MIN_TIMEOUT_MS: u64 = 100;
+/// Maximum allowed timeout in milliseconds. Values above this are clamped down.
+const BASH_MAX_TIMEOUT_MS: u64 = 300_000;
 const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 pub struct BashTool;
@@ -37,6 +41,14 @@ impl Tool for BashTool {
             .context("missing 'command' argument")?;
 
         let timeout_ms = args["timeout"].as_u64().unwrap_or(BASH_DEFAULT_TIMEOUT_MS);
+        let timeout_ms = timeout_ms.clamp(BASH_MIN_TIMEOUT_MS, BASH_MAX_TIMEOUT_MS);
+        if timeout_ms != args["timeout"].as_u64().unwrap_or(BASH_DEFAULT_TIMEOUT_MS) {
+            tracing::debug!(
+                requested = args["timeout"].as_u64().unwrap_or(BASH_DEFAULT_TIMEOUT_MS),
+                clamped = timeout_ms,
+                "bash timeout clamped to valid range [{BASH_MIN_TIMEOUT_MS}, {BASH_MAX_TIMEOUT_MS}]"
+            );
+        }
         let timeout = std::time::Duration::from_millis(timeout_ms);
 
         let child = Command::new("bash")
@@ -184,6 +196,51 @@ mod tests {
             result.content.len() >= 200_000,
             "expected captured stdout, got {} bytes",
             result.content.len()
+        );
+    }
+
+    #[test]
+    fn test_bash_timeout_clamped_to_minimum() {
+        let tool = BashTool;
+        let ctx = test_ctx();
+        // Request a 0ms timeout — should be clamped to BASH_MIN_TIMEOUT_MS (100ms)
+        // so the command actually gets a chance to run.
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "command": "echo clamped",
+                    "timeout": 0
+                }),
+                &ctx,
+            )
+            .unwrap();
+        assert!(
+            result.content.contains("clamped"),
+            "command should succeed with clamped timeout, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_bash_timeout_clamped_to_maximum() {
+        // u64::MAX would effectively disable the timeout — clamp to 300_000ms.
+        // We can't wait 300 seconds, so just verify the command runs normally
+        // when given an absurdly large timeout value.
+        let tool = BashTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "command": "echo huge_timeout",
+                    "timeout": u64::MAX
+                }),
+                &ctx,
+            )
+            .unwrap();
+        assert!(
+            result.content.contains("huge_timeout"),
+            "command should succeed even with absurdly large timeout, got: {}",
+            result.content
         );
     }
 }

@@ -374,7 +374,10 @@ fn health_check(host: &str, port: u16) -> HealthStatus {
     }
 
     let mut buf = Vec::new();
-    let _ = stream.read_to_end(&mut buf);
+    if let Err(e) = stream.read_to_end(&mut buf) {
+        tracing::debug!(error = %e, "health_check: failed to read response from llama-server");
+        return HealthStatus::Unreachable(format!("read failed: {e}"));
+    }
     let response = String::from_utf8_lossy(&buf);
 
     // Parse the JSON body (after the blank line separating headers from body)

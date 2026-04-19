@@ -39,9 +39,18 @@ pub fn build_system_prompt(
     // Load .zipcode.md if present
     let memory_path = project_root.join(".zipcode.md");
     if memory_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&memory_path) {
-            prompt.push_str("\n\n# Project Instructions\n");
-            prompt.push_str(&content);
+        match std::fs::read_to_string(&memory_path) {
+            Ok(content) => {
+                prompt.push_str("\n\n# Project Instructions\n");
+                prompt.push_str(&content);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %memory_path.display(),
+                    error = %e,
+                    ".zipcode.md exists but could not be read — project instructions will be missing from the system prompt"
+                );
+            }
         }
     }
 
@@ -208,5 +217,39 @@ mod tests {
             specs.is_empty(),
             "empty registry should produce zero tool specs"
         );
+    }
+
+    #[test]
+    fn test_unreadable_zipcode_md_does_not_panic() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let md_path = dir.path().join(".zipcode.md");
+
+        // Create a file and then make it unreadable.
+        // On Linux, removing read permission from a file we own still allows
+        // root to read it, so this test verifies that the code handles the
+        // error path gracefully rather than panicking.
+        std::fs::write(&md_path, "should not be read").unwrap();
+
+        // Make the file unreadable (best-effort; may not work if running as root)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&md_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        let registry = ToolRegistry::new();
+        // The function must not panic regardless of whether the file is readable
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write");
+
+        // On non-root Unix, the file is unreadable so content should NOT appear.
+        // On root or non-Unix, the content WILL appear. Either way, no panic.
+        let _ = prompt; // just verify we got here
+
+        // Restore permissions so tempfile cleanup works
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&md_path, std::fs::Permissions::from_mode(0o644));
+        }
     }
 }

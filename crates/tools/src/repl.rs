@@ -4,6 +4,10 @@ use crate::{wait_with_output_timeout, Tool, ToolContext, ToolResult};
 
 /// Default timeout for REPL execution: 30 seconds.
 const REPL_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+/// Minimum allowed timeout in milliseconds.
+const REPL_MIN_TIMEOUT_MS: u64 = 1_000;
+/// Maximum allowed timeout in milliseconds.
+const REPL_MAX_TIMEOUT_MS: u64 = 300_000;
 
 pub struct ReplTool;
 
@@ -42,6 +46,14 @@ impl Tool for ReplTool {
         let language = args["language"].as_str().unwrap_or("").to_string();
         let code = args["code"].as_str().unwrap_or("").to_string();
         let timeout_ms = args["timeout"].as_u64().unwrap_or(REPL_DEFAULT_TIMEOUT_MS);
+        let timeout_ms = timeout_ms.clamp(REPL_MIN_TIMEOUT_MS, REPL_MAX_TIMEOUT_MS);
+        if timeout_ms != args["timeout"].as_u64().unwrap_or(REPL_DEFAULT_TIMEOUT_MS) {
+            tracing::debug!(
+                requested = args["timeout"].as_u64().unwrap_or(REPL_DEFAULT_TIMEOUT_MS),
+                clamped = timeout_ms,
+                "repl timeout clamped to valid range [{REPL_MIN_TIMEOUT_MS}, {REPL_MAX_TIMEOUT_MS}]"
+            );
+        }
 
         let (program, flag) = match language.as_str() {
             "python" => ("python3", "-c"),
@@ -259,6 +271,47 @@ mod tests {
             result.content.len() >= 200_000,
             "expected captured stdout, got {} bytes",
             result.content.len()
+        );
+    }
+
+    #[test]
+    fn test_repl_timeout_clamped_to_minimum() {
+        let tool = ReplTool;
+        // 0ms timeout — should be clamped to REPL_MIN_TIMEOUT_MS (100ms)
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "language": "python",
+                    "code": "print('clamped_repl')",
+                    "timeout": 0
+                }),
+                &test_ctx(),
+            )
+            .unwrap();
+        assert!(
+            result.content.contains("clamped_repl"),
+            "repl should succeed with clamped timeout, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_repl_timeout_clamped_to_maximum() {
+        let tool = ReplTool;
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "language": "python",
+                    "code": "print('huge_repl_timeout')",
+                    "timeout": u64::MAX
+                }),
+                &test_ctx(),
+            )
+            .unwrap();
+        assert!(
+            result.content.contains("huge_repl_timeout"),
+            "repl should succeed even with absurdly large timeout, got: {}",
+            result.content
         );
     }
 }
