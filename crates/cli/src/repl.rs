@@ -1351,4 +1351,279 @@ mod tests {
         assert!(permission_prompt_allowed(true, 4, "yes\n"));
         assert!(!permission_prompt_allowed(true, 2, "n\n"));
     }
+
+    // ── is_gguf_path ──────────────────────────────────────────────
+
+    #[test]
+    fn gguf_path_accepts_gguf_extension() {
+        assert!(is_gguf_path(Path::new("model.gguf")));
+    }
+
+    #[test]
+    fn gguf_path_is_case_insensitive() {
+        assert!(is_gguf_path(Path::new("model.GGUF")));
+        assert!(is_gguf_path(Path::new("model.Gguf")));
+    }
+
+    #[test]
+    fn gguf_path_rejects_other_extensions() {
+        assert!(!is_gguf_path(Path::new("model.bin")));
+        assert!(!is_gguf_path(Path::new("model.safetensors")));
+    }
+
+    #[test]
+    fn gguf_path_rejects_no_extension() {
+        assert!(!is_gguf_path(Path::new("model")));
+        assert!(!is_gguf_path(Path::new("models/")));
+    }
+
+    #[test]
+    fn gguf_path_rejects_double_extension() {
+        assert!(!is_gguf_path(Path::new("model.gguf.bin")));
+    }
+
+    // ── is_probably_gemma4_model ──────────────────────────────────
+
+    #[test]
+    fn gemma4_detects_gemma_4_hyphen() {
+        assert!(is_probably_gemma4_model(Path::new(
+            "/models/gemma-4-e2b-it-q8_0.gguf"
+        )));
+    }
+
+    #[test]
+    fn gemma4_detects_gemma4_no_hyphen() {
+        assert!(is_probably_gemma4_model(Path::new(
+            "/models/gemma4-it-q8_0.gguf"
+        )));
+    }
+
+    #[test]
+    fn gemma4_is_case_insensitive() {
+        assert!(is_probably_gemma4_model(Path::new(
+            "/models/Gemma-4-it.gguf"
+        )));
+        assert!(is_probably_gemma4_model(Path::new("/models/GEMMA4.gguf")));
+    }
+
+    #[test]
+    fn gemma4_rejects_non_gemma() {
+        assert!(!is_probably_gemma4_model(Path::new(
+            "/models/codeqwen-7b.gguf"
+        )));
+        assert!(!is_probably_gemma4_model(Path::new("/models/llama-3.gguf")));
+    }
+
+    #[test]
+    fn gemma4_rejects_no_filename() {
+        assert!(!is_probably_gemma4_model(Path::new("/models/")));
+        assert!(!is_probably_gemma4_model(Path::new("/")));
+    }
+
+    // ── has_nonempty_parent ───────────────────────────────────────
+
+    #[test]
+    fn nonempty_parent_with_directory() {
+        assert!(has_nonempty_parent(Path::new("dir/file")));
+        assert!(has_nonempty_parent(Path::new("a/b/c")));
+    }
+
+    #[test]
+    fn nonempty_parent_without_directory() {
+        assert!(!has_nonempty_parent(Path::new("file.txt")));
+    }
+
+    #[test]
+    fn nonempty_parent_with_dot_slash() {
+        // "./file" has parent "." which is not empty
+        assert!(has_nonempty_parent(Path::new("./file")));
+    }
+
+    #[test]
+    fn nonempty_parent_with_empty_parent() {
+        // A bare filename at root has no parent
+        assert!(!has_nonempty_parent(Path::new("readme.md")));
+    }
+
+    // ── helper_devices_support_acceleration ────────────────────────
+
+    #[test]
+    fn acceleration_detects_cuda() {
+        assert!(helper_devices_support_acceleration("Found CUDA device 0"));
+    }
+
+    #[test]
+    fn acceleration_detects_metal_case_insensitive() {
+        assert!(helper_devices_support_acceleration("METAL GPU available"));
+    }
+
+    #[test]
+    fn acceleration_detects_vulkan() {
+        assert!(helper_devices_support_acceleration("vulkan renderer"));
+    }
+
+    #[test]
+    fn acceleration_detects_rocm() {
+        assert!(helper_devices_support_acceleration("ROCm device found"));
+    }
+
+    #[test]
+    fn acceleration_detects_gpu() {
+        assert!(helper_devices_support_acceleration("GPU: NVIDIA A100"));
+    }
+
+    #[test]
+    fn acceleration_rejects_cpu_only() {
+        assert!(!helper_devices_support_acceleration("cpu only mode"));
+    }
+
+    #[test]
+    fn acceleration_rejects_empty_string() {
+        assert!(!helper_devices_support_acceleration(""));
+    }
+
+    #[test]
+    fn acceleration_rejects_unrelated_text() {
+        assert!(!helper_devices_support_acceleration(
+            "memory: 16GB, disk: 512GB"
+        ));
+    }
+
+    // ── format_compact_result ─────────────────────────────────────
+
+    #[test]
+    fn compact_result_formats_all_fields() {
+        let session = Session::new();
+        let result = CompactResult {
+            changed: true,
+            before_messages: 20,
+            after_messages: 10,
+            pruned_messages: 10,
+            retained_messages: 10,
+        };
+        let text = format_compact_result(&session, result);
+        assert!(text.contains(&session.id));
+        assert!(text.contains("20 -> 10 messages"));
+        assert!(text.contains("pruned 10"));
+        assert!(text.contains("retained 10"));
+    }
+
+    #[test]
+    fn compact_result_with_zero_pruned() {
+        let session = Session::new();
+        let result = CompactResult {
+            changed: false,
+            before_messages: 5,
+            after_messages: 5,
+            pruned_messages: 0,
+            retained_messages: 5,
+        };
+        let text = format_compact_result(&session, result);
+        assert!(text.contains(&session.id));
+        assert!(text.contains("5 -> 5 messages"));
+        assert!(text.contains("pruned 0"));
+    }
+
+    // ── resolve_requested_backend ─────────────────────────────────
+
+    #[test]
+    fn requested_backend_none_returns_none() {
+        assert!(resolve_requested_backend(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn requested_backend_parses_llama_server() {
+        let backend = resolve_requested_backend(Some("llama-server")).unwrap();
+        assert!(matches!(backend, Some(Backend::LlamaServer)));
+    }
+
+    #[test]
+    fn requested_backend_parses_llama_cpp() {
+        let backend = resolve_requested_backend(Some("llama-cpp")).unwrap();
+        assert!(matches!(backend, Some(Backend::LlamaCpp)));
+    }
+
+    #[test]
+    fn requested_backend_parses_candle() {
+        let backend = resolve_requested_backend(Some("candle")).unwrap();
+        assert!(matches!(backend, Some(Backend::Candle)));
+    }
+
+    #[test]
+    fn requested_backend_rejects_invalid() {
+        let err = resolve_requested_backend(Some("invalid")).unwrap_err();
+        assert!(err.to_string().contains("unsupported backend"));
+    }
+
+    // ── server_options_from_config ────────────────────────────────
+
+    #[test]
+    fn server_options_defaults_match_config() {
+        let config = ZipcodeConfig::default();
+        let opts = server_options_from_config(&config);
+        // Default config has gpu_layers: None, flash_attention: false
+        assert_eq!(opts.gpu_layers, config.gpu_layers);
+        assert_eq!(opts.flash_attention, config.flash_attention);
+    }
+
+    #[test]
+    fn server_options_env_overrides_gpu_layers() {
+        let config = ZipcodeConfig {
+            gpu_layers: Some(10),
+            ..ZipcodeConfig::default()
+        };
+
+        // Set env override
+        std::env::set_var("ZIPCODE_GPU_LAYERS", "99");
+        let opts = server_options_from_config(&config);
+        std::env::remove_var("ZIPCODE_GPU_LAYERS");
+
+        assert_eq!(opts.gpu_layers, Some(99), "env var should override config");
+    }
+
+    #[test]
+    fn server_options_env_overrides_flash_attention() {
+        let config = ZipcodeConfig {
+            flash_attention: false,
+            ..ZipcodeConfig::default()
+        };
+
+        std::env::set_var("ZIPCODE_FLASH_ATTENTION", "1");
+        let opts = server_options_from_config(&config);
+        std::env::remove_var("ZIPCODE_FLASH_ATTENTION");
+
+        assert!(
+            opts.flash_attention,
+            "env var should override config flash_attention"
+        );
+    }
+
+    #[test]
+    fn server_options_env_overrides_context_size() {
+        let config = ZipcodeConfig::default();
+
+        std::env::set_var("ZIPCODE_LLAMA_SERVER_CTX", "16384");
+        let opts = server_options_from_config(&config);
+        std::env::remove_var("ZIPCODE_LLAMA_SERVER_CTX");
+
+        assert_eq!(opts.context_size, 16384);
+    }
+
+    #[test]
+    fn server_options_config_values_when_no_env() {
+        // Ensure no leftover env vars
+        std::env::remove_var("ZIPCODE_GPU_LAYERS");
+        std::env::remove_var("ZIPCODE_FLASH_ATTENTION");
+        std::env::remove_var("ZIPCODE_LLAMA_SERVER_CTX");
+
+        let config = ZipcodeConfig {
+            gpu_layers: Some(42),
+            flash_attention: true,
+            ..ZipcodeConfig::default()
+        };
+        let opts = server_options_from_config(&config);
+
+        assert_eq!(opts.gpu_layers, Some(42));
+        assert!(opts.flash_attention);
+    }
 }
