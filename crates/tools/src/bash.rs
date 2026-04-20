@@ -44,6 +44,10 @@ impl Tool for BashTool {
             .as_str()
             .context("missing 'command' argument")?;
 
+        if command.trim().is_empty() {
+            anyhow::bail!("command must not be empty");
+        }
+
         let timeout_ms = args["timeout"].as_u64().unwrap_or(BASH_DEFAULT_TIMEOUT_MS);
         let timeout_ms = timeout_ms.clamp(BASH_MIN_TIMEOUT_MS, BASH_MAX_TIMEOUT_MS);
         if timeout_ms != args["timeout"].as_u64().unwrap_or(BASH_DEFAULT_TIMEOUT_MS) {
@@ -282,6 +286,34 @@ mod tests {
         assert!(
             !required.contains(&"timeout"),
             "timeout should be optional (has default), got required: {required:?}"
+        );
+    }
+
+    #[test]
+    fn test_bash_empty_command_rejected() {
+        let tool = BashTool;
+        let ctx = test_ctx();
+        let args = serde_json::json!({"command": ""});
+        let result = tool.execute(args, &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must not be empty"),
+            "expected empty command error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_bash_whitespace_command_rejected() {
+        let tool = BashTool;
+        let ctx = test_ctx();
+        let args = serde_json::json!({"command": "   "});
+        let result = tool.execute(args, &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must not be empty"),
+            "expected whitespace command error, got: {err}"
         );
     }
 }

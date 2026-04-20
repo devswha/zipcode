@@ -43,8 +43,16 @@ impl Tool for ReplTool {
     }
 
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult> {
-        let language = args["language"].as_str().unwrap_or("").to_string();
-        let code = args["code"].as_str().unwrap_or("").to_string();
+        let language = args["language"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing required parameter: language"))?
+            .to_string();
+        let code = args["code"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing required parameter: code"))?
+            .to_string();
         let timeout_ms = args["timeout"].as_u64().unwrap_or(REPL_DEFAULT_TIMEOUT_MS);
         let timeout_ms = timeout_ms.clamp(REPL_MIN_TIMEOUT_MS, REPL_MAX_TIMEOUT_MS);
         if timeout_ms != args["timeout"].as_u64().unwrap_or(REPL_DEFAULT_TIMEOUT_MS) {
@@ -321,6 +329,60 @@ mod tests {
             result.content.contains("huge_repl_timeout"),
             "repl should succeed even with absurdly large timeout, got: {}",
             result.content
+        );
+    }
+
+    #[test]
+    fn test_repl_empty_language_rejected() {
+        let tool = ReplTool;
+        let result = tool.execute(
+            serde_json::json!({"language": "", "code": "print(1)"}),
+            &test_ctx(),
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing required parameter: language"),
+            "expected missing language error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_repl_empty_code_rejected() {
+        let tool = ReplTool;
+        let result = tool.execute(
+            serde_json::json!({"language": "python", "code": ""}),
+            &test_ctx(),
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing required parameter: code"),
+            "expected missing code error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_repl_missing_language_key_rejected() {
+        let tool = ReplTool;
+        let result = tool.execute(serde_json::json!({"code": "print(1)"}), &test_ctx());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing required parameter: language"),
+            "expected missing language error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_repl_missing_code_key_rejected() {
+        let tool = ReplTool;
+        let result = tool.execute(serde_json::json!({"language": "python"}), &test_ctx());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing required parameter: code"),
+            "expected missing code error, got: {err}"
         );
     }
 }
