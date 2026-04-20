@@ -29,7 +29,7 @@ The `zipcode-tools` crate. Home of the `Tool` + `ToolRegistry` god node.
 
 ## `Tool` trait
 
-**EXTRACTED** `crates/tools/src/lib.rs:328-333`
+**EXTRACTED** `crates/tools/src/lib.rs:367-373`
 
 ```rust
 pub trait Tool: Send + Sync {
@@ -42,7 +42,7 @@ pub trait Tool: Send + Sync {
 
 ### `ToolRegistry`
 
-**EXTRACTED** `lib.rs:336-369`
+**EXTRACTED** `lib.rs:375-408`
 
 ```rust
 pub struct ToolRegistry {
@@ -56,7 +56,7 @@ The registry is populated once by the CLI at REPL startup ([`crates/cli/src/repl
 
 ### `execute_tool()` — the single entry point
 
-**EXTRACTED** `lib.rs:380-390`
+**EXTRACTED** `lib.rs:419-429`
 
 ```rust
 pub fn execute_tool(
@@ -143,7 +143,7 @@ Algorithm:
 
 ## Output truncation
 
-**EXTRACTED** `lib.rs:377` → `MAX_TOOL_OUTPUT_BYTES = 8192` — applied in `execute_tool()` at `:380-390`.
+**EXTRACTED** `lib.rs:416` → `MAX_TOOL_OUTPUT_BYTES = 8192` — applied in `execute_tool()` at `:419-429`.
 
 **Why 8 KB?** Fits comfortably into Gemma's 8192-token default context without crowding the conversation. Overridable would require a config field (not present today).
 

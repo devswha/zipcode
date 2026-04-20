@@ -44,7 +44,7 @@ candle 0.8 has no `quantized_gemma`. `InferenceEngine` currently uses `quantized
 
 ## #3 — Tool output silently truncated at 8 KB
 
-**Location:** `crates/tools/src/lib.rs:377` + `:297-317`
+**Location:** `crates/tools/src/lib.rs:416` + `:297-317`
 
 `MAX_TOOL_OUTPUT_BYTES = 8192`. If a tool returns more, `ToolResult::truncate()` finds a safe UTF-8 boundary, trims, and appends `[truncated: showing first X bytes of Y]`. The model sees the note but has no way to request "show me the rest".
 
@@ -56,7 +56,7 @@ candle 0.8 has no `quantized_gemma`. `InferenceEngine` currently uses `quantized
 
 ## #4 — 25-iteration cap returns an error mid-turn
 
-**Location:** `crates/runtime/src/conversation.rs:43` (`MAX_TOOL_ITERATIONS`)
+**Location:** `crates/runtime/src/conversation.rs:54` (`MAX_TOOL_ITERATIONS`)
 
 When the model chains tools > 25 times in one turn, `run_turn()` returns `Err`. The session IS saved with all the partial messages, so the NEXT turn begins with a model that saw its own loop get killed — a confused-Claude effect.
 
@@ -134,7 +134,7 @@ Returns "not yet implemented". Included in the registry, listed in `tool_search`
 
 ## #11 — Permission state split across two crates
 
-**Location:** `crates/tools/src/lib.rs:262` + `crates/runtime/src/permission.rs:28`
+**Location:** `crates/tools/src/lib.rs:282` + `crates/runtime/src/permission.rs:28`
 
 Adding a permission tier requires editing both crates. Adding a new tool requires remembering to slot it into the permission matrix at `permission.rs:28`. Missing that step means the tool is silently denied in read-only mode.
 

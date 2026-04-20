@@ -6,7 +6,7 @@
 
 ## Hierarchy
 
-**EXTRACTED** `config.rs:95-137`
+**EXTRACTED** `config.rs:140-186`
 
 ```
 defaults (hardcoded)

@@ -6,7 +6,7 @@
 
 ## Storage layout
 
-**EXTRACTED** `session.rs:57-61`
+**EXTRACTED** `session.rs:38-42`
 
 ```
 ~/.zipcode/sessions/{uuid}.json

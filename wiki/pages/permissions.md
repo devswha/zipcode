@@ -4,7 +4,7 @@ Permission state is **split across two crates** — GOTCHA flagged in [`GRAPH_RE
 
 | Concept | Where | File |
 |---------|-------|------|
-| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:262` |
+| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:282` |
 | `PermissionPolicy` + `check()` | `zipcode-runtime` | `crates/runtime/src/permission.rs:28` |
 | CLI flag `--permission-mode` | `zipcode` (cli) | `crates/cli/src/main.rs` |
 | Config field `permission_mode` | `zipcode-runtime` | `crates/runtime/src/config.rs` (default: `workspace-write`) |
@@ -84,7 +84,7 @@ When `check()` returns `NeedsApproval(msg)`, [`ConversationLoop`](conversation-l
 
 ## Adding a new tier or tool
 
-1. **New tier:** add a variant to `PermissionMode` in `tools/lib.rs:262` **and** a match arm in `PermissionPolicy::check()` in `runtime/permission.rs:28`. Both crates must compile together.
+1. **New tier:** add a variant to `PermissionMode` in `tools/lib.rs:282` **and** a match arm in `PermissionPolicy::check()` in `runtime/permission.rs:28`. Both crates must compile together.
 2. **New tool into existing tier:** add its name to the appropriate allowlist/approval list in `permission.rs:28-49`. Also add a test in `permission.rs`.
 3. **CLI flag:** `--permission-mode` is parsed via `parse_permission_mode()` (`permission.rs:60-69`). Any new variant must round-trip through that function.
 
