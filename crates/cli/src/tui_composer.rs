@@ -406,4 +406,539 @@ mod tests {
         assert!(composer.try_escape_newline());
         assert_eq!(composer.text(), "hello\n");
     }
+
+    // ── New tests: backspace edge cases ────────────────────────────────
+
+    #[test]
+    fn backspace_at_beginning_is_noop() {
+        let mut composer = Composer::new();
+        assert_eq!(composer.cursor, 0);
+        composer.backspace();
+        assert_eq!(composer.text(), "");
+        assert_eq!(composer.cursor, 0, "cursor must stay at 0 on empty buffer");
+    }
+
+    #[test]
+    fn backspace_deletes_last_ascii_char() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.backspace();
+        assert_eq!(composer.text(), "ab");
+        assert_eq!(composer.cursor, 2);
+    }
+
+    #[test]
+    fn backspace_deletes_from_middle() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_left(); // cursor at 'c' boundary (index 2)
+        composer.backspace();
+        assert_eq!(composer.text(), "ac");
+        assert_eq!(
+            composer.cursor, 1,
+            "cursor should be at index 1 (after 'a')"
+        );
+    }
+
+    #[test]
+    fn backspace_deletes_multibyte_utf8_char() {
+        let mut composer = Composer::new();
+        for ch in "ab녕".chars() {
+            composer.insert_char(ch);
+        }
+        // '녕' is 3 bytes in UTF-8
+        composer.backspace();
+        assert_eq!(composer.text(), "ab");
+        assert_eq!(composer.cursor, 2);
+    }
+
+    #[test]
+    fn backspace_across_newline() {
+        let mut composer = Composer::new();
+        for ch in "ab\ncd".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_left();
+        composer.move_left();
+        // cursor is between \n and 'c'
+        composer.backspace();
+        assert_eq!(composer.text(), "abcd");
+    }
+
+    // ── New tests: delete_forward edge cases ───────────────────────────
+
+    #[test]
+    fn delete_forward_at_end_is_noop() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        assert_eq!(composer.cursor, 3);
+        composer.delete_forward();
+        assert_eq!(composer.text(), "abc");
+        assert_eq!(composer.cursor, 3);
+    }
+
+    #[test]
+    fn delete_forward_removes_char_after_cursor() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_left(); // cursor at index 2, before 'c'
+        composer.delete_forward();
+        assert_eq!(composer.text(), "ab");
+        assert_eq!(composer.cursor, 2);
+    }
+
+    #[test]
+    fn delete_forward_removes_multibyte_char() {
+        let mut composer = Composer::new();
+        for ch in "a한b".chars() {
+            composer.insert_char(ch);
+        }
+        // cursor at end (index 5: 1 + 3 + 1)
+        composer.move_left(); // before 'b'
+        composer.move_left(); // before '한'
+        composer.delete_forward();
+        assert_eq!(composer.text(), "ab");
+        assert_eq!(composer.cursor, 1);
+    }
+
+    #[test]
+    fn delete_forward_on_empty_buffer_is_noop() {
+        let mut composer = Composer::new();
+        composer.delete_forward();
+        assert_eq!(composer.text(), "");
+        assert_eq!(composer.cursor, 0);
+    }
+
+    // ── New tests: clear ───────────────────────────────────────────────
+
+    #[test]
+    fn clear_resets_buffer_cursor_and_history_index() {
+        let mut composer = Composer::new();
+        for ch in "hello".chars() {
+            composer.insert_char(ch);
+        }
+        let _ = composer.submit();
+        for ch in "world".chars() {
+            composer.insert_char(ch);
+        }
+        assert!(composer.history_previous());
+
+        composer.clear();
+        assert_eq!(composer.text(), "");
+        assert_eq!(composer.cursor, 0);
+        assert!(composer.is_empty());
+        // history should still be intact (clear doesn't wipe history)
+        assert!(composer.history_previous(), "history should survive clear");
+    }
+
+    // ── New tests: is_empty ────────────────────────────────────────────
+
+    #[test]
+    fn is_empty_on_new_composer() {
+        let composer = Composer::new();
+        assert!(composer.is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_after_insert() {
+        let mut composer = Composer::new();
+        composer.insert_char('x');
+        assert!(!composer.is_empty());
+    }
+
+    #[test]
+    fn is_empty_true_after_clear() {
+        let mut composer = Composer::new();
+        composer.insert_char('x');
+        composer.clear();
+        assert!(composer.is_empty());
+    }
+
+    #[test]
+    fn is_empty_false_after_insert_newline() {
+        let mut composer = Composer::new();
+        composer.insert_newline();
+        assert!(!composer.is_empty(), "newline is content, not empty");
+    }
+
+    // ── New tests: insert_newline ──────────────────────────────────────
+
+    #[test]
+    fn insert_newline_creates_multiline_buffer() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.insert_newline();
+        for ch in "def".chars() {
+            composer.insert_char(ch);
+        }
+        assert_eq!(composer.text(), "abc\ndef");
+        assert_eq!(composer.cursor, 7);
+    }
+
+    #[test]
+    fn insert_newline_at_beginning() {
+        let mut composer = Composer::new();
+        composer.insert_newline();
+        assert_eq!(composer.text(), "\n");
+        assert_eq!(composer.cursor, 1);
+    }
+
+    // ── New tests: move_left / move_right ──────────────────────────────
+
+    #[test]
+    fn move_left_on_empty_is_noop() {
+        let mut composer = Composer::new();
+        composer.move_left();
+        assert_eq!(composer.cursor, 0);
+    }
+
+    #[test]
+    fn move_left_decrements_by_char() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_left();
+        assert_eq!(composer.cursor, 2);
+        composer.move_left();
+        assert_eq!(composer.cursor, 1);
+        composer.move_left();
+        assert_eq!(composer.cursor, 0);
+        composer.move_left(); // noop at start
+        assert_eq!(composer.cursor, 0);
+    }
+
+    #[test]
+    fn move_left_across_multibyte() {
+        let mut composer = Composer::new();
+        for ch in "a한b".chars() {
+            composer.insert_char(ch);
+        }
+        // cursor at end = 5 (1 + 3 + 1)
+        composer.move_left(); // before 'b' = 4
+        assert_eq!(composer.cursor, 4);
+        composer.move_left(); // before '한' = 1
+        assert_eq!(composer.cursor, 1);
+    }
+
+    #[test]
+    fn move_right_on_empty_is_noop() {
+        let mut composer = Composer::new();
+        composer.move_right();
+        assert_eq!(composer.cursor, 0);
+    }
+
+    #[test]
+    fn move_right_at_end_is_noop() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_right();
+        assert_eq!(composer.cursor, 3, "cursor must stay at end");
+    }
+
+    #[test]
+    fn move_right_advances_by_char() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_home(); // cursor at 0
+        composer.move_right();
+        assert_eq!(composer.cursor, 1);
+        composer.move_right();
+        assert_eq!(composer.cursor, 2);
+    }
+
+    // ── New tests: move_home / move_end ────────────────────────────────
+
+    #[test]
+    fn move_home_on_single_line() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_home();
+        assert_eq!(composer.cursor, 0);
+    }
+
+    #[test]
+    fn move_end_on_single_line() {
+        let mut composer = Composer::new();
+        for ch in "abc".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_home();
+        composer.move_end();
+        assert_eq!(composer.cursor, 3);
+    }
+
+    #[test]
+    fn move_home_goes_to_current_line_start_multiline() {
+        let mut composer = Composer::new();
+        for ch in "abc\ndef".chars() {
+            composer.insert_char(ch);
+        }
+        // cursor at end of "def" = 7
+        composer.move_home();
+        assert_eq!(
+            composer.cursor, 4,
+            "cursor should be at start of second line (after \\n)"
+        );
+    }
+
+    #[test]
+    fn move_end_goes_to_current_line_end_multiline() {
+        let mut composer = Composer::new();
+        for ch in "abc\ndef".chars() {
+            composer.insert_char(ch);
+        }
+        // cursor at end = 7
+        composer.move_home(); // cursor at 4 (start of "def")
+        composer.move_end();
+        assert_eq!(composer.cursor, 7, "cursor should be at end of second line");
+    }
+
+    #[test]
+    fn move_home_on_first_line_of_multiline() {
+        let mut composer = Composer::new();
+        for ch in "abc\ndef".chars() {
+            composer.insert_char(ch);
+        }
+        // Move to first line
+        composer.move_home(); // at 4
+        assert!(composer.move_up()); // now on first line
+        composer.move_end(); // at 3 (end of "abc")
+        composer.move_home();
+        assert_eq!(composer.cursor, 0, "home on first line should be index 0");
+    }
+
+    // ── New tests: submit edge cases ───────────────────────────────────
+
+    #[test]
+    fn submit_clears_buffer_after_returning() {
+        let mut composer = Composer::new();
+        for ch in "test".chars() {
+            composer.insert_char(ch);
+        }
+        let result = composer.submit();
+        assert_eq!(result, "test");
+        assert_eq!(composer.text(), "");
+        assert_eq!(composer.cursor, 0);
+        assert!(composer.is_empty());
+    }
+
+    #[test]
+    fn submit_stores_non_empty_in_history() {
+        let mut composer = Composer::new();
+        for ch in "hello".chars() {
+            composer.insert_char(ch);
+        }
+        let _ = composer.submit();
+        assert!(composer.history_previous());
+        assert_eq!(composer.text(), "hello");
+    }
+
+    #[test]
+    fn submit_does_not_store_whitespace_only_in_history() {
+        let mut composer = Composer::new();
+        for ch in "   ".chars() {
+            composer.insert_char(ch);
+        }
+        let result = composer.submit();
+        assert_eq!(result, "   ");
+        assert!(
+            !composer.history_previous(),
+            "whitespace-only should not be stored"
+        );
+    }
+
+    #[test]
+    fn submit_does_not_store_empty_in_history() {
+        let mut composer = Composer::new();
+        let result = composer.submit();
+        assert_eq!(result, "");
+        assert!(
+            !composer.history_previous(),
+            "empty submit should not be stored"
+        );
+    }
+
+    // ── New tests: history_previous / history_next edge cases ──────────
+
+    #[test]
+    fn history_previous_on_empty_history_returns_false() {
+        let mut composer = Composer::new();
+        assert!(!composer.history_previous());
+    }
+
+    #[test]
+    fn history_next_without_previous_returns_false() {
+        let mut composer = Composer::new();
+        for ch in "test".chars() {
+            composer.insert_char(ch);
+        }
+        let _ = composer.submit();
+        assert!(
+            !composer.history_next(),
+            "history_next without history_previous should be false"
+        );
+    }
+
+    #[test]
+    fn history_next_at_end_clears_buffer() {
+        let mut composer = Composer::new();
+        for ch in "first".chars() {
+            composer.insert_char(ch);
+        }
+        let _ = composer.submit();
+        for ch in "second".chars() {
+            composer.insert_char(ch);
+        }
+        let _ = composer.submit();
+
+        // Go back to oldest
+        assert!(composer.history_previous()); // "second"
+        assert!(composer.history_previous()); // "first" (oldest)
+                                              // history_next past end should clear
+        assert!(composer.history_next()); // "second"
+        assert!(composer.history_next()); // past end → clear
+        assert_eq!(composer.text(), "");
+        assert!(composer.is_empty());
+    }
+
+    #[test]
+    fn history_previous_clamps_at_oldest_entry() {
+        let mut composer = Composer::new();
+        for ch in "first".chars() {
+            composer.insert_char(ch);
+        }
+        let _ = composer.submit();
+        for ch in "second".chars() {
+            composer.insert_char(ch);
+        }
+        let _ = composer.submit();
+
+        assert!(composer.history_previous()); // "second"
+        assert!(composer.history_previous()); // "first"
+        assert!(composer.history_previous()); // still "first" (clamped)
+        assert_eq!(composer.text(), "first");
+    }
+
+    // ── New tests: try_escape_newline edge cases ───────────────────────
+
+    #[test]
+    fn try_escape_newline_not_at_end_returns_false() {
+        let mut composer = Composer::new();
+        for ch in "a\\b".chars() {
+            composer.insert_char(ch);
+        }
+        composer.move_home();
+        // cursor at start, not at end
+        assert!(!composer.try_escape_newline());
+        assert_eq!(composer.text(), "a\\b");
+    }
+
+    #[test]
+    fn try_escape_newline_no_trailing_backslash_returns_false() {
+        let mut composer = Composer::new();
+        for ch in "hello".chars() {
+            composer.insert_char(ch);
+        }
+        assert!(!composer.try_escape_newline());
+        assert_eq!(composer.text(), "hello");
+    }
+
+    #[test]
+    fn try_escape_newline_on_empty_buffer_returns_false() {
+        let mut composer = Composer::new();
+        assert!(!composer.try_escape_newline());
+    }
+
+    #[test]
+    fn try_escape_newline_double_backslash_becomes_single_newline() {
+        let mut composer = Composer::new();
+        // "\\\\" in Rust source = two backslashes in the string
+        // The last one should be treated as the escape backslash
+        for ch in "\\\\".chars() {
+            composer.insert_char(ch);
+        }
+        assert!(composer.try_escape_newline());
+        // First backslash remains, trailing backslash replaced with \n
+        assert_eq!(composer.text(), "\\\n");
+    }
+
+    // ── New tests: wrapped_lines edge cases ────────────────────────────
+
+    #[test]
+    fn wrapped_lines_empty_buffer() {
+        let composer = Composer::new();
+        let lines = composer.wrapped_lines(10);
+        assert_eq!(lines, vec![""]);
+    }
+
+    #[test]
+    fn wrapped_lines_trailing_newline_produces_extra_empty_line() {
+        let mut composer = Composer::new();
+        for ch in "abc\n".chars() {
+            composer.insert_char(ch);
+        }
+        let lines = composer.wrapped_lines(10);
+        assert_eq!(lines, vec!["abc", ""]);
+    }
+
+    #[test]
+    fn wrapped_lines_consecutive_empty_lines() {
+        let mut composer = Composer::new();
+        for ch in "a\n\nb".chars() {
+            composer.insert_char(ch);
+        }
+        let lines = composer.wrapped_lines(10);
+        assert_eq!(lines, vec!["a", "", "b"]);
+    }
+
+    // ── New tests: cursor_visual_position edge cases ───────────────────
+
+    #[test]
+    fn cursor_visual_position_on_empty_buffer() {
+        let composer = Composer::new();
+        assert_eq!(composer.cursor_visual_position(10), (0, 0));
+    }
+
+    #[test]
+    fn cursor_visual_position_single_char() {
+        let mut composer = Composer::new();
+        composer.insert_char('x');
+        assert_eq!(composer.cursor_visual_position(10), (0, 1));
+    }
+
+    #[test]
+    fn cursor_visual_position_wraps_at_width() {
+        let mut composer = Composer::new();
+        for ch in "abcdef".chars() {
+            composer.insert_char(ch);
+        }
+        // 6 chars at width 4 → row 0: "abcd", row 1: "ef" → cursor at (1, 2)
+        assert_eq!(composer.cursor_visual_position(4), (1, 2));
+    }
+
+    #[test]
+    fn cursor_visual_position_single_char_at_zero_width() {
+        let mut composer = Composer::new();
+        composer.insert_char('a');
+        // width is clamped to max(1, 0) = 1. 'a' fills exactly 1 column,
+        // so col >= width triggers a wrap: result is (1, 0).
+        assert_eq!(composer.cursor_visual_position(0), (1, 0));
+    }
 }
