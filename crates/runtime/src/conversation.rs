@@ -236,17 +236,151 @@ impl ConversationLoop {
 /// Walk backwards through recent messages looking for tool results that
 /// contain error indicators. Stops at the first user or system message
 /// so we only consider tool output from the current agentic cycle.
+/// Returns true if `text` looks like it contains a *genuine* error indicator
+/// rather than a benign mention (e.g. "no errors found", "0 errors").
+fn content_contains_error(text: &str) -> bool {
+    // "FAILED" and "panicked" are strong signals — keep them as-is.
+    if text.contains("FAILED") || text.contains("panicked") {
+        return true;
+    }
+
+    // Check "error" / "Error" word by word, skipping benign contexts.
+    for line in text.lines() {
+        let line_lower = line.to_ascii_lowercase();
+        let line_trimmed = line.trim();
+
+        // "error:" at the start of a line is a strong signal (common in
+        // compilers and test runners).  But "error: 0" or similar zero-count
+        // patterns are benign.
+        if line_trimmed.starts_with("error:") || line_trimmed.starts_with("Error:") {
+            // Check for zero-count after the prefix — e.g. "error: 0 issues"
+            let after = &line_trimmed[6..]; // skip "error:" / "Error:"
+            if after.trim().starts_with('0') {
+                continue; // benign: "error: 0 ..."
+            }
+            return true;
+        }
+
+        // Scan for the word "error" / "errors" anywhere in the line.
+        // We look for word boundaries to avoid matching inside other words.
+        if contains_error_word(&line_lower) && !is_benign_error_line(&line_lower) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns true if the lowered line contains the word "error" or "errors"
+/// as a standalone token (word boundary check).
+fn contains_error_word(line_lower: &str) -> bool {
+    // Simple word-boundary scan: look for "error" preceded/followed by a
+    // non-alphanumeric character (or at string boundaries).
+    let bytes = line_lower.as_bytes();
+    let pattern = b"error";
+    let pat_len = pattern.len();
+
+    for i in 0..=bytes.len().saturating_sub(pat_len) {
+        if &bytes[i..i + pat_len] == pattern {
+            // Check preceding character
+            let prev_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+            // Check following character — allow 's' (errors) but nothing else
+            let after_end = i + pat_len;
+            let next_ok = if after_end >= bytes.len() {
+                true
+            } else {
+                let next = bytes[after_end];
+                next == b's' // "errors"
+                    || !next.is_ascii_alphanumeric()
+            };
+            if prev_ok && next_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns true if the lowered line contains the word "fix" as a standalone
+/// token (word boundary check). Prevents false benign matches on "prefix",
+/// "suffix", "affix", "fixture", etc.
+fn contains_fix_word(line_lower: &str) -> bool {
+    let bytes = line_lower.as_bytes();
+    let pattern = b"fix";
+    let pat_len = pattern.len();
+
+    for i in 0..=bytes.len().saturating_sub(pat_len) {
+        if &bytes[i..i + pat_len] == pattern {
+            let prev_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+            let after_end = i + pat_len;
+            let next_ok = if after_end >= bytes.len() {
+                true
+            } else {
+                !bytes[after_end].is_ascii_alphanumeric()
+            };
+            if prev_ok && next_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Benign patterns that mention "error" but do NOT indicate a failure.
+fn is_benign_error_line(line_lower: &str) -> bool {
+    // Order matters: check more specific patterns first.
+
+    // "no error", "no errors"
+    if line_lower.contains("no error") || line_lower.contains("no errors") {
+        return true;
+    }
+    // "0 error", "0 errors"
+    if line_lower.contains("0 error") || line_lower.contains("0 errors") {
+        return true;
+    }
+    // "without error", "without errors"
+    if line_lower.contains("without error") || line_lower.contains("without errors") {
+        return true;
+    }
+    // "fixed ... error", "fix ... error" (resolved errors)
+    if line_lower.contains("fixed") && line_lower.contains("error") {
+        return true;
+    }
+    // Use word-boundary matching for "fix" to avoid false matches with
+    // "prefix", "suffix", "affix", "fixture", etc. where "fix" is a
+    // substring of an unrelated word rather than the verb "to fix".
+    if contains_fix_word(line_lower) && line_lower.contains("error") {
+        return true;
+    }
+    // "error handling" (discussing error handling, not reporting one)
+    if line_lower.contains("error handling") {
+        return true;
+    }
+    // "error recovery"
+    if line_lower.contains("error recovery") {
+        return true;
+    }
+    // "resolved ... error", "error ... resolved"
+    if line_lower.contains("resolved") && line_lower.contains("error") {
+        return true;
+    }
+    // "cleared ... error", "error ... cleared"
+    if line_lower.contains("cleared") && line_lower.contains("error") {
+        return true;
+    }
+    // "successfully ... error" (e.g. "successfully fixed the error")
+    if line_lower.contains("successfully") && line_lower.contains("error") {
+        return true;
+    }
+
+    false
+}
+
 fn recent_tool_results_contain_errors(messages: &[ChatMessage]) -> bool {
     for msg in messages.iter().rev() {
         match msg.role {
             Role::Model => continue,
             Role::Tool => {
-                let c = &msg.content;
-                if c.contains("error")
-                    || c.contains("Error")
-                    || c.contains("FAILED")
-                    || c.contains("panicked")
-                {
+                if content_contains_error(&msg.content) {
                     return true;
                 }
             }
@@ -340,5 +474,183 @@ mod tests {
         // The most recent tool result is clean, so the function should
         // continue scanning past the model message and find the error in c1.
         assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    // ── False-positive edge cases (should NOT trigger auto-retry) ──────
+
+    #[test]
+    fn false_positive_no_errors_found() {
+        let messages = vec![
+            ChatMessage::user("run tests"),
+            ChatMessage::tool_result("c1", "no errors found"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn false_positive_zero_errors_zero_warnings() {
+        let messages = vec![
+            ChatMessage::user("run linter"),
+            ChatMessage::tool_result("c1", "0 errors, 0 warnings"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn false_positive_ran_without_error() {
+        let messages = vec![
+            ChatMessage::user("run tests"),
+            ChatMessage::tool_result("c1", "Ran without error"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn false_positive_error_handling_improved() {
+        let messages = vec![
+            ChatMessage::user("refactor"),
+            ChatMessage::tool_result("c1", "error handling improved"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn false_positive_successfully_fixed_the_error() {
+        let messages = vec![
+            ChatMessage::user("fix the bug"),
+            ChatMessage::tool_result("c1", "Successfully fixed the error in main.rs"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn false_positive_error_prefix_zero_count() {
+        let messages = vec![
+            ChatMessage::user("run lint"),
+            ChatMessage::tool_result("c1", "error: 0 issues detected"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn false_positive_error_recovery_message() {
+        let messages = vec![
+            ChatMessage::user("deploy"),
+            ChatMessage::tool_result("c1", "error recovery completed successfully"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn false_positive_no_errors_plural() {
+        let messages = vec![
+            ChatMessage::user("run check"),
+            ChatMessage::tool_result("c1", "Checking module... no errors, all clear"),
+        ];
+        assert!(!recent_tool_results_contain_errors(&messages));
+    }
+
+    // ── True-positive edge cases (SHOULD still trigger auto-retry) ─────
+
+    #[test]
+    fn true_positive_compilation_error() {
+        let messages = vec![
+            ChatMessage::user("build"),
+            ChatMessage::tool_result("c1", "compilation error: expected `;`"),
+        ];
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn true_positive_error_prefix_with_nonzero_count() {
+        let messages = vec![
+            ChatMessage::user("run lint"),
+            ChatMessage::tool_result("c1", "error: 3 issues detected"),
+        ];
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn true_positive_error_mid_sentence() {
+        let messages = vec![
+            ChatMessage::user("build"),
+            ChatMessage::tool_result("c1", "the build returned an error: linking failed"),
+        ];
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    #[test]
+    fn true_positive_one_error() {
+        let messages = vec![
+            ChatMessage::user("run tests"),
+            ChatMessage::tool_result("c1", "1 error found in test suite"),
+        ];
+        assert!(recent_tool_results_contain_errors(&messages));
+    }
+
+    // ── Regression: "fix" substring in "prefix"/"suffix" must not mask errors ──
+
+    #[test]
+    fn prefix_error_is_detected_as_real_error() {
+        // "prefix" contains "fix" as substring — the old contains("fix")
+        // heuristic would incorrectly treat this as benign.
+        let messages = vec![
+            ChatMessage::user("compile"),
+            ChatMessage::tool_result("c1", "prefix error in compilation"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'prefix error' should be detected as a real error, not benign"
+        );
+    }
+
+    #[test]
+    fn suffix_error_is_detected_as_real_error() {
+        let messages = vec![
+            ChatMessage::user("compile"),
+            ChatMessage::tool_result("c1", "suffix error: unexpected token"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'suffix error' should be detected as a real error, not benign"
+        );
+    }
+
+    #[test]
+    fn affix_error_is_detected_as_real_error() {
+        let messages = vec![
+            ChatMessage::user("parse"),
+            ChatMessage::tool_result("c1", "affix error: invalid format"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'affix error' should be detected as a real error, not benign"
+        );
+    }
+
+    #[test]
+    fn fix_the_error_is_still_benign() {
+        // "fix" as a standalone word + "error" → benign (intention to fix)
+        let messages = vec![
+            ChatMessage::user("refactor"),
+            ChatMessage::tool_result("c1", "I will fix the error in main.rs"),
+        ];
+        assert!(
+            !recent_tool_results_contain_errors(&messages),
+            "'fix the error' should still be benign"
+        );
+    }
+
+    #[test]
+    fn fixture_error_is_detected_as_real_error() {
+        // "fixture" contains "fix" as substring — must not mask real errors.
+        let messages = vec![
+            ChatMessage::user("run tests"),
+            ChatMessage::tool_result("c1", "fixture error: test setup failed"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'fixture error' should be detected as a real error, not benign"
+        );
     }
 }
