@@ -41,7 +41,15 @@ impl Tool for ToolSearchTool {
     }
 
     fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        let query = args["query"].as_str().unwrap_or("").to_lowercase();
+        let query = args["query"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing required parameter: query"))?;
+
+        if query.trim().is_empty() {
+            anyhow::bail!("query must not be empty — provide a keyword to search for");
+        }
+
+        let query = query.trim().to_lowercase();
 
         let matches: Vec<String> = self
             .specs
@@ -134,5 +142,53 @@ mod tests {
             .execute(serde_json::json!({ "query": "nonexistent_xyz" }), &ctx())
             .unwrap();
         assert!(result.content.contains("No tools found"));
+    }
+
+    #[test]
+    fn test_search_empty_query_rejected() {
+        let tool = make_tool();
+        let err = tool
+            .execute(serde_json::json!({ "query": "" }), &ctx())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("empty"),
+            "empty query should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_search_whitespace_only_query_rejected() {
+        let tool = make_tool();
+        let err = tool
+            .execute(serde_json::json!({ "query": "   " }), &ctx())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("empty"),
+            "whitespace-only query should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_search_missing_query_parameter_rejected() {
+        let tool = make_tool();
+        let err = tool
+            .execute(serde_json::json!({}), &ctx())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("missing required parameter"),
+            "missing query param should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_search_trimmed_query_works() {
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "query": "  bash  " }), &ctx())
+            .unwrap();
+        assert!(result.content.contains("- bash:"));
     }
 }

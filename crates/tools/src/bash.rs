@@ -29,6 +29,10 @@ impl Tool for BashTool {
                 "command": {
                     "type": "string",
                     "description": "The shell command to execute"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in milliseconds (default: 120000, min: 100, max: 300000)"
                 }
             },
             "required": ["command"]
@@ -247,6 +251,37 @@ mod tests {
             result.content.contains("huge_timeout"),
             "command should succeed even with absurdly large timeout, got: {}",
             result.content
+        );
+    }
+
+    #[test]
+    fn test_bash_schema_includes_timeout_parameter() {
+        let tool = BashTool;
+        let schema = tool.parameters_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(
+            props.contains_key("timeout"),
+            "bash schema should include 'timeout' property, got: {props:?}"
+        );
+        let timeout_schema = &props["timeout"];
+        assert_eq!(timeout_schema["type"], "integer");
+        assert!(
+            timeout_schema["description"]
+                .as_str()
+                .unwrap()
+                .contains("Timeout"),
+            "timeout description should mention 'Timeout', got: {timeout_schema:?}"
+        );
+        // timeout should NOT be required — it has a default
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(
+            !required.contains(&"timeout"),
+            "timeout should be optional (has default), got required: {required:?}"
         );
     }
 }
