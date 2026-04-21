@@ -42,7 +42,10 @@ impl MockInferenceProvider {
 
     /// Returns a clone of the message slices captured by each `generate_stream` call.
     pub fn captured_messages(&self) -> Vec<Vec<ChatMessage>> {
-        self.captured_messages.lock().unwrap().clone()
+        self.captured_messages
+            .lock()
+            .expect("mock captured_messages mutex should never be poisoned")
+            .clone()
     }
 }
 
@@ -58,7 +61,7 @@ impl InferenceProvider for MockInferenceProvider {
     ) -> mpsc::Receiver<TokenEvent> {
         self.captured_messages
             .lock()
-            .unwrap()
+            .expect("mock captured_messages mutex should never be poisoned")
             .push(messages.to_vec());
         let (tx, rx) = mpsc::channel();
 
@@ -264,5 +267,68 @@ mod tests {
         let rx = mock.generate_stream(&messages, &tools);
         let events = collect_events(rx);
         assert!(matches!(&events[0], TokenEvent::Token(t) if t == "ok"));
+    }
+
+    #[test]
+    fn test_captured_messages_records_all_calls() {
+        let mut mock = MockInferenceProvider::new(vec![
+            MockResponse::Text("first".to_string()),
+            MockResponse::Text("second".to_string()),
+        ]);
+
+        let msgs1 = vec![ChatMessage::user("hello")];
+        let msgs2 = vec![
+            ChatMessage::user("world"),
+            ChatMessage::assistant("response"),
+        ];
+
+        let _ = mock.generate_stream(&msgs1, &[]);
+        let _ = mock.generate_stream(&msgs2, &[]);
+
+        let captured = mock.captured_messages();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].len(), 1);
+        assert_eq!(captured[0][0].content, "hello");
+        assert_eq!(captured[1].len(), 2);
+        assert_eq!(captured[1][0].content, "world");
+        assert_eq!(captured[1][1].content, "response");
+    }
+
+    #[test]
+    fn test_with_manages_own_context_true() {
+        let provider = MockInferenceProvider::new(vec![]).with_manages_own_context(true);
+        assert!(provider.manages_own_context());
+    }
+
+    #[test]
+    fn test_mock_multiple_tool_calls_sequential() {
+        let mut mock = MockInferenceProvider::new(vec![
+            MockResponse::ToolCall {
+                name: "bash".to_string(),
+                args: serde_json::json!({"command": "ls"}),
+            },
+            MockResponse::ToolCall {
+                name: "read_file".to_string(),
+                args: serde_json::json!({"path": "foo.rs"}),
+            },
+        ]);
+
+        let rx1 = mock.generate_stream(&[], &[]);
+        let events1 = collect_events(rx1);
+        match &events1[0] {
+            TokenEvent::ToolCall(call) => {
+                assert_eq!(call.name, "bash");
+            }
+            other => panic!("expected ToolCall, got {:?}", other),
+        }
+
+        let rx2 = mock.generate_stream(&[], &[]);
+        let events2 = collect_events(rx2);
+        match &events2[0] {
+            TokenEvent::ToolCall(call) => {
+                assert_eq!(call.name, "read_file");
+            }
+            other => panic!("expected ToolCall, got {:?}", other),
+        }
     }
 }

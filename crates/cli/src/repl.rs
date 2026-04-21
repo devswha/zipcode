@@ -941,7 +941,12 @@ pub fn run_interactive(
                             SlashCommand::SessionShow => print_session_status(&conv),
                             SlashCommand::SessionLoad => match load_session_into_loop(
                                 &mut conv,
-                                argument.as_deref().expect("session id must exist"),
+                                argument.as_deref().unwrap_or_else(|| {
+                                    eprintln!(
+                                        "\\x1b[33m/session load requires a session id\\x1b[0m"
+                                    );
+                                    ""
+                                }),
                             ) {
                                 Ok(message) => println!("{message}"),
                                 Err(error) => println!("{error:#}"),

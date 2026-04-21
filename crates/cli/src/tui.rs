@@ -518,8 +518,8 @@ impl FullscreenUi {
                 }
                 self.status = "Session details shown".to_string();
             }
-            SlashCommand::SessionLoad => {
-                match load_session_into_loop(conv, argument.expect("session load requires an id")) {
+            SlashCommand::SessionLoad => match argument {
+                Some(id) => match load_session_into_loop(conv, id) {
                     Ok(message) => {
                         self.set_transcript_from_session(&conv.session);
                         self.push_entry(EntryKind::Info, message);
@@ -527,11 +527,18 @@ impl FullscreenUi {
                         self.status = "Session loaded".to_string();
                     }
                     Err(error) => {
-                        self.push_entry(EntryKind::Error, error.to_string());
+                        self.push_entry(EntryKind::Error, format!("{error:#}"));
                         self.status = "Session load failed".to_string();
                     }
+                },
+                None => {
+                    self.push_entry(
+                        EntryKind::Error,
+                        "/session load requires a session id".to_string(),
+                    );
+                    self.status = "Missing session id".to_string();
                 }
-            }
+            },
             SlashCommand::Compact => match compact_session(conv) {
                 Ok(feedback) => {
                     self.set_transcript_from_session(&conv.session);
