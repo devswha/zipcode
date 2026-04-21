@@ -65,7 +65,13 @@ impl Tool for GrepSearchTool {
         let mut output_bytes = 0usize;
 
         let stopped_early = if search_path.is_file() {
-            search_file(&search_path, &regex, &mut output_lines, &mut output_bytes)
+            search_file(
+                &search_path,
+                &regex,
+                &mut output_lines,
+                &mut output_bytes,
+                &ctx.cwd,
+            )
         } else {
             search_directory(
                 &search_path,
@@ -117,7 +123,13 @@ fn search_directory(
         if crate::resolve_and_validate_path(&display, workspace_root).is_err() {
             continue;
         }
-        if search_file(&file_path, regex, output_lines, output_bytes) {
+        if search_file(
+            &file_path,
+            regex,
+            output_lines,
+            output_bytes,
+            workspace_root,
+        ) {
             return Ok(true);
         }
     }
@@ -133,6 +145,7 @@ fn search_file(
     regex: &Regex,
     output_lines: &mut Vec<String>,
     output_bytes: &mut usize,
+    workspace_root: &Path,
 ) -> bool {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -154,7 +167,7 @@ fn search_file(
     }
 
     let reader = BufReader::new(file);
-    let path_str = path.to_string_lossy().into_owned();
+    let path_str = crate::make_relative_path(path, workspace_root);
 
     for (idx, line) in reader.lines().enumerate() {
         let Ok(line) = line else {
@@ -384,5 +397,88 @@ mod tests {
         assert!(error.contains("workspace") || error.contains("escape"));
 
         fs::remove_dir_all(&outside_dir).unwrap();
+    }
+
+    #[test]
+    fn test_invalid_regex_pattern_rejected() {
+        let dir = TempDir::new().unwrap();
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "[unclosed bracket" });
+        let result = tool.execute(args, &ctx);
+        assert!(result.is_err(), "invalid regex should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid regex"),
+            "error should mention invalid regex, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_missing_pattern_parameter_rejected() {
+        let dir = TempDir::new().unwrap();
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({});
+        let result = tool.execute(args, &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Missing required parameter"),
+            "error should mention missing parameter, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_empty_directory_returns_no_matches() {
+        let dir = TempDir::new().unwrap();
+        // Directory exists but has no files at all
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "anything" });
+        let result = tool.execute(args, &ctx).unwrap();
+        assert_eq!(result.content, "No matches found.");
+    }
+
+    #[test]
+    fn test_search_file_with_no_newline_at_end() {
+        let dir = TempDir::new().unwrap();
+        // Write a file without trailing newline
+        fs::write(dir.path().join("noeol.rs"), "fn main() {}").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "fn main" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        assert!(result.content.contains("noeol.rs"));
+        assert!(result.content.contains("fn main"));
+    }
+
+    #[test]
+    fn test_output_paths_are_relative_to_cwd() {
+        let dir = TempDir::new().unwrap();
+        let subdir = dir.path().join("src");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("app.rs"), "fn greet() {}\n").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "fn greet" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        // Output format should be relative_path:line_num: content
+        // NOT /tmp/.../src/app.rs:1: content
+        for line in result.content.lines() {
+            assert!(
+                !line.starts_with('/'),
+                "grep result should be relative, got absolute: {line}"
+            );
+        }
+        assert!(
+            result.content.contains("src/app.rs:1: fn greet()"),
+            "expected relative path in output, got: {}",
+            result.content
+        );
     }
 }

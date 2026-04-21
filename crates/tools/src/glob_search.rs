@@ -55,7 +55,7 @@ impl Tool for GlobSearchTool {
                 let display = p.to_string_lossy().into_owned();
                 crate::resolve_and_validate_path(&display, &ctx.cwd)
                     .ok()
-                    .map(|_| display)
+                    .map(|_| crate::make_relative_path(&p, &ctx.cwd))
             })
             .collect();
 
@@ -209,5 +209,34 @@ mod tests {
         assert!(error.contains("workspace") || error.contains("escape"));
 
         fs::remove_dir_all(&outside_parent).unwrap();
+    }
+
+    #[test]
+    fn test_results_are_relative_to_cwd() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("alpha.rs"), "").unwrap();
+        let subdir = dir.path().join("src");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("beta.rs"), "").unwrap();
+
+        let tool = GlobSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "**/*.rs" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        // Every result line should be a relative path — no leading '/'
+        for line in result.content.lines() {
+            assert!(
+                !line.starts_with('/'),
+                "glob result should be relative, got absolute: {line}"
+            );
+        }
+        assert!(result.content.contains("alpha.rs"));
+        // Recursive match inside src/
+        assert!(
+            result.content.contains("src/beta.rs"),
+            "expected 'src/beta.rs' in output, got: {}",
+            result.content
+        );
     }
 }

@@ -37,6 +37,21 @@ pub fn resolve_and_validate_path(
     Ok(canonical)
 }
 
+/// Strip the `base` prefix from `path`, returning a relative path string.
+/// Falls back to the original display if stripping fails (should not happen
+/// when path validation is correct).  Canonicalizes both sides so that
+/// non-canonical prefixes (e.g. symlinks) still match.
+pub fn make_relative_path(path: &std::path::Path, base: &std::path::Path) -> String {
+    let canon_base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    match path.canonicalize() {
+        Ok(canon_path) => canon_path
+            .strip_prefix(&canon_base)
+            .map(|rel| rel.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
+        Err(_) => path.to_string_lossy().into_owned(),
+    }
+}
+
 pub fn recover_duplicated_workspace_prefix(
     file_path: &str,
     cwd: &std::path::Path,
@@ -915,5 +930,37 @@ mod tests {
             "truncated content must not exceed max_bytes, got {}",
             truncated.content.len()
         );
+    }
+
+    // ── make_relative_path tests ──────────────────────────────────
+
+    #[test]
+    fn test_make_relative_path_strips_cwd() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("src/main.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let relative = make_relative_path(&file, dir.path());
+        assert_eq!(relative, "src/main.rs");
+    }
+
+    #[test]
+    fn test_make_relative_path_already_relative_fallback() {
+        // When path doesn't start with base (shouldn't happen in normal flow),
+        // falls back to original display
+        let relative = make_relative_path(
+            std::path::Path::new("/some/other/path.rs"),
+            std::path::Path::new("/home/user/project"),
+        );
+        assert_eq!(relative, "/some/other/path.rs");
+    }
+
+    #[test]
+    fn test_make_relative_path_file_at_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("README.md");
+        std::fs::write(&file, "hello").unwrap();
+        let relative = make_relative_path(&file, dir.path());
+        assert_eq!(relative, "README.md");
     }
 }
