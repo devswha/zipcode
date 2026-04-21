@@ -25,6 +25,11 @@ pub struct InferenceEngine {
 
 impl InferenceEngine {
     /// Load a GGUF model from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the model file cannot be opened, the GGUF format
+    /// is invalid, or the model weights cannot be loaded.
     pub fn load(model_path: &Path, tokenizer_path: &Path, device: Device) -> Result<Self> {
         info!("Loading model from {}", model_path.display());
 
@@ -49,8 +54,38 @@ impl InferenceEngine {
         })
     }
 
-    pub fn set_config(&mut self, config: GenerationConfig) {
+    pub const fn set_config(&mut self, config: GenerationConfig) {
         self.config = config;
+    }
+
+    /// Resolve the stop token ID from the tokenizer vocabulary.
+    ///
+    /// Prefers `<end_of_turn>`, falls back to `<eos>`. Warns if neither
+    /// exists.
+    fn resolve_stop_token(&self) -> Option<u32> {
+        let eos_token = self.tokenizer.token_to_id("<eos>");
+        let stop = self.tokenizer.token_to_id("<end_of_turn>").or(eos_token);
+        if eos_token.is_none() && stop.is_none() {
+            warn!(
+                "Tokenizer has neither <eos> nor <end_of_turn> tokens. \
+                 Generation will only stop at max_tokens limit."
+            );
+        }
+        stop
+    }
+
+    /// Extract logits for the last sequence position from a tensor that
+    /// may be either 2-D `(seq, vocab)` or 3-D `(batch, seq, vocab)`.
+    fn extract_last_logits(logits: &Tensor) -> candle_core::Result<Tensor> {
+        if logits.dims().len() == 3 {
+            logits.squeeze(0).and_then(|t| {
+                let seq_len = t.dim(0).unwrap_or(1);
+                t.narrow(0, seq_len - 1, 1)
+            })
+        } else {
+            let seq_len = logits.dim(0).unwrap_or(1);
+            logits.narrow(0, seq_len - 1, 1)
+        }
     }
 
     /// Generate tokens, streaming them via an `mpsc::Receiver<TokenEvent>`.
@@ -104,34 +139,12 @@ impl InferenceEngine {
             }
         };
 
-        // Resolve stop token IDs — prefer explicit token lookup over hardcoded fallbacks.
-        // If the tokenizer doesn't know the stop tokens (e.g. non-Gemma model),
-        // log a warning and use None so the generation loop only stops on max_tokens.
-        let eos_token = self.tokenizer.token_to_id("<eos>");
-        let end_of_turn = self.tokenizer.token_to_id("<end_of_turn>").or(eos_token);
-
-        if eos_token.is_none() && end_of_turn.is_none() {
-            warn!(
-                "Tokenizer has neither <eos> nor <end_of_turn> tokens. \
-                 Generation will only stop at max_tokens limit."
-            );
-        }
+        let end_of_turn = self.resolve_stop_token();
 
         // Autoregressive generation loop
         let mut finished = false;
         for i in 0..self.config.max_tokens {
-            // Extract logits for the last position
-            let next_logits = if logits.dims().len() == 3 {
-                logits.squeeze(0).and_then(|t| {
-                    let seq_len = t.dim(0).unwrap_or(1);
-                    t.narrow(0, seq_len - 1, 1)
-                })
-            } else {
-                let seq_len = logits.dim(0).unwrap_or(1);
-                logits.narrow(0, seq_len - 1, 1)
-            };
-
-            let next_logits = match next_logits {
+            let next_logits = match Self::extract_last_logits(&logits) {
                 Ok(l) => l,
                 Err(e) => {
                     let _ = tx.send(TokenEvent::Error(InferenceError::GenerationError(
@@ -154,13 +167,13 @@ impl InferenceEngine {
             // Check for stop tokens (EOS or <end_of_turn>)
             if end_of_turn == Some(token) {
                 let tool_calls = chat_template::parse_tool_calls(&generated_text);
-                if !tool_calls.is_empty() {
+                if tool_calls.is_empty() {
+                    let _ = tx.send(TokenEvent::Done(FinishReason::Stop));
+                } else {
                     for call in tool_calls {
                         let _ = tx.send(TokenEvent::ToolCall(call));
                     }
                     let _ = tx.send(TokenEvent::Done(FinishReason::ToolUse));
-                } else {
-                    let _ = tx.send(TokenEvent::Done(FinishReason::Stop));
                 }
                 finished = true;
                 break;

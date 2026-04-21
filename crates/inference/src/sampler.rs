@@ -2,9 +2,11 @@ use candle_core::{Result, Tensor};
 
 use crate::types::GenerationConfig;
 
+const F32_EPSILON: f32 = 1e-6;
+
 pub struct Sampler {
-    temperature: f64,
-    top_p: f64,
+    temperature: f32,
+    top_p: f32,
     top_k: usize,
     repeat_penalty: f32,
     repeat_last_n: usize,
@@ -12,10 +14,12 @@ pub struct Sampler {
 }
 
 impl Sampler {
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn new(config: &GenerationConfig) -> Self {
         Self {
-            temperature: config.temperature,
-            top_p: config.top_p,
+            temperature: config.temperature as f32,
+            top_p: config.top_p as f32,
             top_k: config.top_k,
             repeat_penalty: config.repeat_penalty,
             repeat_last_n: config.repeat_last_n,
@@ -23,13 +27,18 @@ impl Sampler {
         }
     }
 
-    /// Sample a token index from logits tensor
+    /// Sample a token index from logits tensor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the logits tensor cannot be converted to `f32`
+    /// or if any tensor operation fails.
     pub fn sample(&mut self, logits: &Tensor, past_tokens: &[u32]) -> Result<u32> {
         let logits = logits.to_dtype(candle_core::DType::F32)?.squeeze(0)?;
         let mut logits_vec: Vec<f32> = logits.to_vec1()?;
 
         // Apply repeat penalty
-        if self.repeat_penalty != 1.0 {
+        if (self.repeat_penalty - 1.0).abs() > F32_EPSILON {
             let start = past_tokens.len().saturating_sub(self.repeat_last_n);
             for &token in &past_tokens[start..] {
                 let idx = token as usize;
@@ -44,24 +53,23 @@ impl Sampler {
         }
 
         // Apply temperature scaling (before greedy check)
-        if self.temperature > 0.0 && self.temperature != 1.0 {
+        if self.temperature > 0.0 && (self.temperature - 1.0).abs() > F32_EPSILON {
             for l in &mut logits_vec {
-                *l /= self.temperature as f32;
+                *l /= self.temperature;
             }
         }
 
         // If temperature is 0, use greedy
-        if self.temperature == 0.0 {
+        if self.temperature <= 0.0 {
             return Ok(logits_vec
                 .iter()
                 .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| i as u32)
-                .unwrap_or(0));
+                .map_or(0, |(i, _)| u32::try_from(i).unwrap_or(u32::MAX)));
         }
 
         // Softmax
-        let max_logit = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let max_logit = logits_vec.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let mut probs: Vec<f32> = logits_vec.iter().map(|l| (l - max_logit).exp()).collect();
         let sum: f32 = probs.iter().sum();
         for p in &mut probs {
@@ -88,7 +96,7 @@ impl Sampler {
             let mut cutoff = 0.0_f32;
             for (_, p) in &indexed {
                 cumulative += p;
-                if cumulative > self.top_p as f32 {
+                if cumulative > self.top_p {
                     cutoff = *p;
                     break;
                 }
@@ -102,7 +110,7 @@ impl Sampler {
 
         // Renormalize
         let sum: f32 = probs.iter().sum();
-        if sum == 0.0 {
+        if sum <= 0.0 {
             return Ok(0);
         }
         for p in &mut probs {
@@ -115,11 +123,12 @@ impl Sampler {
         for (i, p) in probs.iter().enumerate() {
             cumulative += p;
             if r < cumulative {
-                return Ok(i as u32);
+                return Ok(u32::try_from(i).unwrap_or(u32::MAX));
             }
         }
 
-        Ok(probs.len() as u32 - 1)
+        let last = probs.len().saturating_sub(1);
+        Ok(u32::try_from(last).unwrap_or(u32::MAX))
     }
 }
 

@@ -48,9 +48,7 @@ pub fn expand_user_path(path: &Path) -> PathBuf {
     }
 
     if let Some(stripped) = raw.strip_prefix("~/") {
-        return dirs::home_dir()
-            .map(|home| home.join(stripped))
-            .unwrap_or_else(|| path.to_path_buf());
+        return dirs::home_dir().map_or_else(|| path.to_path_buf(), |home| home.join(stripped));
     }
 
     path.to_path_buf()
@@ -98,6 +96,11 @@ impl ZipcodeConfig {
     }
 
     /// Load only the global config (~/.zipcode/config.json), or defaults if it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config file exists but cannot be read or parsed,
+    /// or if the loaded config fails validation.
     pub fn load_global() -> Result<Self> {
         let path = global_config_path();
         if path.exists() {
@@ -110,6 +113,12 @@ impl ZipcodeConfig {
     /// Validate config field values, returning an error for out-of-range or
     /// unsupported settings. Called automatically at the end of [`load`] and
     /// [`load_from_path`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `permission_mode` is not one of the valid modes,
+    /// `generation.temperature` is negative, `generation.top_p` is not in
+    /// `(0, 1]`, or `generation.max_tokens` is zero.
     pub fn validate(&self) -> Result<()> {
         if !VALID_PERMISSION_MODES.contains(&self.permission_mode.as_str()) {
             anyhow::bail!(
@@ -137,6 +146,11 @@ impl ZipcodeConfig {
     }
 
     /// Load config with hierarchy: global (~/.zipcode/config.json) < project (.zipcode.json)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the global or project config file exists but cannot
+    /// be read or parsed, or if the merged config fails validation.
     pub fn load(cwd: &Path) -> Result<Self> {
         let mut config = Self::load_global()?;
         let project_root = find_project_root(cwd);
@@ -181,7 +195,8 @@ impl ZipcodeConfig {
                     config.generation.top_p = Some(t);
                 }
                 if let Some(t) = gen["max_tokens"].as_u64() {
-                    config.generation.max_tokens = Some(t as usize);
+                    config.generation.max_tokens =
+                        Some(usize::try_from(t).unwrap_or(usize::MAX));
                 }
             }
             if let Some(layers) = project["gpu_layers"].as_i64() {
@@ -204,6 +219,11 @@ impl ZipcodeConfig {
     }
 
     /// Save the config to ~/.zipcode/config.json, creating parent directories if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config directory cannot be created or the file
+    /// cannot be written.
     pub fn save_global(&self) -> Result<PathBuf> {
         let path = global_config_path();
         if let Some(parent) = path.parent() {
@@ -237,7 +257,7 @@ pub fn global_config_path() -> PathBuf {
 }
 
 /// Return a human-readable name for the JSON value's type.
-fn json_type_name(v: &serde_json::Value) -> &'static str {
+const fn json_type_name(v: &serde_json::Value) -> &'static str {
     match v {
         serde_json::Value::Null => "null",
         serde_json::Value::Bool(_) => "boolean",

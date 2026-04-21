@@ -89,17 +89,14 @@ impl Tool for ReadFileTool {
         let content = String::from_utf8(bytes)
             .with_context(|| format!("file is not valid UTF-8: {}", path.display()))?;
 
-        let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-        let limit = args["limit"].as_u64().map(|v| v as usize);
+        let offset = usize::try_from(args["offset"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
+        let limit = args["limit"].as_u64().map(|v| usize::try_from(v).unwrap_or(usize::MAX));
 
         let lines: Vec<&str> = content.lines().collect();
         let total = lines.len();
 
         let start = offset.min(total);
-        let end = match limit {
-            Some(n) => (start + n).min(total),
-            None => total,
-        };
+        let end = limit.map_or(total, |n| (start + n).min(total));
 
         let auto_correct_note = corrected_from
             .as_ref()
@@ -138,7 +135,7 @@ impl Tool for ReadFileTool {
         let output = if numbered.is_empty() {
             header
         } else {
-            format!("{}\n{}", header, numbered)
+            format!("{header}\n{numbered}")
         };
 
         Ok(ToolResult::new(output))

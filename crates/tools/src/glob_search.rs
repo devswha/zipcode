@@ -49,7 +49,7 @@ impl Tool for GlobSearchTool {
 
         let mut matches: Vec<String> = glob::glob(full_pattern_str)
             .context("Invalid glob pattern")?
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|p| p.is_file())
             .filter_map(|p| {
                 let display = p.to_string_lossy().into_owned();

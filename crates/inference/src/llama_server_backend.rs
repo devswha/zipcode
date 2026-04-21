@@ -18,12 +18,15 @@ use crate::{InferenceProvider, Role};
 const DEFAULT_ALIAS: &str = "zipcode";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+/// Default context size for llama-server.
+///
 /// Gemma 4 E2B/E4B support up to 128K native context; 26B/31B support
-/// 256K. On an RTX 2070 SUPER 8 GB with E4B Q4_K_M, 128K context uses
-/// ~5.8 GB VRAM — still within budget. The previous 8K default caused
-/// context overflows during agentic loops where the model reads back
-/// files it just wrote. Users with tighter VRAM can override via
-/// `ZIPCODE_LLAMA_SERVER_CTX`.
+/// 256K. On an RTX 2070 SUPER 8 GB with E4B `Q4_K_M`, 128K context uses
+/// ~5.8 GB VRAM — still within budget.
+///
+/// The previous 8K default caused context overflows during agentic loops
+/// where the model reads back files it just wrote. Users with tighter
+/// VRAM can override via `ZIPCODE_LLAMA_SERVER_CTX`.
 pub const DEFAULT_CONTEXT_SIZE: usize = 131_072;
 
 #[derive(Debug, Clone)]
@@ -107,6 +110,12 @@ impl LlamaServerProvider {
     ///
     /// Local mode: the binary is resolved from `ZIPCODE_LLAMA_SERVER_BIN`,
     /// `LLAMA_SERVER_BIN`, or `llama-server` on PATH.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the server binary cannot be found, the process
+    /// fails to spawn, or the server does not become ready within the
+    /// startup timeout.
     pub fn load(model_path: &Path, options: &ServerOptions) -> Result<Self> {
         if let Ok(url) = std::env::var("ZIPCODE_LLAMA_SERVER_URL") {
             if !url.trim().is_empty() {
@@ -175,9 +184,7 @@ impl LlamaServerProvider {
             command.arg(arg);
         }
 
-        let cache_dir = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
+        let cache_dir = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
             .join(".zipcode/cache");
         std::fs::create_dir_all(&cache_dir).ok();
         command.arg("--slot-save-path").arg(&cache_dir);
@@ -211,7 +218,7 @@ impl LlamaServerProvider {
         })
     }
 
-    pub fn set_config(&mut self, config: GenerationConfig) {
+    pub const fn set_config(&mut self, config: GenerationConfig) {
         self.config = config;
     }
 
@@ -245,7 +252,7 @@ impl Drop for LlamaServerProvider {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        if let Ok(None) = child.try_wait() {
+        if matches!(child.try_wait(), Ok(None)) {
             let _ = child.kill();
         }
         let _ = child.wait();
@@ -619,7 +626,7 @@ fn parse_sse_events(line: &str) -> Vec<SseEvent> {
     if let Some(tool_calls) = delta["tool_calls"].as_array() {
         for tc in tool_calls {
             events.push(SseEvent::ToolCallDelta {
-                index: tc["index"].as_u64().unwrap_or(0) as usize,
+                index: usize::try_from(tc["index"].as_u64().unwrap_or(0)).unwrap_or(0),
                 id: tc["id"].as_str().map(String::from),
                 name: tc["function"]["name"].as_str().map(String::from),
                 arguments: tc["function"]["arguments"].as_str().map(String::from),
@@ -652,14 +659,14 @@ struct ToolCallAccumulator {
     arguments: String,
 }
 
-fn stream_sse_events(
+/// Open a TCP connection, send an HTTP POST request, validate the 200
+/// status line, and skip the response headers, returning a `BufReader`
+/// positioned at the start of the SSE body.
+fn open_sse_stream(
     host: &str,
     port: u16,
-    request: &Value,
-    tx: &mpsc::Sender<TokenEvent>,
-) -> Result<()> {
-    let body = serde_json::to_string(request)?;
-
+    request_body: &str,
+) -> Result<BufReader<TcpStream>> {
     let mut stream =
         TcpStream::connect((host, port)).context("Failed to connect to llama-server")?;
     stream.set_read_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
@@ -673,9 +680,9 @@ fn stream_sse_events(
          Content-Type: application/json\r\n\
          Content-Length: {len}\r\n\
          \r\n\
-         {body}",
+         {request_body}",
         version = env!("CARGO_PKG_VERSION"),
-        len = body.len(),
+        len = request_body.len(),
     );
     stream.write_all(http_req.as_bytes())?;
     stream.flush()?;
@@ -714,11 +721,21 @@ fn stream_sse_events(
         }
     }
 
-    // Read SSE events
+    Ok(reader)
+}
+
+fn stream_sse_events(
+    host: &str,
+    port: u16,
+    request: &Value,
+    tx: &mpsc::Sender<TokenEvent>,
+) -> Result<()> {
+    let body = serde_json::to_string(request)?;
+    let mut reader = open_sse_stream(host, port, &body)?;
+
     let mut tool_call_accum: Vec<ToolCallAccumulator> = Vec::new();
     let mut finish_reason = FinishReason::Stop;
-    let mut saw_done = false;
-    let mut stream_error = None;
+    let (mut saw_done, mut stream_error) = (false, None);
 
     'sse: loop {
         let mut line = String::new();
@@ -728,19 +745,17 @@ fn stream_sse_events(
                 break;
             }
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                stream_error = Some("llama-server SSE stream timed out before [DONE]".to_string());
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                stream_error = Some("llama-server SSE stream stalled before [DONE]".to_string());
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut
+                || e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                stream_error =
+                    Some("llama-server SSE stream timed out or stalled before [DONE]".to_string());
                 break;
             }
             Err(e) => return Err(e.into()),
         }
 
         let line = line.trim();
-        // Skip chunked transfer encoding hex size lines
         if line.chars().all(|c| c.is_ascii_hexdigit()) && !line.is_empty() {
             continue;
         }
@@ -802,7 +817,6 @@ fn stream_sse_events(
         ));
     }
 
-    // Emit accumulated tool calls
     if !tool_call_accum.is_empty() {
         for acc in tool_call_accum {
             let arguments: serde_json::Value =

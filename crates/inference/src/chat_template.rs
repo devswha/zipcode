@@ -6,7 +6,7 @@
 //!
 //! The current production backend is `llama_server_backend`, which sets
 //! `--jinja` so llama-server applies the GGUF's embedded Gemma 4 Jinja
-//! template and parses tool calls back to OpenAI `tool_calls` JSON on our
+//! template and parses tool calls back to `OpenAI` `tool_calls` JSON on our
 //! behalf. Nothing in this module is invoked on that code path — it
 //! survives only so the feature-gated `candle` and `llama-cpp-rs` backends
 //! keep compiling. Both of those backends are known broken for Gemma 4
@@ -18,6 +18,8 @@
 //! structured mini-language, `<|"|>` string delimiter. The authoritative
 //! reference (extracted live from the bundled GGUF) is
 //! [`wiki/pages/gemma4-format-spec.md`](../../../../wiki/pages/gemma4-format-spec.md).
+
+use std::fmt::Write;
 
 use crate::types::{ChatMessage, Role, ToolCallParsed};
 use serde::{Deserialize, Serialize};
@@ -47,9 +49,10 @@ pub fn format_message(msg: &ChatMessage, tools: &[ToolSpec]) -> String {
                         String::new()
                     }
                 };
-                parts.push_str(&format!(
+                let _ = write!(
+                    parts,
                     "You have access to the following tools:\n{tools_json}\n\n"
-                ));
+                );
             }
             parts.push_str(&msg.content);
             format!("<start_of_turn>user\n{parts}<end_of_turn>\n")
@@ -66,6 +69,7 @@ pub fn format_message(msg: &ChatMessage, tools: &[ToolSpec]) -> String {
 /// Format an entire conversation history into a single prompt string.
 /// Tools are injected into the first user turn only.
 /// Ends with `<start_of_turn>model\n` to prime generation.
+#[must_use] 
 pub fn format_conversation(messages: &[ChatMessage], tools: &[ToolSpec]) -> String {
     let mut prompt = String::new();
     let mut tools_injected = false;
@@ -85,6 +89,7 @@ pub fn format_conversation(messages: &[ChatMessage], tools: &[ToolSpec]) -> Stri
 }
 
 /// Parse tool calls from model output text.
+///
 /// Extracts all `<tool_call>...</tool_call>` blocks and parses their JSON.
 /// Handles nested `</tool_call>` within JSON strings by trying progressively
 /// larger slices until valid JSON is found.
@@ -131,7 +136,7 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
                         found = true;
                         break;
                     }
-                    None => serde_json::Value::Object(Default::default()),
+                    None => serde_json::Value::Object(serde_json::Map::new()),
                 };
                 calls.push(ToolCallParsed {
                     id: format!("call_{}", calls.len()),
@@ -165,6 +170,7 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
 ///
 /// Uses an O(n) single-pass approach: builds the result buffer incrementally
 /// instead of reallocating the entire string on each block removal.
+#[must_use] 
 pub fn extract_text_content(output: &str) -> String {
     let mut result = String::with_capacity(output.len());
     let mut pos = 0;
@@ -202,7 +208,7 @@ pub fn extract_text_content(output: &str) -> String {
                 (None, Some(close)) => {
                     pos = close + 12;
                 }
-                (Some(_open), Some(close)) if close < _open => {
+                (Some(open), Some(close)) if close < open => {
                     pos = close + 12;
                 }
                 _ => {

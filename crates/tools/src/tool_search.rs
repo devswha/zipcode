@@ -7,10 +7,12 @@ pub struct ToolSearchTool {
 }
 
 impl ToolSearchTool {
-    pub fn from_specs(specs: Vec<(String, String)>) -> Self {
+    #[must_use] 
+    pub const fn from_specs(specs: Vec<(String, String)>) -> Self {
         Self { specs }
     }
 
+    #[must_use] 
     pub fn from_registry(registry: &crate::ToolRegistry) -> Self {
         let specs = registry
             .specs()

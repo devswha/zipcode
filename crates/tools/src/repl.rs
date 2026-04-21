@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use anyhow::{Context, Result};
 
 use crate::{wait_with_output_timeout, Tool, ToolContext, ToolResult};
@@ -67,7 +69,7 @@ impl Tool for ReplTool {
             "python" => ("python3", "-c"),
             "node" => ("node", "-e"),
             other => {
-                return Ok(ToolResult::error(format!(
+                return Ok(ToolResult::error(&format!(
                     "Unsupported language: '{other}'. Use 'python' or 'node'."
                 )));
             }
@@ -103,17 +105,18 @@ impl Tool for ReplTool {
                     if !result.is_empty() {
                         result.push('\n');
                     }
-                    result.push_str(&format!(
+                    let _ = write!(
+                        result,
                         "[exit code: {}]",
                         output.status.code().unwrap_or(-1)
-                    ));
+                    );
                 }
                 if result.is_empty() {
                     result = "(no output)".to_string();
                 }
                 Ok(ToolResult::new(result))
             }
-            None => Ok(ToolResult::error(format!(
+            None => Ok(ToolResult::error(&format!(
                 "REPL execution timed out after {timeout_ms}ms"
             ))),
         }

@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -43,6 +45,7 @@ pub struct Session {
 }
 
 impl Session {
+    #[must_use] 
     pub fn new() -> Self {
         let id = uuid::Uuid::new_v4().to_string();
         let now = timestamp_now();
@@ -54,6 +57,12 @@ impl Session {
         }
     }
 
+    /// Persist the session to `~/.zipcode/sessions/{id}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session ID contains invalid characters, the
+    /// session directory cannot be created, or the file cannot be written.
     pub fn save(&self) -> Result<()> {
         validate_session_id(&self.id)?;
         let path = self.path();
@@ -66,6 +75,13 @@ impl Session {
         Ok(())
     }
 
+    /// Load a session from `~/.zipcode/sessions/{id}.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session ID contains invalid characters, the
+    /// file cannot be read, the content is not valid JSON, or the stored
+    /// session ID does not match the requested ID.
     pub fn load(id: &str) -> Result<Self> {
         validate_session_id(id)?;
         let path = session_path(id);
@@ -81,6 +97,7 @@ impl Session {
         Ok(session)
     }
 
+    #[must_use] 
     pub fn path(&self) -> PathBuf {
         session_path(&self.id)
     }
@@ -202,9 +219,10 @@ fn build_compacted_summary(messages: &[ChatMessage], policy: CompactPolicy) -> S
     }
 
     if extra_count > 0 {
-        summary.push_str(&format!(
+        let _ = write!(
+            summary,
             "\n- {extra_count} additional earlier messages were compacted."
-        ));
+        );
     }
 
     summary

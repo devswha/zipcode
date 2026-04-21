@@ -1,10 +1,11 @@
+use std::fmt::Write;
 use std::path::Path;
 
 use crate::config::find_project_root;
 use zipcode_inference::chat_template::ToolSpec;
 use zipcode_tools::ToolRegistry;
 
-const BASE_SYSTEM_PROMPT: &str = r#"You are zipcode, an AI coding assistant running locally on the user's machine.
+const BASE_SYSTEM_PROMPT: &str = r"You are zipcode, an AI coding assistant running locally on the user's machine.
 You help with software engineering tasks: writing code, debugging, refactoring, and explaining code.
 
 You have access to tools for file operations, shell commands, and code search. Use them to help the user.
@@ -22,7 +23,7 @@ Key rules:
 - **When asked to analyze a repository or project path**, start by inspecting its README and primary manifest/build files (for example `Cargo.toml`, `package.json`, `pyproject.toml`) before asking follow-up questions, unless the user already asked for a narrower focus
 - **Prefer paths relative to the current working directory** — if the working directory is already the repo root, use `README.md` not `repo-name/README.md`
 - **If a file read or search fails because the path redundantly prefixes the current workspace name**, retry once without that leading repo-name segment before giving up
-- **If a search fails**, retry with a broader pattern or inspect likely files directly before asking the user for the file location"#;
+- **If a search fails**, retry with a broader pattern or inspect likely files directly before asking the user for the file location";
 
 pub fn build_system_prompt(
     cwd: &Path,
@@ -33,8 +34,8 @@ pub fn build_system_prompt(
     let project_root = find_project_root(cwd);
 
     // Add permission context
-    prompt.push_str(&format!("\n\nPermission mode: {permission_mode}"));
-    prompt.push_str(&format!("\nWorking directory: {}", cwd.display()));
+    let _ = write!(prompt, "\n\nPermission mode: {permission_mode}");
+    let _ = write!(prompt, "\nWorking directory: {}", cwd.display());
 
     // Load .zipcode.md if present
     let memory_path = project_root.join(".zipcode.md");

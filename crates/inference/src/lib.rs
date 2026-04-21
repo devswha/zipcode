@@ -63,9 +63,9 @@ impl Backend {
     /// Returns an error if the backend name is unsupported.
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s {
-            "llama-cpp" => Ok(Backend::LlamaCpp),
-            "llama-server" => Ok(Backend::LlamaServer),
-            "candle" => Ok(Backend::Candle),
+            "llama-cpp" => Ok(Self::LlamaCpp),
+            "llama-server" => Ok(Self::LlamaServer),
+            "candle" => Ok(Self::Candle),
             other => anyhow::bail!(
                 "unsupported backend '{other}'. Expected one of: llama-cpp, llama-server, candle"
             ),

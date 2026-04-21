@@ -14,11 +14,12 @@ pub fn select_device() -> Device {
     }
 }
 
+#[must_use]
 pub fn device_info(device: &Device) -> String {
     match device {
         Device::Cpu => "CPU".to_string(),
         Device::Cuda(_) => "CUDA GPU".to_string(),
-        _ => "Unknown device".to_string(),
+        Device::Metal(_) => "Unknown device".to_string(),
     }
 }
 

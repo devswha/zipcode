@@ -106,11 +106,10 @@ fn search_directory(
     output_lines: &mut Vec<String>,
     output_bytes: &mut usize,
 ) -> Result<bool> {
-    let pattern = if let Some(g) = glob_filter {
-        format!("{}/**/{}", path.to_str().unwrap_or("."), g)
-    } else {
-        format!("{}/**/*", path.to_str().unwrap_or("."))
-    };
+    let pattern = glob_filter.map_or_else(
+        || format!("{}/**/*", path.to_str().unwrap_or(".")),
+        |g| format!("{}/**/{}", path.to_str().unwrap_or("."), g),
+    );
 
     for entry in glob::glob(&pattern).context("Invalid glob pattern")? {
         let Ok(file_path) = entry else {
@@ -137,7 +136,7 @@ fn search_directory(
     Ok(false)
 }
 
-/// Search a single file for regex matches, appending results to output_lines.
+/// Search a single file for regex matches, appending results to `output_lines`.
 /// Returns true when the output budget has been exhausted and the caller should stop.
 /// Silently skips binary or unreadable files.
 fn search_file(
@@ -147,15 +146,13 @@ fn search_file(
     output_bytes: &mut usize,
     workspace_root: &Path,
 ) -> bool {
-    let mut file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
     };
 
     let mut header = [0_u8; BINARY_HEADER_SCAN_SIZE];
-    let header_len = match file.read(&mut header) {
-        Ok(len) => len,
-        Err(_) => return false,
+    let Ok(header_len) = file.read(&mut header) else {
+        return false;
     };
 
     if header[..header_len].contains(&0u8) {

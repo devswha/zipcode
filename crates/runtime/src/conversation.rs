@@ -1,9 +1,12 @@
+use std::sync::mpsc::Receiver;
+
 use anyhow::Result;
 use tracing::{info, warn};
 
 use zipcode_inference::chat_template::ToolSpec;
 use zipcode_inference::{
     extract_text_content, ChatMessage, FinishReason, InferenceProvider, Role, TokenEvent,
+    ToolCallParsed,
 };
 use zipcode_tools::{execute_tool, ToolContext, ToolRegistry};
 
@@ -42,7 +45,18 @@ pub struct ConversationLoop {
 }
 
 impl ConversationLoop {
+    /// Run a single conversation turn: generate a response, execute any tool
+    /// calls, and repeat until the model finishes or the iteration cap is hit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the model exceeds the maximum tool iterations, an
+    /// inference error occurs during generation, or the session cannot be
+    /// persisted.
     pub fn run_turn(&mut self, user_input: &str, callback: &mut dyn StreamCallback) -> Result<()> {
+        const MAX_TOOL_ITERATIONS: usize = 25;
+        const MAX_EMPTY_RETRIES: usize = 2;
+
         // Add system prompt on the very first turn
         if self.session.messages.is_empty() {
             self.session
@@ -51,8 +65,6 @@ impl ConversationLoop {
 
         self.session.push_message(ChatMessage::user(user_input));
 
-        const MAX_TOOL_ITERATIONS: usize = 25;
-        const MAX_EMPTY_RETRIES: usize = 2;
         let mut iterations = 0;
         let mut empty_retries = 0usize;
         loop {
@@ -66,9 +78,7 @@ impl ConversationLoop {
                 return Err(anyhow::anyhow!(message));
             }
             iterations += 1;
-            // Generate next response — send only the messages the provider
-            // hasn't seen yet when it manages its own context, otherwise send
-            // the full history.
+
             let msgs_for_provider: &[ChatMessage] = if self.engine.manages_own_context() {
                 &self.session.messages[self.last_sent_idx..]
             } else {
@@ -79,58 +89,14 @@ impl ConversationLoop {
                 .generate_stream(msgs_for_provider, &self.tool_specs);
             self.last_sent_idx = self.session.messages.len();
 
-            let mut full_text = String::new();
-            let mut tool_calls = Vec::new();
-            let mut finish_reason = FinishReason::Stop;
+            let (mut full_text, tool_calls, finish_reason) =
+                self.collect_generation(rx, callback)?;
 
-            for event in rx {
-                match event {
-                    TokenEvent::Token(text) => {
-                        callback.on_token(&text);
-                        full_text.push_str(&text);
-                    }
-                    TokenEvent::Thinking(text) => {
-                        // Route to the UI but do not accumulate into full_text —
-                        // reasoning must not land in the stored assistant content
-                        // because Gemma 4 strips it on re-injection
-                        // (`supports_preserve_reasoning = false`). Keeping it out
-                        // of history also prevents drift when the session is
-                        // resumed or compacted.
-                        callback.on_thinking(&text);
-                    }
-                    TokenEvent::ToolCall(call) => {
-                        tool_calls.push(call);
-                    }
-                    TokenEvent::Done(reason) => {
-                        finish_reason = reason;
-                        break;
-                    }
-                    TokenEvent::Error(e) => {
-                        callback.on_error(&e.to_string());
-                        // Best-effort save: a session save failure should not
-                        // mask the original inference error. Log the save
-                        // failure but always return the inference error as the
-                        // primary cause. This fixes the error-masking bug where
-                        // a "Failed to save session" would replace the much more
-                        // useful "Inference error: CUDA out of memory" message.
-                        if let Err(save_err) = self.session.save() {
-                            warn!(
-                                error = %save_err,
-                                "failed to save session after inference error (inference error takes priority)"
-                            );
-                        }
-                        return Err(anyhow::anyhow!("Inference error: {e}"));
-                    }
-                }
-            }
-
-            // Detect truncation due to token limit
             if finish_reason == FinishReason::MaxTokens {
                 warn!("model output truncated due to token limit");
                 full_text.push_str("\n[...output truncated due to token limit]");
             }
 
-            // Store the assistant's response
             if tool_calls.is_empty() {
                 self.session
                     .push_message(ChatMessage::assistant(&full_text));
@@ -144,26 +110,12 @@ impl ConversationLoop {
             }
 
             // No tool calls → turn is complete, unless auto-retry applies.
-            //
-            // When a small model (E4B-class) sees error output from a tool
-            // result, it sometimes produces an empty turn — thousands of
-            // chars of reasoning followed by zero tool calls and no visible
-            // text. This is the "give-up" pattern observed empirically in
-            // docs/experiments/2026-04-16-gemma4-e4b-gamedev-probe.md. Rather
-            // than terminating the turn immediately, we replace the silent
-            // exit with a brief self-nudge ("Let me re-read the error…") and
-            // give the model one more generation attempt with a fresh token
-            // budget. Capped at MAX_EMPTY_RETRIES to avoid burning iterations
-            // on a genuinely stuck model.
             if tool_calls.is_empty() {
                 if full_text.trim().is_empty()
                     && empty_retries < MAX_EMPTY_RETRIES
                     && recent_tool_results_contain_errors(&self.session.messages)
                 {
                     empty_retries += 1;
-                    // Replace the empty assistant message (pushed above) with
-                    // a self-nudge so the model sees stated intent rather than
-                    // silence in its history.
                     if let Some(last) = self.session.messages.last_mut() {
                         if last.role == Role::Model && last.content.is_empty() {
                             last.content =
@@ -180,56 +132,102 @@ impl ConversationLoop {
                 break;
             }
 
-            // Execute each tool call
-            for call in &tool_calls {
-                let check = self.permission.check(&call.name, &call.arguments);
-
-                match check {
-                    PermissionCheck::Allowed => {}
-                    PermissionCheck::NeedsApproval(msg) => {
-                        if !callback.on_permission_prompt(&msg) {
-                            self.session.push_message(ChatMessage::tool_result(
-                                &call.id,
-                                "User denied permission for this action.",
-                            ));
-                            continue;
-                        }
-                    }
-                    PermissionCheck::Denied(msg) => {
-                        self.session
-                            .push_message(ChatMessage::tool_result(&call.id, &msg));
-                        continue;
-                    }
-                }
-
-                callback.on_tool_start(&call.name, &call.arguments);
-                info!(tool = %call.name, "executing tool");
-
-                let ctx = ToolContext {
-                    cwd: self.cwd.clone(),
-                    permission: self.permission.mode(),
-                    session_id: self.session.id.clone(),
-                    parent_session_id: None,
-                    depth: 0,
-                    budget_tokens: None,
-                };
-
-                let result = execute_tool(&self.tools, &call.name, call.arguments.clone(), &ctx);
-                let result_text = match &result {
-                    Ok(r) => r.content.clone(),
-                    Err(e) => format!("Tool error: {e}"),
-                };
-
-                callback.on_tool_result(&call.name, &result_text);
-                self.session
-                    .push_message(ChatMessage::tool_result(&call.id, &result_text));
-            }
-
-            // Loop: model sees tool results and decides next action
+            self.execute_tool_calls(&tool_calls, callback);
         }
 
         self.session.save()?;
         Ok(())
+    }
+
+    fn collect_generation(
+        &self,
+        rx: Receiver<TokenEvent>,
+        callback: &mut dyn StreamCallback,
+    ) -> Result<(String, Vec<ToolCallParsed>, FinishReason)> {
+        let mut full_text = String::new();
+        let mut tool_calls = Vec::new();
+        let mut finish_reason = FinishReason::Stop;
+
+        for event in rx {
+            match event {
+                TokenEvent::Token(text) => {
+                    callback.on_token(&text);
+                    full_text.push_str(&text);
+                }
+                TokenEvent::Thinking(text) => {
+                    callback.on_thinking(&text);
+                }
+                TokenEvent::ToolCall(call) => {
+                    tool_calls.push(call);
+                }
+                TokenEvent::Done(reason) => {
+                    finish_reason = reason;
+                    break;
+                }
+                TokenEvent::Error(e) => {
+                    callback.on_error(&e.to_string());
+                    if let Err(save_err) = self.session.save() {
+                        warn!(
+                            error = %save_err,
+                            "failed to save session after inference error (inference error takes priority)"
+                        );
+                    }
+                    return Err(anyhow::anyhow!("Inference error: {e}"));
+                }
+            }
+        }
+
+        Ok((full_text, tool_calls, finish_reason))
+    }
+
+    fn execute_tool_calls(
+        &mut self,
+        tool_calls: &[ToolCallParsed],
+        callback: &mut dyn StreamCallback,
+    ) {
+        for call in tool_calls {
+            let check = self.permission.check(&call.name, &call.arguments);
+
+            match check {
+                PermissionCheck::Allowed => {}
+                PermissionCheck::NeedsApproval(msg) => {
+                    if !callback.on_permission_prompt(&msg) {
+                        self.session.push_message(ChatMessage::tool_result(
+                            &call.id,
+                            "User denied permission for this action.",
+                        ));
+                        continue;
+                    }
+                }
+                PermissionCheck::Denied(msg) => {
+                    self.session
+                        .push_message(ChatMessage::tool_result(&call.id, &msg));
+                    continue;
+                }
+            }
+
+            callback.on_tool_start(&call.name, &call.arguments);
+            info!(tool = %call.name, "executing tool");
+
+            let ctx = ToolContext {
+                cwd: self.cwd.clone(),
+                permission: self.permission.mode(),
+                session_id: self.session.id.clone(),
+                parent_session_id: None,
+                depth: 0,
+                budget_tokens: None,
+            };
+
+            let result = execute_tool(&self.tools, &call.name, call.arguments.clone(), &ctx);
+            let result_text = match &result {
+                Ok(r) => r.content.clone(),
+                Err(e) => format!("Tool error: {e}"),
+            };
+
+            callback.on_tool_result(&call.name, &result_text);
+            self.session
+                .push_message(ChatMessage::tool_result(&call.id, &result_text));
+        }
     }
 }
 
@@ -378,7 +376,7 @@ fn is_benign_error_line(line_lower: &str) -> bool {
 fn recent_tool_results_contain_errors(messages: &[ChatMessage]) -> bool {
     for msg in messages.iter().rev() {
         match msg.role {
-            Role::Model => continue,
+            Role::Model => {}
             Role::Tool => {
                 if content_contains_error(&msg.content) {
                     return true;

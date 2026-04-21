@@ -20,6 +20,7 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    #[must_use] 
     pub fn user(content: &str) -> Self {
         Self {
             role: Role::User,
@@ -29,6 +30,7 @@ impl ChatMessage {
         }
     }
 
+    #[must_use] 
     pub fn system(content: &str) -> Self {
         Self {
             role: Role::System,
@@ -38,6 +40,7 @@ impl ChatMessage {
         }
     }
 
+    #[must_use] 
     pub fn assistant(content: &str) -> Self {
         Self {
             role: Role::Model,
@@ -47,6 +50,7 @@ impl ChatMessage {
         }
     }
 
+    #[must_use] 
     pub fn assistant_with_tool_calls(content: &str, calls: Vec<ToolCallParsed>) -> Self {
         Self {
             role: Role::Model,
@@ -56,6 +60,7 @@ impl ChatMessage {
         }
     }
 
+    #[must_use] 
     pub fn tool_result(call_id: &str, content: &str) -> Self {
         Self {
             role: Role::Tool,

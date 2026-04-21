@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -68,14 +69,11 @@ impl Tool for BashTool {
             .spawn()
             .with_context(|| format!("Failed to execute: {command}"))?;
 
-        let output = match wait_with_output_timeout(child, timeout)? {
-            Some(output) => output,
-            None => {
+        let Some(output) = wait_with_output_timeout(child, timeout)? else {
                 return Ok(ToolResult::new(format!(
                     "Error: command timed out after {timeout_ms}ms"
                 )));
-            }
-        };
+            };
 
         let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
 
@@ -93,7 +91,7 @@ impl Tool for BashTool {
             if !result.is_empty() {
                 result.push('\n');
             }
-            result.push_str(&format!("Exit code: {code}"));
+            let _ = write!(result, "Exit code: {code}");
         }
 
         Ok(ToolResult::new(result))

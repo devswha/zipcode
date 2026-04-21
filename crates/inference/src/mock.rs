@@ -26,6 +26,7 @@ pub struct MockInferenceProvider {
 }
 
 impl MockInferenceProvider {
+    #[must_use] 
     pub fn new(responses: Vec<MockResponse>) -> Self {
         Self {
             responses: VecDeque::from(responses),
@@ -35,12 +36,19 @@ impl MockInferenceProvider {
     }
 
     /// Set whether this mock reports that it manages its own context.
-    pub fn with_manages_own_context(mut self, v: bool) -> Self {
+    #[must_use] 
+    pub const fn with_manages_own_context(mut self, v: bool) -> Self {
         self.manages_own_context_flag = v;
         self
     }
 
     /// Returns a clone of the message slices captured by each `generate_stream` call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned (only possible if a previous
+    /// `lock()` call panicked, which cannot happen in normal usage).
+    #[must_use]
     pub fn captured_messages(&self) -> Vec<Vec<ChatMessage>> {
         self.captured_messages
             .lock()

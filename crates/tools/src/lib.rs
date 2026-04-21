@@ -11,6 +11,10 @@ use wait_timeout::ChildExt;
 
 /// Resolve a path and ensure it stays within the workspace root.
 /// Returns error if the resolved path escapes the workspace.
+///
+/// # Errors
+///
+/// Returns an error if the resolved path escapes the workspace directory.
 pub fn resolve_and_validate_path(
     file_path: &str,
     cwd: &std::path::Path,
@@ -38,20 +42,24 @@ pub fn resolve_and_validate_path(
 }
 
 /// Strip the `base` prefix from `path`, returning a relative path string.
+///
 /// Falls back to the original display if stripping fails (should not happen
 /// when path validation is correct).  Canonicalizes both sides so that
 /// non-canonical prefixes (e.g. symlinks) still match.
+#[must_use]
 pub fn make_relative_path(path: &std::path::Path, base: &std::path::Path) -> String {
     let canon_base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
-    match path.canonicalize() {
-        Ok(canon_path) => canon_path
-            .strip_prefix(&canon_base)
-            .map(|rel| rel.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
-        Err(_) => path.to_string_lossy().into_owned(),
-    }
+    path.canonicalize().map_or_else(
+        |_| path.to_string_lossy().into_owned(),
+        |canon_path| {
+            canon_path
+                .strip_prefix(&canon_base)
+                .map_or_else(|_| path.to_string_lossy().into_owned(), |rel| rel.to_string_lossy().into_owned())
+        },
+    )
 }
 
+#[must_use] 
 pub fn recover_duplicated_workspace_prefix(
     file_path: &str,
     cwd: &std::path::Path,
@@ -111,6 +119,10 @@ fn canonicalize_even_if_missing(path: &std::path::Path) -> anyhow::Result<PathBu
 
 /// Validate that a glob pattern stays within the workspace.
 /// Rejects absolute paths and any component that escapes the workspace.
+///
+/// # Errors
+///
+/// Returns an error if the pattern is absolute or contains path-traversal components.
 pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
     let path = Path::new(pattern);
     if path.is_absolute() {
@@ -187,16 +199,11 @@ pub(crate) struct CollectedChildOutput {
     pub stderr: Vec<u8>,
 }
 
-fn spawn_pipe_reader<T>(pipe: Option<T>) -> Option<JoinHandle<std::io::Result<Vec<u8>>>>
-where
-    T: Read + Send + 'static,
-{
-    pipe.map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            pipe.read_to_end(&mut buf)?;
-            Ok(buf)
-        })
+fn spawn_pipe_reader<T: Read + Send + 'static>(mut pipe: T) -> JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        pipe.read_to_end(&mut buf)?;
+        Ok(buf)
     })
 }
 
@@ -218,17 +225,14 @@ pub(crate) fn wait_with_output_timeout(
     mut child: Child,
     timeout: Duration,
 ) -> Result<Option<CollectedChildOutput>> {
-    let stdout_reader = spawn_pipe_reader(child.stdout.take());
-    let stderr_reader = spawn_pipe_reader(child.stderr.take());
+    let stdout_reader = child.stdout.take().map(spawn_pipe_reader);
+    let stderr_reader = child.stderr.take().map(spawn_pipe_reader);
 
-    let status = match child.wait_timeout(timeout)? {
-        Some(status) => status,
-        None => {
-            terminate_child_tree(&mut child);
-            let _ = join_pipe_reader(stdout_reader, "stdout");
-            let _ = join_pipe_reader(stderr_reader, "stderr");
-            return Ok(None);
-        }
+    let Some(status) = child.wait_timeout(timeout)? else {
+        terminate_child_tree(&mut child);
+        let _ = join_pipe_reader(stdout_reader, "stdout");
+        let _ = join_pipe_reader(stderr_reader, "stderr");
+        return Ok(None);
     };
 
     Ok(Some(CollectedChildOutput {
@@ -325,31 +329,34 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    pub fn new(content: String) -> Self {
+    #[must_use] 
+    pub const fn new(content: String) -> Self {
         Self {
             content,
             truncated: false,
         }
     }
 
-    pub fn error(msg: String) -> Self {
+    #[must_use]
+    pub fn error(msg: &str) -> Self {
         Self {
             content: format!("Error: {msg}"),
             truncated: false,
         }
     }
 
+    #[must_use]
     pub fn truncate(self, max_bytes: usize) -> Self {
-        if self.content.len() <= max_bytes {
-            return self;
-        }
-
         // Pre-compute the suffix template to measure its length exactly,
         // then reserve space so the final string stays within max_bytes.
         // Worst-case suffix length: "\n\n[truncated: showing first {max_digits} bytes of {total_digits}]"
         // where max_digits ≤ total_digits ≤ 10 (for up to 10 billion bytes).
         // Using a conservative fixed bound avoids a double-format allocation.
         const SUFFIX_OVERHEAD: usize = 80; // "\n\n[truncated: showing first … bytes of …]" worst case
+
+        if self.content.len() <= max_bytes {
+            return self;
+        }
 
         let available = max_bytes.saturating_sub(SUFFIX_OVERHEAD);
         // Find a safe char boundary at or before `available`
@@ -383,6 +390,12 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn parameters_schema(&self) -> serde_json::Value;
+
+    /// Execute the tool with the given arguments and context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tool execution fails.
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult>;
 }
 
@@ -392,6 +405,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
@@ -406,6 +420,7 @@ impl ToolRegistry {
         self.tools.get(name).map(AsRef::as_ref)
     }
 
+    #[must_use] 
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools
             .values()
@@ -430,7 +445,11 @@ impl Default for ToolRegistry {
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 8192;
 
-/// Execute a tool by name with automatic truncation
+/// Execute a tool by name with automatic truncation.
+///
+/// # Errors
+///
+/// Returns an error if the tool is not found or if tool execution fails.
 pub fn execute_tool(
     registry: &ToolRegistry,
     name: &str,
@@ -815,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_error_result_has_prefix() {
-        let result = ToolResult::error("something went wrong".to_string());
+        let result = ToolResult::error("something went wrong");
         assert!(result.content.starts_with("Error: "));
         assert!(result.content.contains("something went wrong"));
         assert!(!result.truncated);
@@ -823,7 +842,7 @@ mod tests {
 
     #[test]
     fn test_error_result_empty_message() {
-        let result = ToolResult::error(String::new());
+        let result = ToolResult::error("");
         assert_eq!(result.content, "Error: ");
         assert!(!result.truncated);
     }
@@ -898,7 +917,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_error_format() {
-        let result = ToolResult::error("something failed".to_string());
+        let result = ToolResult::error("something failed");
         assert_eq!(result.content, "Error: something failed");
         assert!(!result.truncated);
     }
