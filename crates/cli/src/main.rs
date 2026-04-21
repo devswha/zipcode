@@ -146,7 +146,7 @@ fn main() -> Result<()> {
             commands::doctor(model_path, backend)?;
         }
         Some(Commands::Setup { skip_smoke }) => {
-            commands::setup(model_path, backend, skip_smoke)?;
+            commands::setup(model_path, backend, permission_mode, skip_smoke)?;
         }
         Some(Commands::Update { check, rebuild }) => {
             commands::update(check, rebuild)?;

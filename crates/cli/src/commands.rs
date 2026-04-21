@@ -225,6 +225,7 @@ pub fn doctor(model_path: Option<&Path>, backend_override: Option<&str>) -> Resu
 pub fn setup(
     model_path: Option<&Path>,
     backend_override: Option<&str>,
+    permission_mode: Option<&str>,
     skip_smoke: bool,
 ) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
@@ -243,6 +244,9 @@ pub fn setup(
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned);
     global_config.llama_server_bin = report.llama_server_bin.clone();
+    if let Some(mode) = permission_mode {
+        global_config.permission_mode = mode.to_string();
+    }
     let perf_defaults = apply_recommended_performance_defaults(
         &mut global_config,
         &model,
