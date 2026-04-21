@@ -380,8 +380,8 @@ pub struct ToolSpec {
 
 /// Trait every tool must implement
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
     fn parameters_schema(&self) -> serde_json::Value;
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult>;
 }
@@ -451,10 +451,10 @@ mod tests {
     struct EchoTool;
 
     impl Tool for EchoTool {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "echo"
         }
-        fn description(&self) -> &str {
+        fn description(&self) -> &'static str {
             "Echoes input"
         }
         fn parameters_schema(&self) -> serde_json::Value {

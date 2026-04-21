@@ -337,4 +337,43 @@ mod tests {
             "enable_thinking should default to true"
         );
     }
+
+    #[test]
+    fn test_chat_message_system_constructor() {
+        let msg = ChatMessage::system("you are helpful");
+        assert_eq!(msg.role, Role::System);
+        assert_eq!(msg.content, "you are helpful");
+        assert!(msg.tool_call_id.is_none());
+        assert!(msg.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_chat_message_assistant_constructor() {
+        let msg = ChatMessage::assistant("here is the answer");
+        assert_eq!(msg.role, Role::Model);
+        assert_eq!(msg.content, "here is the answer");
+        assert!(msg.tool_call_id.is_none());
+        assert!(msg.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_chat_message_tool_result_roundtrip_preserves_fields() {
+        let msg = ChatMessage::tool_result("call_abc", "42 files found");
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.role, Role::Tool);
+        assert_eq!(back.content, "42 files found");
+        assert_eq!(back.tool_call_id.as_deref(), Some("call_abc"));
+        assert!(back.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_token_event_thinking_clone() {
+        let event = TokenEvent::Thinking("reasoning step".to_string());
+        let cloned = event.clone();
+        match cloned {
+            TokenEvent::Thinking(text) => assert_eq!(text, "reasoning step"),
+            _ => panic!("expected Thinking variant"),
+        }
+    }
 }

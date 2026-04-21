@@ -7,11 +7,11 @@ use crate::{Tool, ToolContext, ToolResult};
 pub struct WriteFileTool;
 
 impl Tool for WriteFileTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "write_file"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Write content to a file, creating parent directories if needed."
     }
 

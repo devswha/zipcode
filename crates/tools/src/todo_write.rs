@@ -16,11 +16,11 @@ struct TodoItem {
 pub struct TodoWriteTool;
 
 impl Tool for TodoWriteTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "todo_write"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Write a list of todos to .zipcode-todos.json in the current working directory"
     }
 

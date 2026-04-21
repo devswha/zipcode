@@ -1598,7 +1598,10 @@ mod tests {
     #[test]
     fn config_field_missing_or_null_returns_false_for_false_bool() {
         let json = serde_json::json!({"flash_attention": false});
-        assert!(!config_field_missing_or_null(Some(&json), "flash_attention"));
+        assert!(!config_field_missing_or_null(
+            Some(&json),
+            "flash_attention"
+        ));
     }
 
     #[test]

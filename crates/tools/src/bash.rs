@@ -14,11 +14,11 @@ const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub struct BashTool;
 
 impl Tool for BashTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "bash"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Execute a shell command and return its output"
     }
 

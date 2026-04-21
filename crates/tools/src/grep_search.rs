@@ -14,11 +14,11 @@ const SEARCH_STOP_MESSAGE: &str =
     "[stopped after collecting enough matches; refine the pattern/path for more]";
 
 impl Tool for GrepSearchTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "grep_search"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Search file contents using a regex pattern. Returns matches in 'filepath:line_num: line_content' format."
     }
 

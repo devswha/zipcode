@@ -7,11 +7,11 @@ use crate::{Tool, ToolContext, ToolResult};
 pub struct EditFileTool;
 
 impl Tool for EditFileTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "edit_file"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Replace a unique occurrence of old_string with new_string in a file. Fails if old_string is not found or appears more than once."
     }
 
@@ -289,5 +289,78 @@ mod tests {
             msg.contains("missing required parameter: new_string"),
             "expected missing new_string error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn test_delete_content_via_empty_new_string() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "keep this\nremove this\nkeep this too\n").unwrap();
+
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "old_string": "remove this\n",
+            "new_string": ""
+        });
+        let result = tool.execute(args, &ctx()).unwrap();
+        assert!(result.content.contains("edited"));
+
+        let content = std::fs::read_to_string(f.path()).unwrap();
+        assert_eq!(content, "keep this\nkeep this too\n");
+    }
+
+    #[test]
+    fn test_edit_whitespace_only_file() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "   \n   \n").unwrap();
+
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "old_string": "   \n",
+            "new_string": "content\n"
+        });
+        // This should fail because "   \n" appears twice
+        let result = tool.execute(args, &ctx());
+        assert!(
+            result.is_err(),
+            "whitespace-only old_string matching multiple times should fail"
+        );
+    }
+
+    #[test]
+    fn test_edit_single_character_replacement() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "x + y = z").unwrap();
+
+        let tool = EditFileTool;
+        let args = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "old_string": "+",
+            "new_string": "-"
+        });
+        let result = tool.execute(args, &ctx()).unwrap();
+        assert!(result.content.contains("edited"));
+
+        let content = std::fs::read_to_string(f.path()).unwrap();
+        assert_eq!(content, "x - y = z");
+    }
+
+    #[test]
+    fn test_tool_trait_interface() {
+        let tool = EditFileTool;
+        assert_eq!(tool.name(), "edit_file");
+        assert!(!tool.description().is_empty());
+
+        let schema = tool.parameters_schema();
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required.contains(&"path"));
+        assert!(required.contains(&"old_string"));
+        assert!(required.contains(&"new_string"));
     }
 }

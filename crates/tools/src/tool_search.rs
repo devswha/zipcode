@@ -22,11 +22,11 @@ impl ToolSearchTool {
 }
 
 impl Tool for ToolSearchTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "tool_search"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Search available tools by name or description keyword"
     }
 

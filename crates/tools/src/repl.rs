@@ -12,11 +12,11 @@ const REPL_MAX_TIMEOUT_MS: u64 = 300_000;
 pub struct ReplTool;
 
 impl Tool for ReplTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "repl"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Execute code in a REPL environment (python or node)"
     }
 

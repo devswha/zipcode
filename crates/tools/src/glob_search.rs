@@ -6,11 +6,11 @@ use crate::{validate_glob_pattern, Tool, ToolContext, ToolResult};
 pub struct GlobSearchTool;
 
 impl Tool for GlobSearchTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "glob_search"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Find files matching a glob pattern. Returns a sorted list of matching file paths."
     }
 

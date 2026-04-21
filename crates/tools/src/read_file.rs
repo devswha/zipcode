@@ -10,11 +10,11 @@ const BINARY_SCAN_BYTES: usize = 8192;
 pub struct ReadFileTool;
 
 impl Tool for ReadFileTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "read_file"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Read a file with line numbers. Supports offset and limit for partial reads."
     }
 
@@ -311,5 +311,67 @@ mod tests {
             "header should include line range and total: {}",
             result.content
         );
+    }
+
+    #[test]
+    fn test_read_unicode_content() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "안녕하세요").unwrap();
+        writeln!(f, "こんにちは").unwrap();
+        writeln!(f, "🦀 Rust").unwrap();
+
+        let tool = ReadFileTool;
+        let args = serde_json::json!({ "path": f.path().to_str().unwrap() });
+        let result = tool.execute(args, &ctx()).unwrap();
+        assert!(result.content.contains("안녕하세요"));
+        assert!(result.content.contains("こんにちは"));
+        assert!(result.content.contains("🦀"));
+    }
+
+    #[test]
+    fn test_read_only_last_line() {
+        let mut f = NamedTempFile::new().unwrap();
+        for i in 1..=5 {
+            writeln!(f, "line {i}").unwrap();
+        }
+
+        let tool = ReadFileTool;
+        let args = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "offset": 4,
+            "limit": 1
+        });
+        let result = tool.execute(args, &ctx()).unwrap();
+        assert!(result.content.contains("5	line 5"));
+        assert!(!result.content.contains("4	line 4"));
+    }
+
+    #[test]
+    fn test_missing_path_parameter_rejected() {
+        let tool = ReadFileTool;
+        let args = serde_json::json!({});
+        let result = tool.execute(args, &ctx());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing required parameter") || err.contains("failed to resolve"),
+            "expected missing path error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_read_single_line_file() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "only line").unwrap();
+
+        let tool = ReadFileTool;
+        let args = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "offset": 0,
+            "limit": 1
+        });
+        let result = tool.execute(args, &ctx()).unwrap();
+        assert!(result.content.contains("1	only line"));
+        assert!(result.content.contains("lines: 1-1 of 1 total"));
     }
 }

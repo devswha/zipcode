@@ -5,11 +5,11 @@ use crate::{Tool, ToolContext, ToolResult};
 pub struct AgentTool;
 
 impl Tool for AgentTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "agent"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Delegate a task to a sub-agent (not yet implemented)"
     }
 

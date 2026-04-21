@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat)",
+      "Read(//home/devswha/dotfiles/**)"
+    ]
+  }
+}
