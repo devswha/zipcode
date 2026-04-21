@@ -389,6 +389,25 @@ fn health_check(host: &str, port: u16) -> HealthStatus {
     }
     let response = String::from_utf8_lossy(&buf);
 
+    // Parse the HTTP status line to detect server errors early.
+    // Without this check, a 500 Internal Server Error response would be
+    // silently treated as HealthStatus::Loading, causing the startup polling
+    // loop to wait the full DEFAULT_STARTUP_TIMEOUT (180s) before failing.
+    // This is inconsistent with stream_sse_events() which checks for 200.
+    if let Some(status_code) = parse_http_status_code(&response) {
+        if !(200..300).contains(&status_code) {
+            let status_line = response
+                .lines()
+                .next()
+                .unwrap_or("unknown")
+                .trim()
+                .to_string();
+            return HealthStatus::Unreachable(format!(
+                "server returned HTTP {status_code}: {status_line}"
+            ));
+        }
+    }
+
     // Parse the JSON body (after the blank line separating headers from body)
     let body = response
         .split("\r\n\r\n")
@@ -403,6 +422,21 @@ fn health_check(host: &str, port: u16) -> HealthStatus {
     }
 
     HealthStatus::Loading
+}
+
+/// Extract the numeric HTTP status code from an HTTP response's status line.
+/// Returns `None` if the response doesn't start with a valid HTTP status line.
+fn parse_http_status_code(response: &str) -> Option<u16> {
+    let status_line = response.lines().next()?;
+    // HTTP status line format: "HTTP/1.x NNN ..."
+    let parts: Vec<&str> = status_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    if !parts[0].starts_with("HTTP/") {
+        return None;
+    }
+    parts[1].parse::<u16>().ok()
 }
 
 /// Parse a server URL for remote mode. Accepts `http://host:port`,
@@ -1396,6 +1430,164 @@ mod tests {
         assert!(
             matches!(result, HealthStatus::Loading),
             "health_check should parse JSON body, not match headers — got {result:?}"
+        );
+    }
+
+    // ── parse_http_status_code tests ──────────────────────────────────
+
+    #[test]
+    fn parse_http_status_code_extracts_200() {
+        let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        assert_eq!(parse_http_status_code(response), Some(200));
+    }
+
+    #[test]
+    fn parse_http_status_code_extracts_500() {
+        let response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+        assert_eq!(parse_http_status_code(response), Some(500));
+    }
+
+    #[test]
+    fn parse_http_status_code_extracts_503() {
+        let response = "HTTP/1.0 503 Service Unavailable\r\n\r\n";
+        assert_eq!(parse_http_status_code(response), Some(503));
+    }
+
+    #[test]
+    fn parse_http_status_code_returns_none_for_garbage() {
+        assert_eq!(parse_http_status_code("not http"), None);
+        assert_eq!(parse_http_status_code(""), None);
+    }
+
+    #[test]
+    fn parse_http_status_code_returns_none_for_missing_code() {
+        assert_eq!(parse_http_status_code("HTTP/1.1\r\n"), None);
+    }
+
+    // ── health_check HTTP status code validation tests ────────────────
+
+    #[test]
+    fn health_check_returns_unreachable_on_http_500() {
+        // A 500 response should NOT be treated as Loading — it must
+        // surface immediately so the startup loop can report the error
+        // instead of polling for 180 seconds.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"error\":\"model failed to load\"}";
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = health_check("127.0.0.1", port);
+        match result {
+            HealthStatus::Unreachable(msg) => {
+                assert!(
+                    msg.contains("HTTP 500"),
+                    "error message should mention HTTP 500, got: {msg}"
+                );
+            }
+            other => panic!("expected Unreachable for HTTP 500, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn health_check_returns_unreachable_on_http_503() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response = "HTTP/1.1 503 Service Unavailable\r\n\r\ntry later";
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = health_check("127.0.0.1", port);
+        assert!(
+            matches!(result, HealthStatus::Unreachable(_)),
+            "HTTP 503 should be Unreachable, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn health_check_returns_ready_on_http_200_with_status_ok() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\"}";
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = health_check("127.0.0.1", port);
+        assert!(
+            matches!(result, HealthStatus::Ready),
+            "HTTP 200 with status:ok should be Ready, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn health_check_returns_loading_on_http_200_without_status_ok() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"loading\"}";
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = health_check("127.0.0.1", port);
+        assert!(
+            matches!(result, HealthStatus::Loading),
+            "HTTP 200 with status:loading should still be Loading, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn health_check_returns_unreachable_on_http_400() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response = "HTTP/1.1 400 Bad Request\r\n\r\ninvalid";
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let result = health_check("127.0.0.1", port);
+        assert!(
+            matches!(result, HealthStatus::Unreachable(_)),
+            "HTTP 400 should be Unreachable, got {result:?}"
         );
     }
 }
