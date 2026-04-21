@@ -130,29 +130,13 @@ pub fn run_repl_command(
     session_id: Option<&str>,
     ui_mode: UiMode,
 ) -> Result<()> {
-    let cwd = std::env::current_dir().context("cannot determine current directory")?;
-    let config_load = load_config_with_warning(&cwd);
-    let report = build_readiness_report(&cwd, &config_load.config, model_path, backend_override)?;
-    let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
-
-    match readiness {
-        UserReadiness::Ready => run_interactive_with_ui(
-            model_path,
-            permission_mode,
-            backend_override,
-            session_id,
-            ui_mode,
-        ),
-        state => {
-            print_startup_guidance(
-                state,
-                &report,
-                config_load.warning.as_deref(),
-                config_load.warning_path.as_deref(),
-            );
-            Ok(())
-        }
-    }
+    run_default(
+        model_path,
+        permission_mode,
+        backend_override,
+        session_id,
+        ui_mode,
+    )
 }
 
 pub fn run_prompt_command(

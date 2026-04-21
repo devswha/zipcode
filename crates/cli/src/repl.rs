@@ -276,15 +276,37 @@ pub(crate) fn list_models(model_dir: &Path) -> Result<Vec<PathBuf>> {
     });
     Ok(models)
 }
+/// Remove redundant `.` components from a path for clean display.
+///
+/// When `.zipcode.json` uses a relative `model_dir` like `"./models"`,
+/// `Path::join` preserves the `./` segment, producing paths like
+/// `/home/user/project/./models/file.gguf`.  This function strips
+/// `CurDir` components so the displayed path is clean:
+/// `/home/user/project/models/file.gguf`.
+fn normalize_path_display(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut buf = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {} // skip `.`
+            other => buf.push(other.as_os_str()),
+        }
+    }
+    buf
+}
 
 /// Find a single .gguf file in the given directory.
 pub fn find_model(model_dir: &Path) -> Result<PathBuf> {
-    list_models(model_dir)?.into_iter().next().ok_or_else(|| {
-        anyhow::anyhow!(
-            "No .gguf model file found in directory: {}",
-            model_dir.display()
-        )
-    })
+    list_models(model_dir)?
+        .into_iter()
+        .next()
+        .map(|p| normalize_path_display(&p))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No .gguf model file found in directory: {}",
+                normalize_path_display(model_dir).display()
+            )
+        })
 }
 
 pub(crate) fn resolve_model_path(
@@ -304,9 +326,12 @@ pub(crate) fn resolve_model_path(
         return if resolved.is_dir() {
             find_model(&resolved)
         } else if resolved.exists() {
-            Ok(resolved)
+            Ok(normalize_path_display(&resolved))
         } else {
-            anyhow::bail!("Model path not found: {}", resolved.display())
+            anyhow::bail!(
+                "Model path not found: {}",
+                normalize_path_display(&resolved).display()
+            )
         };
     }
 
@@ -325,9 +350,12 @@ pub(crate) fn resolve_model_path(
         return if resolved.is_dir() {
             find_model(&resolved)
         } else if resolved.exists() {
-            Ok(resolved)
+            Ok(normalize_path_display(&resolved))
         } else {
-            anyhow::bail!("Configured model path not found: {}", resolved.display())
+            anyhow::bail!(
+                "Configured model path not found: {}",
+                normalize_path_display(&resolved).display()
+            )
         };
     }
 
@@ -1184,6 +1212,90 @@ mod tests {
         assert_eq!(resolved, model_file);
         let _ = std::fs::remove_file(model_file);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_model_path_strips_dot_slash_from_model_dir() {
+        let dir = temp_dir("dot-slash-model-dir");
+        let model_dir = dir.join("models");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let model_file = model_dir.join("test.gguf");
+        std::fs::write(&model_file, "").unwrap();
+
+        // Use "./models" as model_dir — should resolve cleanly without "./"
+        let config = ZipcodeConfig {
+            model_dir: PathBuf::from("./models"),
+            model_file: None,
+            llama_server_bin: None,
+            permission_mode: "workspace-write".to_string(),
+            generation: GenerationOverrides::default(),
+            gpu_layers: None,
+            flash_attention: false,
+        };
+
+        let resolved = resolve_model_path(None, &config, &dir, &dir).unwrap();
+        // The resolved path should NOT contain "/./"
+        let display = resolved.display().to_string();
+        assert!(
+            !display.contains("/./"),
+            "resolved path should not contain /./ but got: {display}"
+        );
+        assert_eq!(resolved, model_file);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_model_path_strips_dot_slash_from_model_file_error() {
+        let dir = temp_dir("dot-slash-error");
+        let model_dir = dir.join("models");
+        std::fs::create_dir_all(&model_dir).unwrap();
+
+        // Use "./models" as model_dir with a missing model_file
+        let config = ZipcodeConfig {
+            model_dir: PathBuf::from("./models"),
+            model_file: Some("missing.gguf".to_string()),
+            llama_server_bin: None,
+            permission_mode: "workspace-write".to_string(),
+            generation: GenerationOverrides::default(),
+            gpu_layers: None,
+            flash_attention: false,
+        };
+
+        let err = resolve_model_path(None, &config, &dir, &dir).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("/./"),
+            "error message should not contain /./ but got: {msg}"
+        );
+        assert!(
+            msg.contains("Configured model path not found"),
+            "expected model not found error, got: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn normalize_path_display_removes_curdir() {
+        let path = Path::new("/home/user/project/./models/file.gguf");
+        let normalized = normalize_path_display(path);
+        assert_eq!(
+            normalized,
+            PathBuf::from("/home/user/project/models/file.gguf")
+        );
+    }
+
+    #[test]
+    fn normalize_path_display_handles_multiple_curdir() {
+        let path = Path::new("/home/./user/./project/./file.txt");
+        let normalized = normalize_path_display(path);
+        assert_eq!(normalized, PathBuf::from("/home/user/project/file.txt"));
+    }
+
+    #[test]
+    fn normalize_path_display_preserves_clean_paths() {
+        let path = Path::new("/home/user/project/models/file.gguf");
+        let normalized = normalize_path_display(path);
+        assert_eq!(normalized, path);
     }
 
     #[test]

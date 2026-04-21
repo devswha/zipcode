@@ -948,7 +948,9 @@ mod tests {
         assert!(parse_sse_events("data: ").is_empty());
     }
 
-    fn serve_sse_response(body: &'static str) -> u16 {
+    /// Spawn a one-shot TCP server that responds with the given raw HTTP response.
+    /// Returns the port number the server is listening on.
+    fn serve_http_response(response: &'static str) -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -958,13 +960,21 @@ mod tests {
                 .unwrap();
             let mut buf = [0_u8; 4096];
             let _ = stream.read(&mut buf);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
-            );
             stream.write_all(response.as_bytes()).unwrap();
             stream.flush().unwrap();
         });
         port
+    }
+
+    /// Convenience wrapper: serve an SSE response with the standard event-stream headers.
+    fn serve_sse_response(body: &'static str) -> u16 {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+        );
+        // We leak the formatted string to get a &'static str for serve_http_response.
+        // This is acceptable in test code where the number of calls is bounded.
+        let response_static: &'static str = Box::leak(response.into_boxed_str());
+        serve_http_response(response_static)
     }
 
     #[test]
@@ -1412,19 +1422,8 @@ mod tests {
     fn health_check_parses_json_body_not_headers() {
         // Verify that a response where "ok" appears in a header but
         // the body says "loading" correctly reports Loading.
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let mut buf = [0_u8; 4096];
-            let _ = stream.read(&mut buf);
-            let response = "HTTP/1.1 200 OK\r\nX-Status: \"ok\"\r\nContent-Type: application/json\r\n\r\n{\"status\":\"loading\"}";
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.flush().unwrap();
-        });
+        let response = "HTTP/1.1 200 OK\r\nX-Status: \"ok\"\r\nContent-Type: application/json\r\n\r\n{\"status\":\"loading\"}";
+        let port = serve_http_response(response);
 
         let result = health_check("127.0.0.1", port);
         assert!(
@@ -1471,19 +1470,8 @@ mod tests {
         // A 500 response should NOT be treated as Loading — it must
         // surface immediately so the startup loop can report the error
         // instead of polling for 180 seconds.
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let mut buf = [0_u8; 4096];
-            let _ = stream.read(&mut buf);
-            let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"error\":\"model failed to load\"}";
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.flush().unwrap();
-        });
+        let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"error\":\"model failed to load\"}";
+        let port = serve_http_response(response);
 
         let result = health_check("127.0.0.1", port);
         match result {
@@ -1499,19 +1487,8 @@ mod tests {
 
     #[test]
     fn health_check_returns_unreachable_on_http_503() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let mut buf = [0_u8; 4096];
-            let _ = stream.read(&mut buf);
-            let response = "HTTP/1.1 503 Service Unavailable\r\n\r\ntry later";
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.flush().unwrap();
-        });
+        let response = "HTTP/1.1 503 Service Unavailable\r\n\r\ntry later";
+        let port = serve_http_response(response);
 
         let result = health_check("127.0.0.1", port);
         assert!(
@@ -1522,20 +1499,9 @@ mod tests {
 
     #[test]
     fn health_check_returns_ready_on_http_200_with_status_ok() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let mut buf = [0_u8; 4096];
-            let _ = stream.read(&mut buf);
-            let response =
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\"}";
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.flush().unwrap();
-        });
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\"}";
+        let port = serve_http_response(response);
 
         let result = health_check("127.0.0.1", port);
         assert!(
@@ -1546,20 +1512,9 @@ mod tests {
 
     #[test]
     fn health_check_returns_loading_on_http_200_without_status_ok() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let mut buf = [0_u8; 4096];
-            let _ = stream.read(&mut buf);
-            let response =
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"loading\"}";
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.flush().unwrap();
-        });
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"loading\"}";
+        let port = serve_http_response(response);
 
         let result = health_check("127.0.0.1", port);
         assert!(
@@ -1570,19 +1525,8 @@ mod tests {
 
     #[test]
     fn health_check_returns_unreachable_on_http_400() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let mut buf = [0_u8; 4096];
-            let _ = stream.read(&mut buf);
-            let response = "HTTP/1.1 400 Bad Request\r\n\r\ninvalid";
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.flush().unwrap();
-        });
+        let response = "HTTP/1.1 400 Bad Request\r\n\r\ninvalid";
+        let port = serve_http_response(response);
 
         let result = health_check("127.0.0.1", port);
         assert!(
