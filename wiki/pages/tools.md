@@ -29,7 +29,7 @@ The `zipcode-tools` crate. Home of the `Tool` + `ToolRegistry` god node.
 
 ## `Tool` trait
 
-**EXTRACTED** `crates/tools/src/lib.rs:367-373`
+**EXTRACTED** `crates/tools/src/lib.rs:392-404`
 
 ```rust
 pub trait Tool: Send + Sync {
@@ -42,7 +42,7 @@ pub trait Tool: Send + Sync {
 
 ### `ToolRegistry`
 
-**EXTRACTED** `lib.rs:375-408`
+**EXTRACTED** `lib.rs:406-445`
 
 ```rust
 pub struct ToolRegistry {
@@ -56,7 +56,7 @@ The registry is populated once by the CLI at REPL startup ([`crates/cli/src/repl
 
 ### `execute_tool()` — the single entry point
 
-**EXTRACTED** `lib.rs:419-429`
+**EXTRACTED** `lib.rs:456-466`
 
 ```rust
 pub fn execute_tool(
@@ -73,7 +73,7 @@ Looks up the tool, calls `tool.execute()`, and **auto-truncates** the result to 
 
 ## `ToolContext`
 
-**EXTRACTED** `lib.rs:269-273`
+**EXTRACTED** `lib.rs:314-327`
 
 ```rust
 pub struct ToolContext {
@@ -89,7 +89,7 @@ Passed to every `execute()`. Tools that touch the filesystem rebase paths onto `
 
 ## `ToolResult`
 
-**EXTRACTED** `lib.rs:277-317`
+**EXTRACTED** `lib.rs:329-379`
 
 ```rust
 pub struct ToolResult {
@@ -98,7 +98,7 @@ pub struct ToolResult {
 }
 ```
 
-Method `truncate(max_bytes)` (`lib.rs:297-317`) finds a safe UTF-8 char boundary, trims, and appends `[truncated: showing first X bytes of Y]`. **GOTCHA:** the model is told how many bytes were kept but NOT what was cut, so `ls -la` on a huge directory becomes an information black hole.
+Method `truncate(max_bytes)` (`lib.rs:352-379`) finds a safe UTF-8 char boundary, trims, and appends `[truncated: showing first X bytes of Y]`. **GOTCHA:** the model is told how many bytes were kept but NOT what was cut, so `ls -la` on a huge directory becomes an information black hole.
 
 ---
 
@@ -128,7 +128,7 @@ Method `truncate(max_bytes)` (`lib.rs:297-317`) finds a safe UTF-8 char boundary
 
 ## Path safety: `resolve_and_validate_path()`
 
-**EXTRACTED** `lib.rs:14-95`
+**EXTRACTED** `lib.rs:15-93`
 
 Single gate that every file-touching tool routes through.
 
@@ -137,13 +137,13 @@ Algorithm:
 2. Canonicalize (via `canonicalize_even_if_missing()` at `:71-95` for paths that don't exist yet).
 3. Assert `canonical.starts_with(&cwd_canonical)`.
 
-**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Shared path-safety regression coverage lives in `crates/tools/src/lib.rs:472-499`, but it still won't catch a brand-new tool that forgets the helper.
+**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Shared path-safety regression coverage lives in `crates/tools/src/lib.rs:470+`, but it still won't catch a brand-new tool that forgets the helper.
 
 ---
 
 ## Output truncation
 
-**EXTRACTED** `lib.rs:416` → `MAX_TOOL_OUTPUT_BYTES = 8192` — applied in `execute_tool()` at `:419-429`.
+**EXTRACTED** `lib.rs:449` → `MAX_TOOL_OUTPUT_BYTES = 8192` — applied in `execute_tool()` at `:456-466`.
 
 **Why 8 KB?** Fits comfortably into Gemma's 8192-token default context without crowding the conversation. Overridable would require a config field (not present today).
 
@@ -164,7 +164,7 @@ The rest of the crate still has broad per-tool coverage for:
 
 | Area | Example coverage anchors |
 |------|---------------------------|
-| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:429`, `crates/tools/src/lib.rs:447`, `crates/tools/src/lib.rs:472` |
+| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:427`, `crates/tools/src/lib.rs:438`, `crates/tools/src/lib.rs:470` |
 | File readers / writers / editor behaviors | `crates/tools/src/read_file.rs`, `crates/tools/src/write_file.rs`, `crates/tools/src/edit_file.rs` |
 | Search behavior and budget limits | `crates/tools/src/glob_search.rs`, `crates/tools/src/grep_search.rs` |
 | Execution tools (`bash`, `repl`) | `crates/tools/src/bash.rs`, `crates/tools/src/repl.rs` |

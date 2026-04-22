@@ -4,8 +4,8 @@ Permission state is **split across two crates** — GOTCHA flagged in [`GRAPH_RE
 
 | Concept | Where | File |
 |---------|-------|------|
-| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:282` |
-| `PermissionPolicy` + `check()` | `zipcode-runtime` | `crates/runtime/src/permission.rs:28` |
+| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:304` |
+| `PermissionPolicy` + `check()` | `zipcode-runtime` | `crates/runtime/src/permission.rs:31` |
 | CLI flag `--permission-mode` | `zipcode` (cli) | `crates/cli/src/main.rs` |
 | Config field `permission_mode` | `zipcode-runtime` | `crates/runtime/src/config.rs` (default: `workspace-write`) |
 
@@ -13,7 +13,7 @@ Permission state is **split across two crates** — GOTCHA flagged in [`GRAPH_RE
 
 ## `PermissionMode`
 
-**EXTRACTED** `crates/tools/src/lib.rs:260-266`
+**EXTRACTED** `crates/tools/src/lib.rs:300-308`
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +31,7 @@ Serialization: kebab-case (`read-only`, `workspace-write`, `full-access`). The p
 
 ## `PermissionPolicy::check()`
 
-**EXTRACTED** `crates/runtime/src/permission.rs:28-49`
+**EXTRACTED** `crates/runtime/src/permission.rs:31-53`
 
 Returns a 3-variant enum:
 
