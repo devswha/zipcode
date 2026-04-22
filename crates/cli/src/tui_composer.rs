@@ -1,5 +1,5 @@
 #[derive(Debug, Default, Clone)]
-pub(crate) struct Composer {
+pub struct Composer {
     buffer: String,
     cursor: usize,
     preferred_column: Option<usize>,
@@ -24,7 +24,7 @@ impl Composer {
         self.history_index = None;
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 

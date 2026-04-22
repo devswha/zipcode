@@ -37,7 +37,7 @@ enum UserReadiness {
 }
 
 impl UserReadiness {
-    fn headline(self) -> &'static str {
+    const fn headline(self) -> &'static str {
         match self {
             Self::Ready => "Ready",
             Self::NeedsSetup => "Setup needed",
@@ -45,7 +45,7 @@ impl UserReadiness {
         }
     }
 
-    fn startup_title(self) -> &'static str {
+    const fn startup_title(self) -> &'static str {
         match self {
             Self::Ready => "zipcode is ready.",
             Self::NeedsSetup => "Setup needed before zipcode can start.",
@@ -222,12 +222,17 @@ pub fn setup(
         .clone()
         .ok_or_else(|| anyhow!(missing_model_message(&report)))?;
     let mut global_config = ZipcodeConfig::load_global().unwrap_or_default();
-    global_config.model_dir = model.parent().unwrap_or(Path::new(".")).to_path_buf();
+    global_config.model_dir = model
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
     global_config.model_file = model
         .file_name()
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned);
-    global_config.llama_server_bin = report.llama_server_bin.clone();
+    global_config
+        .llama_server_bin
+        .clone_from(&report.llama_server_bin);
     if let Some(mode) = permission_mode {
         global_config.permission_mode = mode.to_string();
     }
@@ -323,18 +328,18 @@ pub fn update(check_only: bool, rebuild: bool) -> Result<()> {
 
     ensure_update_is_safe(&status)?;
 
-    let mut changed = false;
-    if status.behind.unwrap_or(0) > 0 {
+    let changed = if status.behind.unwrap_or(0) > 0 {
         run_checked(
             &status.repo_root,
             "git",
             &["pull", "--ff-only", "origin", &status.branch],
             "fast-forward the checkout",
         )?;
-        changed = true;
+        true
     } else {
         println!("Already up to date.");
-    }
+        false
+    };
 
     if changed || rebuild {
         println!();
@@ -361,7 +366,7 @@ pub fn update(check_only: bool, rebuild: bool) -> Result<()> {
     Ok(())
 }
 
-/// Check if CUDA is available by looking for libcuda.so or CUDA_PATH env var.
+/// Check if CUDA is available by looking for libcuda.so or `CUDA_PATH` env var.
 pub fn check_cuda() -> bool {
     if std::env::var("CUDA_PATH").is_ok() {
         return true;
@@ -400,10 +405,8 @@ fn read_global_config_json() -> Option<serde_json::Value> {
 }
 
 fn config_field_missing_or_null(raw: Option<&serde_json::Value>, field: &str) -> bool {
-    match raw.and_then(|json| json.get(field)) {
-        None => true,
-        Some(value) => value.is_null(),
-    }
+    raw.and_then(|json| json.get(field))
+        .is_none_or(serde_json::Value::is_null)
 }
 
 fn should_upgrade_flash_attention(config: &ZipcodeConfig, raw: Option<&serde_json::Value>) -> bool {
@@ -659,19 +662,22 @@ fn build_readiness_report(
     let project_root = find_project_root(cwd);
     let model_resolution = resolve_model_path(explicit_model_path, config, cwd, &project_root);
     let (model, model_issue) = match model_resolution {
-        Ok(path) => (Some(path), None),
+        Ok(path) => match validate_gguf_file(&path) {
+            Ok(()) => (Some(path), None),
+            Err(validation_err) => (Some(path), Some(validation_err.to_string())),
+        },
         Err(error) => (None, Some(error.to_string())),
     };
     let model_search = model_search_locations(explicit_model_path, config, cwd, &project_root);
     let model_issue_is_misconfigured = explicit_model_path.is_some() || config.model_file.is_some();
     let llama_server = discover_helper(config);
     let requested_backend = resolve_requested_backend(backend_override)?;
-    let backend = model
-        .as_deref()
-        .map(|model_path| {
+    let backend = model.as_deref().map_or_else(
+        || requested_backend.unwrap_or(Backend::LlamaCpp),
+        |model_path| {
             resolve_effective_backend(requested_backend, model_path, llama_server.path.as_deref())
-        })
-        .unwrap_or(requested_backend.unwrap_or(Backend::LlamaCpp));
+        },
+    );
     let server_options = server_options_from_config(config);
     let tokenizer_required = tokenizer_is_required(backend, model.as_deref());
 
@@ -726,7 +732,7 @@ fn build_readiness_report(
     })
 }
 
-fn classify_user_readiness(
+const fn classify_user_readiness(
     report: &ReadinessReport,
     config_warning: Option<&str>,
 ) -> UserReadiness {
@@ -774,7 +780,7 @@ fn classify_readiness(
     ReadinessStatus::NativeOk
 }
 
-fn backend_name(backend: Backend) -> &'static str {
+const fn backend_name(backend: Backend) -> &'static str {
     match backend {
         Backend::LlamaCpp => "llama-cpp",
         Backend::LlamaServer => "llama-server",
@@ -782,7 +788,7 @@ fn backend_name(backend: Backend) -> &'static str {
     }
 }
 
-fn friendly_engine_name(backend: Backend) -> &'static str {
+const fn friendly_engine_name(backend: Backend) -> &'static str {
     match backend {
         Backend::LlamaCpp => "local engine (llama-cpp)",
         Backend::LlamaServer => "compatibility helper (llama-server)",
@@ -790,8 +796,52 @@ fn friendly_engine_name(backend: Backend) -> &'static str {
     }
 }
 
+/// GGUF magic bytes: the ASCII string "GGUF" (0x47 0x47 0x55 0x46).
+const GGUF_MAGIC: [u8; 4] = [0x47, 0x47, 0x55, 0x46];
+
+/// Validate that a file looks like a legitimate GGUF model file.
+///
+/// Checks that the file is non-empty and starts with the GGUF magic header.
+///
+/// # Errors
+///
+/// Returns an error if the file is empty, cannot be read, or does not start
+/// with the GGUF magic bytes.
+fn validate_gguf_file(path: &Path) -> Result<()> {
+    let metadata =
+        std::fs::metadata(path).with_context(|| format!("Cannot stat {}", path.display()))?;
+    let size = metadata.len();
+    if size == 0 {
+        anyhow::bail!("Model file is empty (0 bytes): {}", path.display());
+    }
+    if size < 4 {
+        anyhow::bail!(
+            "Model file is too small to be valid ({size} bytes): {}",
+            path.display()
+        );
+    }
+
+    let mut handle =
+        std::fs::File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
+    let mut header = [0u8; 4];
+    std::io::Read::read_exact(&mut handle, &mut header)
+        .with_context(|| format!("Cannot read header from {}", path.display()))?;
+
+    if header != GGUF_MAGIC {
+        anyhow::bail!(
+            "Model file does not have a valid GGUF header (found {:02X?}, expected {:02X?}): {}",
+            header,
+            GGUF_MAGIC,
+            path.display()
+        );
+    }
+
+    Ok(())
+}
+
 fn format_model(path: &Path) -> String {
     let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    #[allow(clippy::cast_precision_loss)]
     let size_gb = size as f64 / (1024.0 * 1024.0 * 1024.0);
     format!("{} ({size_gb:.1} GB)", path.display())
 }
@@ -958,7 +1008,7 @@ fn next_steps(
                 let helper = report
                     .llama_server_bin
                     .as_deref()
-                    .unwrap_or(Path::new("llama-server"));
+                    .unwrap_or_else(|| Path::new("llama-server"));
                 lines.push(format!(
                     "zipcode will use the compatibility helper at {} automatically for this model.",
                     helper.display()
@@ -992,7 +1042,7 @@ fn setup_steps(report: &ReadinessReport) -> Vec<String> {
                 report
                     .model
                     .as_deref()
-                    .unwrap_or(Path::new("your-model.gguf"))
+                    .unwrap_or_else(|| Path::new("your-model.gguf"))
                     .display()
             ),
             "Run `zipcode setup --skip-smoke`, then run `zipcode` again.".to_string(),
@@ -1069,15 +1119,15 @@ fn tokenizer_is_required(backend: Backend, model: Option<&Path>) -> bool {
 }
 
 fn model_location_hint(report: &ReadinessReport) -> String {
-    report
-        .model_search
-        .first()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .map(|home| home.join(".zipcode/models").display().to_string())
-                .unwrap_or_else(|| "~/.zipcode/models".to_string())
-        })
+    report.model_search.first().map_or_else(
+        || {
+            dirs::home_dir().map_or_else(
+                || "~/.zipcode/models".to_string(),
+                |home| home.join(".zipcode/models").display().to_string(),
+            )
+        },
+        |path| path.display().to_string(),
+    )
 }
 
 fn missing_model_message(report: &ReadinessReport) -> String {
@@ -1121,7 +1171,7 @@ fn format_search_paths(paths: &[PathBuf]) -> String {
 fn tokenizer_path_for_model(model: &Path) -> PathBuf {
     model
         .parent()
-        .unwrap_or(Path::new("."))
+        .unwrap_or_else(|| Path::new("."))
         .join(TOKENIZER_FILE_NAME)
 }
 
@@ -1737,6 +1787,86 @@ mod tests {
         assert_eq!(
             resolve_path_from_cwd(path, cwd),
             PathBuf::from("/working/dir/model.gguf")
+        );
+    }
+
+    // ── validate_gguf_file tests ──────────────────────────────────
+
+    #[test]
+    fn validate_gguf_file_accepts_valid_header() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("model.gguf");
+        // Write GGUF magic + some extra bytes
+        let mut data = vec![0x47, 0x47, 0x55, 0x46]; // "GGUF"
+        data.extend_from_slice(&[0u8; 100]); // padding
+        std::fs::write(&path, &data).unwrap();
+        assert!(
+            validate_gguf_file(&path).is_ok(),
+            "valid GGUF header should pass validation"
+        );
+    }
+
+    #[test]
+    fn validate_gguf_file_rejects_empty_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("empty.gguf");
+        std::fs::write(&path, "").unwrap();
+        let err = validate_gguf_file(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("empty"),
+            "empty file should report 'empty', got: {err}"
+        );
+        assert!(
+            err.contains("0 bytes"),
+            "empty file should mention '0 bytes', got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_gguf_file_rejects_wrong_magic() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("bad.gguf");
+        // Write some bytes that are NOT the GGUF magic
+        std::fs::write(&path, b"NOT_A_GGUF_FILE_AT_ALL!!!!").unwrap();
+        let err = validate_gguf_file(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("valid GGUF header"),
+            "wrong magic should mention invalid header, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_gguf_file_rejects_truncated_header() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tiny.gguf");
+        // Only 2 bytes — too small to contain a 4-byte header
+        std::fs::write(&path, b"GG").unwrap();
+        let err = validate_gguf_file(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("too small"),
+            "truncated file should report 'too small', got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_gguf_file_accepts_exact_4_byte_header() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("minimal.gguf");
+        // Exactly 4 bytes: the GGUF magic — should pass (header present)
+        std::fs::write(&path, [0x47, 0x47, 0x55, 0x46]).unwrap();
+        assert!(
+            validate_gguf_file(&path).is_ok(),
+            "exact 4-byte GGUF header should pass validation"
+        );
+    }
+
+    #[test]
+    fn validate_gguf_file_rejects_nonexistent_file() {
+        let path = Path::new("/tmp/this_file_definitely_does_not_exist_12345.gguf");
+        let err = validate_gguf_file(path).unwrap_err().to_string();
+        assert!(
+            err.contains("Cannot stat"),
+            "nonexistent file should report stat error, got: {err}"
         );
     }
 }

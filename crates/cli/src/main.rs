@@ -24,7 +24,8 @@ pub enum CliPermissionMode {
 
 impl CliPermissionMode {
     /// Return the kebab-case string accepted by `parse_permission_mode()`.
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::ReadOnly => "read-only",
             Self::WorkspaceWrite => "workspace-write",
@@ -134,7 +135,7 @@ fn main() -> Result<()> {
     render::set_verbose(cli.verbose || verbose_env);
 
     let model_path = cli.model.as_deref();
-    let permission_mode = cli.permission_mode.map(|m| m.as_str());
+    let permission_mode = cli.permission_mode.map(CliPermissionMode::as_str);
     let backend = cli.backend.as_deref();
     let session_id = cli.session.as_deref();
 

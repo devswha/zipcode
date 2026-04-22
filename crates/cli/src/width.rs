@@ -3,13 +3,13 @@ use unicode_width::UnicodeWidthChar;
 /// Total display width of a string in terminal columns.
 /// CJK chars count as 2, control chars as 0, tab as 1.
 #[allow(dead_code)]
-pub(crate) fn display_width(s: &str) -> usize {
+pub fn display_width(s: &str) -> usize {
     s.chars().map(char_width).sum()
 }
 
 /// Truncate a string to fit within `max_width` display columns.
-/// Appends "…" if truncated. Returns empty string if max_width < 2.
-pub(crate) fn truncate_display(s: &str, max_width: usize) -> String {
+/// Appends "…" if truncated. Returns empty string if `max_width` < 2.
+pub fn truncate_display(s: &str, max_width: usize) -> String {
     if max_width < 2 {
         return String::new();
     }
@@ -43,7 +43,7 @@ pub(crate) fn truncate_display(s: &str, max_width: usize) -> String {
 
 /// Wrap a string at `max_width` display columns. Does NOT handle newlines —
 /// caller should split on '\n' first. Returns at least one element.
-pub(crate) fn wrap_display(s: &str, max_width: usize) -> Vec<String> {
+pub fn wrap_display(s: &str, max_width: usize) -> Vec<String> {
     let max_width = max_width.max(1);
     if s.is_empty() {
         return vec![String::new()];
@@ -71,14 +71,14 @@ pub(crate) fn wrap_display(s: &str, max_width: usize) -> Vec<String> {
 }
 
 /// Display column at a given byte cursor position within a string.
-pub(crate) fn column_at_byte(s: &str, byte_cursor: usize) -> usize {
+pub fn column_at_byte(s: &str, byte_cursor: usize) -> usize {
     let cursor = floor_char_boundary(s, byte_cursor);
     s[..cursor].chars().map(char_width).sum()
 }
 
 /// Byte offset corresponding to a target display column.
 /// Returns the byte offset at or just before the target column.
-pub(crate) fn byte_at_column(s: &str, target_col: usize) -> usize {
+pub fn byte_at_column(s: &str, target_col: usize) -> usize {
     let mut col = 0usize;
     for (i, ch) in s.char_indices() {
         if col >= target_col {
@@ -96,7 +96,7 @@ pub(crate) fn byte_at_column(s: &str, target_col: usize) -> usize {
 /// Display width of a single character.  Exposed as `pub(crate)` so that
 /// `tui_composer` can compute per-character widths without pulling in
 /// `unicode_width` directly.
-pub(crate) fn char_display_width(ch: char) -> usize {
+pub fn char_display_width(ch: char) -> usize {
     char_width(ch)
 }
 

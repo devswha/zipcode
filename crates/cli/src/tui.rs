@@ -41,6 +41,14 @@ const STREAM_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
 const STREAM_REDRAW_MIN_BYTES: usize = 24;
 const MOUSE_WHEEL_SCROLL_LINES: usize = 4;
 
+/// Saturating cast from `usize` to `u16`, clamping at `u16::MAX`.
+/// Used throughout the TUI for terminal coordinates which are inherently
+/// bounded by the terminal's u16 dimension.
+#[allow(clippy::cast_possible_truncation)]
+fn as_u16(n: usize) -> u16 {
+    n.min(u16::MAX as usize) as u16
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TranscriptViewport {
     width: usize,
@@ -118,7 +126,7 @@ fn run_automation_script_from_env(
     };
 
     for line in script.lines() {
-        if !ui.handle_submitted_input(line.to_string(), conv)? {
+        if !ui.handle_submitted_input(line, conv)? {
             return Ok(false);
         }
     }
@@ -245,6 +253,7 @@ impl FullscreenUi {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_key_event(&mut self, key: KeyEvent, conv: &mut ConversationLoop) -> Result<bool> {
         if self.overlay.is_some() {
             match key.code {
@@ -320,7 +329,7 @@ impl FullscreenUi {
                 self.status = if moved == 0 {
                     "Already at the oldest visible history".to_string()
                 } else {
-                    format!("Scrolled up {} line(s)", moved)
+                    format!("Scrolled up {moved} line(s)")
                 };
             }
             KeyEvent {
@@ -331,7 +340,7 @@ impl FullscreenUi {
                 self.status = if self.transcript_scroll == 0 {
                     "Back to latest output".to_string()
                 } else {
-                    format!("Scrolled down {} line(s)", moved)
+                    format!("Scrolled down {moved} line(s)")
                 };
             }
             KeyEvent {
@@ -421,7 +430,7 @@ impl FullscreenUi {
                     return Ok(true);
                 }
                 let submitted = self.composer.submit();
-                return self.handle_submitted_input(submitted, conv);
+                return self.handle_submitted_input(&submitted, conv);
             }
             KeyEvent {
                 code: KeyCode::Char(ch),
@@ -451,28 +460,24 @@ impl FullscreenUi {
             ScrollDirection::Older if moved == 0 => {
                 "Already at the oldest visible history".to_string()
             }
-            ScrollDirection::Older => format!("Scrolled up {} line(s)", moved),
+            ScrollDirection::Older => format!("Scrolled up {moved} line(s)"),
             ScrollDirection::Newer if self.transcript_scroll == 0 => {
                 "Back to latest output".to_string()
             }
-            ScrollDirection::Newer => format!("Scrolled down {} line(s)", moved),
+            ScrollDirection::Newer => format!("Scrolled down {moved} line(s)"),
         };
         self.draw()?;
         Ok(())
     }
 
-    fn handle_submitted_input(
-        &mut self,
-        input: String,
-        conv: &mut ConversationLoop,
-    ) -> Result<bool> {
+    fn handle_submitted_input(&mut self, input: &str, conv: &mut ConversationLoop) -> Result<bool> {
         self.transcript_scroll = 0;
         if input.trim().is_empty() {
             self.status = "Ready".to_string();
         } else {
             match parse_slash_command(input.trim()) {
                 ParsedSlashCommand::Command(command, argument) => {
-                    if !self.handle_slash_command(command, argument.as_deref(), conv)? {
+                    if !self.handle_slash_command(command, argument.as_deref(), conv) {
                         return Ok(false);
                     }
                 }
@@ -492,7 +497,7 @@ impl FullscreenUi {
         command: SlashCommand,
         argument: Option<&str>,
         conv: &mut ConversationLoop,
-    ) -> Result<bool> {
+    ) -> bool {
         match command {
             SlashCommand::Help => self.open_help_overlay(),
             SlashCommand::Status => {
@@ -518,27 +523,28 @@ impl FullscreenUi {
                 }
                 self.status = "Session details shown".to_string();
             }
-            SlashCommand::SessionLoad => match argument {
-                Some(id) => match load_session_into_loop(conv, id) {
-                    Ok(message) => {
-                        self.set_transcript_from_session(&conv.session);
-                        self.push_entry(EntryKind::Info, message);
-                        self.session_id = conv.session.id.clone();
-                        self.status = "Session loaded".to_string();
+            SlashCommand::SessionLoad => {
+                if let Some(id) = argument {
+                    match load_session_into_loop(conv, id) {
+                        Ok(message) => {
+                            self.set_transcript_from_session(&conv.session);
+                            self.push_entry(EntryKind::Info, message);
+                            self.session_id.clone_from(&conv.session.id);
+                            self.status = "Session loaded".to_string();
+                        }
+                        Err(error) => {
+                            self.push_entry(EntryKind::Error, format!("{error:#}"));
+                            self.status = "Session load failed".to_string();
+                        }
                     }
-                    Err(error) => {
-                        self.push_entry(EntryKind::Error, format!("{error:#}"));
-                        self.status = "Session load failed".to_string();
-                    }
-                },
-                None => {
+                } else {
                     self.push_entry(
                         EntryKind::Error,
                         "/session load requires a session id".to_string(),
                     );
                     self.status = "Missing session id".to_string();
                 }
-            },
+            }
             SlashCommand::Compact => match compact_session(conv) {
                 Ok(feedback) => {
                     self.set_transcript_from_session(&conv.session);
@@ -558,7 +564,7 @@ impl FullscreenUi {
                     self.transcript.clear();
                     self.transcript_cache = TranscriptCache::default();
                     self.push_entry(EntryKind::Info, message);
-                    self.session_id = conv.session.id.clone();
+                    self.session_id.clone_from(&conv.session.id);
                     self.status = "Conversation cleared".to_string();
                 }
                 Err(error) => {
@@ -566,16 +572,16 @@ impl FullscreenUi {
                     self.status = "Conversation clear failed".to_string();
                 }
             },
-            SlashCommand::Quit => return Ok(false),
+            SlashCommand::Quit => return false,
         }
 
-        Ok(true)
+        true
     }
 
     fn open_help_overlay(&mut self) {
         let mut body: Vec<String> = help_text().lines().map(str::to_string).collect();
         body.extend([
-            "".to_string(),
+            String::new(),
             "Fullscreen keys:".to_string(),
             "  Enter      submit".to_string(),
             "  \\ + Enter  newline (Claude Code quick escape)".to_string(),
@@ -602,7 +608,7 @@ impl FullscreenUi {
         self.status = "Help opened".to_string();
     }
 
-    fn run_turn(&mut self, input: String, conv: &mut ConversationLoop) -> Result<()> {
+    fn run_turn(&mut self, input: &str, conv: &mut ConversationLoop) -> Result<()> {
         self.push_entry(EntryKind::User, input.trim_end().to_string());
         self.status = "Thinking…".to_string();
         self.thinking_bytes = 0;
@@ -613,9 +619,9 @@ impl FullscreenUi {
             last_stream_draw: None,
             pending_stream_bytes: 0,
         };
-        let result = conv.run_turn(&input, &mut cb);
+        let result = conv.run_turn(input, &mut cb);
         cb.flush_pending_stream_draw();
-        cb.ui.session_id = conv.session.id.clone();
+        cb.ui.session_id.clone_from(&conv.session.id);
         cb.ui.status = if result.is_ok() {
             "Ready".to_string()
         } else {
@@ -633,11 +639,10 @@ impl FullscreenUi {
             if let Some(prev) = self.transcript.last() {
                 let dominated = matches!(
                     (prev.kind, kind),
-                    (EntryKind::User, EntryKind::Assistant)
-                        | (EntryKind::User, EntryKind::Thinking)
-                        | (EntryKind::ToolResult, EntryKind::Assistant)
-                        | (EntryKind::ToolResult, EntryKind::Thinking)
-                        | (EntryKind::Assistant, EntryKind::User)
+                    (
+                        EntryKind::User | EntryKind::ToolResult,
+                        EntryKind::Assistant | EntryKind::Thinking
+                    ) | (EntryKind::Assistant, EntryKind::User)
                 );
                 if dominated {
                     let sep = TranscriptEntry {
@@ -689,7 +694,7 @@ impl FullscreenUi {
         let composer_width = width.saturating_sub(4) as usize;
         let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
         let composer_visible = composer_lines.len().clamp(1, MAX_COMPOSER_LINES);
-        let composer_height = composer_visible as u16;
+        let composer_height = as_u16(composer_visible);
         let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
         let transcript_height = status_y.saturating_sub(HEADER_LINES) as usize;
         let viewport = TranscriptViewport {
@@ -732,7 +737,7 @@ impl FullscreenUi {
         Ok(previous.abs_diff(self.transcript_scroll))
     }
 
-    fn jump_to_latest_transcript(&mut self) -> usize {
+    const fn jump_to_latest_transcript(&mut self) -> usize {
         let previous = self.transcript_scroll;
         self.transcript_scroll = 0;
         previous
@@ -752,9 +757,8 @@ impl FullscreenUi {
         loop {
             if let Event::Key(key) = event::read().context("failed to read permission input")? {
                 match key.code {
-                    KeyCode::Enter => return Ok(true),
-                    KeyCode::Char('y') | KeyCode::Char('Y') => return Ok(true),
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => return Ok(false),
+                    KeyCode::Enter | KeyCode::Char('y' | 'Y') => return Ok(true),
+                    KeyCode::Char('n' | 'N') | KeyCode::Esc => return Ok(false),
                     _ => {}
                 }
             }
@@ -767,7 +771,7 @@ impl FullscreenUi {
         let composer_width = width.saturating_sub(4) as usize;
         let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
         let composer_visible = composer_lines.len().clamp(1, MAX_COMPOSER_LINES);
-        let composer_height = composer_visible as u16;
+        let composer_height = as_u16(composer_visible);
         let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
         let composer_label_y = status_y + 1;
         let composer_top = composer_label_y + 1;
@@ -800,7 +804,7 @@ impl FullscreenUi {
         let composer_width = width.saturating_sub(4) as usize;
         let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
         let composer_visible = composer_lines.len().clamp(1, MAX_COMPOSER_LINES);
-        let composer_height = composer_visible as u16;
+        let composer_height = as_u16(composer_visible);
         let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
         let composer_label_y = status_y + 1;
         let composer_top = composer_label_y + 1;
@@ -808,7 +812,7 @@ impl FullscreenUi {
         let transcript_height = status_y.saturating_sub(transcript_top) as usize;
 
         self.begin_sync_output();
-        self.clear_region(transcript_top, transcript_height as u16)?;
+        self.clear_region(transcript_top, as_u16(transcript_height))?;
         self.clear_region(status_y, height.saturating_sub(status_y))?;
         self.draw_transcript(width, transcript_top, transcript_height)?;
         self.draw_footer(width, status_y, composer_top, composer_height, hint_y)?;
@@ -874,7 +878,7 @@ impl FullscreenUi {
         for (idx, line) in visible.iter().enumerate() {
             execute!(
                 self.stdout,
-                MoveTo(0, top + idx as u16),
+                MoveTo(0, top + as_u16(idx)),
                 SetForegroundColor(line.color),
                 Print(truncate_to_width(&line.text, width as usize)),
                 ResetColor,
@@ -982,7 +986,7 @@ impl FullscreenUi {
         for line in &overlay.body {
             body_lines.extend(wrap_plain(line, body_width.max(1)));
         }
-        let box_height = (body_lines.len() as u16 + 4)
+        let box_height = (as_u16(body_lines.len()) + 4)
             .min(height.saturating_sub(2))
             .max(6);
         let box_top = (height.saturating_sub(box_height)) / 2;
@@ -1014,7 +1018,7 @@ impl FullscreenUi {
         for (idx, line) in body_lines.into_iter().take(available_body).enumerate() {
             execute!(
                 self.stdout,
-                MoveTo(box_left + 2, box_top + 1 + idx as u16),
+                MoveTo(box_left + 2, box_top + 1 + as_u16(idx)),
                 Print(truncate_to_width(&line, body_width)),
             )?;
         }
@@ -1047,8 +1051,8 @@ impl FullscreenUi {
         execute!(
             self.stdout,
             MoveTo(
-                prefix + cursor_col as u16,
-                composer_top + display_row as u16
+                prefix + as_u16(cursor_col),
+                composer_top + as_u16(display_row)
             )
         )?;
         Ok(())
@@ -1181,10 +1185,7 @@ fn should_draw_stream_update(
         return true;
     }
 
-    match last_stream_draw {
-        None => true,
-        Some(last_draw) => last_draw.elapsed() >= STREAM_REDRAW_INTERVAL,
-    }
+    last_stream_draw.is_none_or(|last_draw| last_draw.elapsed() >= STREAM_REDRAW_INTERVAL)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1208,7 +1209,7 @@ fn handle_empty_composer_escape(composer: &mut Composer, esc_armed: &mut bool) -
     }
 }
 
-fn next_permission_mode(mode: PermissionMode) -> PermissionMode {
+const fn next_permission_mode(mode: PermissionMode) -> PermissionMode {
     match mode {
         PermissionMode::ReadOnly => PermissionMode::WorkspaceWrite,
         PermissionMode::WorkspaceWrite => PermissionMode::FullAccess,
@@ -1216,7 +1217,7 @@ fn next_permission_mode(mode: PermissionMode) -> PermissionMode {
     }
 }
 
-fn permission_mode_label(mode: PermissionMode) -> &'static str {
+const fn permission_mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ReadOnly => "read-only",
         PermissionMode::WorkspaceWrite => "workspace-write",
@@ -1271,11 +1272,10 @@ impl TranscriptCache {
             let keep = self.lines.len().saturating_sub(*previous_count);
             self.lines.truncate(keep);
             *previous_count = rendered.len();
-            self.lines.extend(rendered);
         } else {
             self.entry_line_counts.push(rendered.len());
-            self.lines.extend(rendered);
         }
+        self.lines.extend(rendered);
     }
 }
 
@@ -1565,7 +1565,7 @@ enum ScrollDirection {
     Newer,
 }
 
-fn mouse_scroll_direction(kind: MouseEventKind) -> Option<ScrollDirection> {
+const fn mouse_scroll_direction(kind: MouseEventKind) -> Option<ScrollDirection> {
     match kind {
         MouseEventKind::ScrollUp => Some(ScrollDirection::Older),
         MouseEventKind::ScrollDown => Some(ScrollDirection::Newer),

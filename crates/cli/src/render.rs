@@ -106,7 +106,7 @@ impl Spinner {
             let _ = lock.flush();
         });
 
-        Spinner {
+        Self {
             active,
             thinking_bytes,
             handle: Some(handle),
@@ -136,7 +136,7 @@ impl Drop for Spinner {
 
 // ── Markdown rendering ──────────────────────────────────────────────
 
-/// Create a styled MadSkin for markdown rendering.
+/// Create a styled `MadSkin` for markdown rendering.
 pub fn create_skin() -> MadSkin {
     let mut skin = MadSkin::default();
     skin.headers[0].set_fg(termimad::crossterm::style::Color::Cyan);
@@ -175,7 +175,7 @@ pub fn print_tool_start(name: &str, args: &Value) {
 /// not dump hundreds of lines of code into the terminal. Falls through
 /// to the generic `format_tool_args` rendering for tools we do not
 /// specialize.
-pub(crate) fn summarize_tool_args(name: &str, args: &Value, max_width: usize) -> String {
+pub fn summarize_tool_args(name: &str, args: &Value, max_width: usize) -> String {
     match name {
         "write_file" => {
             let path = args["path"].as_str().unwrap_or("?");
@@ -188,12 +188,10 @@ pub(crate) fn summarize_tool_args(name: &str, args: &Value, max_width: usize) ->
             let path = args["path"].as_str().unwrap_or("?");
             let old_lines = args["old_string"]
                 .as_str()
-                .map(|s| s.lines().count().max(1))
-                .unwrap_or(0);
+                .map_or(0, |s| s.lines().count().max(1));
             let new_lines = args["new_string"]
                 .as_str()
-                .map(|s| s.lines().count().max(1))
-                .unwrap_or(0);
+                .map_or(0, |s| s.lines().count().max(1));
             truncate_to_width(
                 &format!("path={path}, -{old_lines}/+{new_lines} lines"),
                 max_width,

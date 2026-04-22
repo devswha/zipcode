@@ -32,7 +32,7 @@ pub struct LoopLaunch {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct HelperDiscovery {
+pub struct HelperDiscovery {
     pub path: Option<PathBuf>,
     pub issue: Option<String>,
     pub issue_is_blocking: bool,
@@ -55,7 +55,7 @@ pub struct CliCallback {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SlashCommand {
+pub enum SlashCommand {
     Help,
     Quit,
     Clear,
@@ -66,14 +66,14 @@ pub(crate) enum SlashCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ParsedSlashCommand {
+pub enum ParsedSlashCommand {
     Command(SlashCommand, Option<String>),
     NotCommand,
     Error(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CompactFeedback {
+pub enum CompactFeedback {
     Compacted(String),
     Skipped(String),
 }
@@ -87,7 +87,7 @@ impl CompactFeedback {
 }
 
 impl CliCallback {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             spinner: None,
             thinking_active: false,
@@ -145,6 +145,7 @@ fn permission_prompt_allowed(interactive: bool, bytes_read: usize, input: &str) 
 
 impl zipcode_runtime::StreamCallback for CliCallback {
     fn on_token(&mut self, text: &str) {
+        use std::io::Write;
         self.stop_spinner();
         self.end_thinking_block();
         if self.needs_role_prefix {
@@ -152,11 +153,11 @@ impl zipcode_runtime::StreamCallback for CliCallback {
             self.needs_role_prefix = false;
         }
         print!("{text}");
-        use std::io::Write;
         let _ = std::io::stdout().flush();
     }
 
     fn on_thinking(&mut self, text: &str) {
+        use std::io::Write;
         // Silent by default: keep the spinner alive and forward the chunk
         // size to its live counter so the user still gets visible progress
         // feedback ("thinking (N chars)") without drowning the terminal in
@@ -173,7 +174,6 @@ impl zipcode_runtime::StreamCallback for CliCallback {
         }
 
         self.stop_spinner();
-        use std::io::Write;
         if !self.thinking_active {
             print!("\x1b[2m\x1b[3m");
             self.thinking_active = true;
@@ -197,9 +197,9 @@ impl zipcode_runtime::StreamCallback for CliCallback {
     }
 
     fn on_permission_prompt(&mut self, message: &str) -> bool {
+        use std::io::{self, IsTerminal, Write};
         self.stop_spinner();
         self.end_thinking_block();
-        use std::io::{self, IsTerminal, Write};
         print!("\x1b[33m[permission]\x1b[0m {message} [Y/n] ");
         io::stdout().flush().ok();
         let mut input = String::new();
@@ -215,7 +215,7 @@ impl zipcode_runtime::StreamCallback for CliCallback {
     }
 }
 
-/// Build a ToolRegistry with all 10 tools registered.
+/// Build a `ToolRegistry` with all 10 tools registered.
 pub fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
@@ -243,17 +243,16 @@ fn is_gguf_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
 }
 
-pub(crate) fn is_probably_gemma4_model(path: &Path) -> bool {
+pub fn is_probably_gemma4_model(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| {
+        .is_some_and(|name| {
             let lower = name.to_ascii_lowercase();
             lower.contains("gemma-4") || lower.contains("gemma4")
         })
-        .unwrap_or(false)
 }
 
-pub(crate) fn list_models(model_dir: &Path) -> Result<Vec<PathBuf>> {
+pub fn list_models(model_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut models: Vec<_> = std::fs::read_dir(model_dir)
         .with_context(|| format!("Failed to read model directory: {}", model_dir.display()))?
         .flatten()
@@ -267,11 +266,7 @@ pub(crate) fn list_models(model_dir: &Path) -> Result<Vec<PathBuf>> {
             .and_then(|name| name.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let priority = if file_name.contains("gemma-4") || file_name.contains("gemma4") {
-            0
-        } else {
-            1
-        };
+        let priority = i32::from(!(file_name.contains("gemma-4") || file_name.contains("gemma4")));
         (priority, file_name)
     });
     Ok(models)
@@ -309,7 +304,7 @@ pub fn find_model(model_dir: &Path) -> Result<PathBuf> {
         })
 }
 
-pub(crate) fn resolve_model_path(
+pub fn resolve_model_path(
     explicit_model_path: Option<&Path>,
     config: &ZipcodeConfig,
     cwd: &Path,
@@ -362,16 +357,16 @@ pub(crate) fn resolve_model_path(
     find_model(&model_dir)
 }
 
-pub(crate) fn has_nonempty_parent(path: &Path) -> bool {
+pub fn has_nonempty_parent(path: &Path) -> bool {
     path.parent()
         .is_some_and(|parent| !parent.as_os_str().is_empty())
 }
 
-pub(crate) fn resolve_requested_backend(backend_override: Option<&str>) -> Result<Option<Backend>> {
+pub fn resolve_requested_backend(backend_override: Option<&str>) -> Result<Option<Backend>> {
     backend_override.map(Backend::parse).transpose()
 }
 
-pub(crate) fn resolve_effective_backend(
+pub fn resolve_effective_backend(
     requested_backend: Option<Backend>,
     model_path: &Path,
     helper_path: Option<&Path>,
@@ -415,10 +410,8 @@ fn which_runnable_in_path(binary: &str) -> Option<PathBuf> {
     None
 }
 
-pub(crate) fn discover_helper(config: &ZipcodeConfig) -> HelperDiscovery {
-    let mut issue = None;
-
-    if let Some(path) = &config.llama_server_bin {
+pub fn discover_helper(config: &ZipcodeConfig) -> HelperDiscovery {
+    let mut issue = if let Some(path) = &config.llama_server_bin {
         if is_runnable_file(path) {
             return HelperDiscovery {
                 path: Some(path.clone()),
@@ -427,11 +420,13 @@ pub(crate) fn discover_helper(config: &ZipcodeConfig) -> HelperDiscovery {
             };
         }
 
-        issue = Some(format!(
+        Some(format!(
             "saved helper path could not be used at {}",
             path.display()
-        ));
-    }
+        ))
+    } else {
+        None
+    };
 
     for key in ["ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"] {
         if let Ok(value) = std::env::var(key) {
@@ -573,14 +568,13 @@ fn terminate_child_tree(child: &mut Child) {
 fn probe_helper_devices(helper_path: &Path) -> HelperDeviceProbe {
     const HELPER_DEVICE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-    let mut child = match Command::new(helper_path)
+    let Ok(mut child) = Command::new(helper_path)
         .arg("--list-devices")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return HelperDeviceProbe::Unsupported,
+    else {
+        return HelperDeviceProbe::Unsupported;
     };
 
     if !wait_for_exit(&mut child, HELPER_DEVICE_PROBE_TIMEOUT) {
@@ -614,7 +608,7 @@ fn probe_helper_devices(helper_path: &Path) -> HelperDeviceProbe {
     HelperDeviceProbe::Devices(combined)
 }
 
-pub(crate) fn server_options_from_config(config: &ZipcodeConfig) -> ServerOptions {
+pub fn server_options_from_config(config: &ZipcodeConfig) -> ServerOptions {
     ServerOptions {
         gpu_layers: std::env::var("ZIPCODE_GPU_LAYERS")
             .ok()
@@ -622,8 +616,9 @@ pub(crate) fn server_options_from_config(config: &ZipcodeConfig) -> ServerOption
             .or(config.gpu_layers),
         flash_attention: std::env::var("ZIPCODE_FLASH_ATTENTION")
             .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(config.flash_attention),
+            .map_or(config.flash_attention, |v| {
+                v == "1" || v.eq_ignore_ascii_case("true")
+            }),
         context_size: std::env::var("ZIPCODE_LLAMA_SERVER_CTX")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -631,7 +626,7 @@ pub(crate) fn server_options_from_config(config: &ZipcodeConfig) -> ServerOption
     }
 }
 
-pub(crate) fn validate_backend_configuration(
+pub fn validate_backend_configuration(
     requested_backend: Option<Backend>,
     effective_backend: Backend,
     model_path: &Path,
@@ -717,7 +712,7 @@ fn build_startup_notices(
     notices
 }
 
-/// Build and return a ConversationLoop plus launch metadata.
+/// Build and return a `ConversationLoop` plus launch metadata.
 pub fn prepare_loop(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
@@ -757,7 +752,7 @@ pub fn prepare_loop(
     // Tokenizer lives next to the model or in the same dir
     let tokenizer_path = model_file
         .parent()
-        .unwrap_or(Path::new("."))
+        .unwrap_or_else(|| Path::new("."))
         .join("tokenizer.json");
 
     let mut gen_config = GenerationConfig::default();
@@ -809,8 +804,8 @@ pub fn prepare_loop(
         effective_backend,
         &model_file,
         &tokenizer_path,
-        gen_config.clone(),
-        server_options.clone(),
+        gen_config,
+        server_options,
     ) {
         Ok(engine) => engine,
         Err(error) => return Err(error).context("Failed to load inference engine"),
@@ -862,7 +857,7 @@ pub fn run_oneshot(
     Ok(())
 }
 
-pub(crate) fn parse_slash_command(input: &str) -> ParsedSlashCommand {
+pub fn parse_slash_command(input: &str) -> ParsedSlashCommand {
     let trimmed = input.trim();
     let mut parts = trimmed.split_whitespace();
     let Some(command) = parts.next() else {
@@ -964,7 +959,7 @@ pub fn run_interactive(
                             SlashCommand::Clear => println!("{}", clear_session(&mut conv)?),
                             SlashCommand::Status => print_status(&conv),
                             SlashCommand::Compact => {
-                                println!("{}", compact_session(&mut conv)?.message())
+                                println!("{}", compact_session(&mut conv)?.message());
                             }
                             SlashCommand::SessionShow => print_session_status(&conv),
                             SlashCommand::SessionLoad => match load_session_into_loop(
@@ -1027,7 +1022,7 @@ fn print_status(conv: &ConversationLoop) {
     println!("Working dir: {}", conv.cwd.display());
 }
 
-pub(crate) fn session_status_lines(conv: &ConversationLoop) -> Vec<String> {
+pub fn session_status_lines(conv: &ConversationLoop) -> Vec<String> {
     vec![
         format!("Session ID:   {}", conv.session.id),
         format!("Session path: {}", conv.session.path().display()),
@@ -1043,7 +1038,7 @@ fn print_session_status(conv: &ConversationLoop) {
     }
 }
 
-pub(crate) fn clear_session(conv: &mut ConversationLoop) -> Result<String> {
+pub fn clear_session(conv: &mut ConversationLoop) -> Result<String> {
     let session = Session::new();
     session.save()?;
     let session_id = session.id.clone();
@@ -1057,7 +1052,7 @@ pub(crate) fn clear_session(conv: &mut ConversationLoop) -> Result<String> {
     ))
 }
 
-pub(crate) fn compact_session(conv: &mut ConversationLoop) -> Result<CompactFeedback> {
+pub fn compact_session(conv: &mut ConversationLoop) -> Result<CompactFeedback> {
     let result = conv.session.compact(CompactPolicy::default());
     if result.changed {
         // Compaction rewrites `messages` in place and the vec shrinks.
@@ -1080,10 +1075,7 @@ pub(crate) fn compact_session(conv: &mut ConversationLoop) -> Result<CompactFeed
     }
 }
 
-pub(crate) fn load_session_into_loop(
-    conv: &mut ConversationLoop,
-    session_id: &str,
-) -> Result<String> {
+pub fn load_session_into_loop(conv: &mut ConversationLoop, session_id: &str) -> Result<String> {
     let session_id = session_id.trim();
     let loaded = Session::load(session_id)
         .with_context(|| format!("Failed to load session `{session_id}`"))?;
@@ -1112,7 +1104,7 @@ fn format_compact_result(session: &Session, result: CompactResult) -> String {
     )
 }
 
-pub(crate) fn help_text() -> &'static str {
+pub const fn help_text() -> &'static str {
     "Available commands:\n  /help              — show this help\n  /status            — show session info and model\n  /session           — show active session metadata\n  /session <id>      — load an existing session by id\n  /compact           — compact older session history\n  /clear             — clear conversation history\n  /quit, /exit       — exit zipcode\n\n  Ctrl+C             — cancel current input (continues)\n  Ctrl+D             — exit zipcode"
 }
 
