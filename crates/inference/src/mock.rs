@@ -26,7 +26,7 @@ pub struct MockInferenceProvider {
 }
 
 impl MockInferenceProvider {
-    #[must_use] 
+    #[must_use]
     pub fn new(responses: Vec<MockResponse>) -> Self {
         Self {
             responses: VecDeque::from(responses),
@@ -36,7 +36,7 @@ impl MockInferenceProvider {
     }
 
     /// Set whether this mock reports that it manages its own context.
-    #[must_use] 
+    #[must_use]
     pub const fn with_manages_own_context(mut self, v: bool) -> Self {
         self.manages_own_context_flag = v;
         self

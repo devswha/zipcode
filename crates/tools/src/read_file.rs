@@ -90,7 +90,9 @@ impl Tool for ReadFileTool {
             .with_context(|| format!("file is not valid UTF-8: {}", path.display()))?;
 
         let offset = usize::try_from(args["offset"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
-        let limit = args["limit"].as_u64().map(|v| usize::try_from(v).unwrap_or(usize::MAX));
+        let limit = args["limit"]
+            .as_u64()
+            .map(|v| usize::try_from(v).unwrap_or(usize::MAX));
 
         let lines: Vec<&str> = content.lines().collect();
         let total = lines.len();

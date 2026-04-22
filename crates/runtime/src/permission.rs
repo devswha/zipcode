@@ -13,12 +13,12 @@ pub enum PermissionCheck {
 }
 
 impl PermissionPolicy {
-    #[must_use] 
+    #[must_use]
     pub const fn new(mode: PermissionMode) -> Self {
         Self { mode }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn mode(&self) -> PermissionMode {
         self.mode
     }
@@ -27,7 +27,7 @@ impl PermissionPolicy {
         self.mode = mode;
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn check(&self, tool_name: &str, _args: &serde_json::Value) -> PermissionCheck {
         match self.mode {
             PermissionMode::FullAccess => PermissionCheck::Allowed,
@@ -53,7 +53,7 @@ impl PermissionPolicy {
     }
 
     /// Prompt user for Y/N approval. Returns true if approved.
-    #[must_use] 
+    #[must_use]
     pub fn prompt_user(message: &str) -> bool {
         print!("{message} [Y/n] ");
         io::stdout().flush().ok();

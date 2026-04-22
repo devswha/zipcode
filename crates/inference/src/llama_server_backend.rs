@@ -184,7 +184,8 @@ impl LlamaServerProvider {
             command.arg(arg);
         }
 
-        let cache_dir = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
+        let cache_dir = std::env::var_os("HOME")
+            .map_or_else(|| PathBuf::from("."), PathBuf::from)
             .join(".zipcode/cache");
         std::fs::create_dir_all(&cache_dir).ok();
         command.arg("--slot-save-path").arg(&cache_dir);
@@ -662,11 +663,7 @@ struct ToolCallAccumulator {
 /// Open a TCP connection, send an HTTP POST request, validate the 200
 /// status line, and skip the response headers, returning a `BufReader`
 /// positioned at the start of the SSE body.
-fn open_sse_stream(
-    host: &str,
-    port: u16,
-    request_body: &str,
-) -> Result<BufReader<TcpStream>> {
+fn open_sse_stream(host: &str, port: u16, request_body: &str) -> Result<BufReader<TcpStream>> {
     let mut stream =
         TcpStream::connect((host, port)).context("Failed to connect to llama-server")?;
     stream.set_read_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
@@ -745,8 +742,9 @@ fn stream_sse_events(
                 break;
             }
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut
-                || e.kind() == std::io::ErrorKind::WouldBlock =>
+            Err(e)
+                if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
             {
                 stream_error =
                     Some("llama-server SSE stream timed out or stalled before [DONE]".to_string());

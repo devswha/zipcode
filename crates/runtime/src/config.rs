@@ -195,8 +195,7 @@ impl ZipcodeConfig {
                     config.generation.top_p = Some(t);
                 }
                 if let Some(t) = gen["max_tokens"].as_u64() {
-                    config.generation.max_tokens =
-                        Some(usize::try_from(t).unwrap_or(usize::MAX));
+                    config.generation.max_tokens = Some(usize::try_from(t).unwrap_or(usize::MAX));
                 }
             }
             if let Some(layers) = project["gpu_layers"].as_i64() {

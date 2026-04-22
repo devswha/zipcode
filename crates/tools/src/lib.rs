@@ -52,14 +52,15 @@ pub fn make_relative_path(path: &std::path::Path, base: &std::path::Path) -> Str
     path.canonicalize().map_or_else(
         |_| path.to_string_lossy().into_owned(),
         |canon_path| {
-            canon_path
-                .strip_prefix(&canon_base)
-                .map_or_else(|_| path.to_string_lossy().into_owned(), |rel| rel.to_string_lossy().into_owned())
+            canon_path.strip_prefix(&canon_base).map_or_else(
+                |_| path.to_string_lossy().into_owned(),
+                |rel| rel.to_string_lossy().into_owned(),
+            )
         },
     )
 }
 
-#[must_use] 
+#[must_use]
 pub fn recover_duplicated_workspace_prefix(
     file_path: &str,
     cwd: &std::path::Path,
@@ -199,7 +200,9 @@ pub(crate) struct CollectedChildOutput {
     pub stderr: Vec<u8>,
 }
 
-fn spawn_pipe_reader<T: Read + Send + 'static>(mut pipe: T) -> JoinHandle<std::io::Result<Vec<u8>>> {
+fn spawn_pipe_reader<T: Read + Send + 'static>(
+    mut pipe: T,
+) -> JoinHandle<std::io::Result<Vec<u8>>> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         pipe.read_to_end(&mut buf)?;
@@ -329,7 +332,7 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    #[must_use] 
+    #[must_use]
     pub const fn new(content: String) -> Self {
         Self {
             content,
@@ -405,7 +408,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
@@ -420,7 +423,7 @@ impl ToolRegistry {
         self.tools.get(name).map(AsRef::as_ref)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools
             .values()

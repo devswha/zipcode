@@ -70,10 +70,10 @@ impl Tool for BashTool {
             .with_context(|| format!("Failed to execute: {command}"))?;
 
         let Some(output) = wait_with_output_timeout(child, timeout)? else {
-                return Ok(ToolResult::new(format!(
-                    "Error: command timed out after {timeout_ms}ms"
-                )));
-            };
+            return Ok(ToolResult::new(format!(
+                "Error: command timed out after {timeout_ms}ms"
+            )));
+        };
 
         let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
 

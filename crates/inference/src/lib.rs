@@ -155,9 +155,10 @@ fn create_candle(
 #[cfg(test)]
 mod tests {
     use super::Backend;
-    #[cfg(feature = "llama-cpp")]
-    use super::{create_engine, GenerationConfig, ServerOptions};
-    #[cfg(feature = "llama-cpp")]
+    use super::{
+        create_engine, ChatMessage, GenerationConfig, InferenceProvider, MockInferenceProvider,
+        MockResponse, ServerOptions,
+    };
     use std::path::Path;
 
     #[test]
@@ -198,5 +199,262 @@ mod tests {
         if let Err(error) = engine {
             panic!("expected Gemma 4 GGUF to load via llama-server, got: {error}");
         }
+    }
+
+    // ── Backend::parse edge-case tests ──────────────────────────────
+
+    #[test]
+    fn parse_rejects_empty_string() {
+        let err = Backend::parse("").unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported backend"),
+            "empty string should be rejected, got: {err}"
+        );
+        assert!(
+            err.contains("Expected one of"),
+            "error should list valid options, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_whitespace_strings() {
+        for input in &[" ", "  ", "\t", "\n", " llama-server "] {
+            let err = Backend::parse(input).unwrap_err().to_string();
+            assert!(
+                err.contains("unsupported backend"),
+                "whitespace-only or padded '{input}' should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_is_case_sensitive() {
+        // Uppercase variants should all be rejected
+        for input in &["LLAMA-CPP", "LLAMA-SERVER", "CANDLE", "Llama-Cpp", "Candle"] {
+            let err = Backend::parse(input).unwrap_err().to_string();
+            assert!(
+                err.contains("unsupported backend"),
+                "case-variant '{input}' should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_common_typos() {
+        let typos = [
+            ("llamacpp", "missing hyphen"),
+            ("llama_server", "underscore instead of hyphen"),
+            ("llama-server-cpp", "extra suffix"),
+            ("cpp", "bare name"),
+            ("llama.cpp", "dotted name"),
+            ("candle-rs", "suffixed name"),
+            ("vllm", "unrelated backend"),
+            ("ollama", "unrelated backend"),
+            ("1", "numeric"),
+            ("123", "numeric"),
+        ];
+        for (input, reason) in &typos {
+            let err = Backend::parse(input).unwrap_err().to_string();
+            assert!(
+                err.contains("unsupported backend"),
+                "typo '{input}' ({reason}) should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_error_includes_all_valid_options() {
+        let err = Backend::parse("nope").unwrap_err().to_string();
+        assert!(err.contains("llama-cpp"), "error should list llama-cpp");
+        assert!(
+            err.contains("llama-server"),
+            "error should list llama-server"
+        );
+        assert!(err.contains("candle"), "error should list candle");
+    }
+
+    #[test]
+    fn parse_error_echoes_invalid_input() {
+        let err = Backend::parse("my-backend").unwrap_err().to_string();
+        assert!(
+            err.contains("my-backend"),
+            "error should echo the invalid input, got: {err}"
+        );
+    }
+
+    // ── Backend enum derive verification ─────────────────────────────
+
+    #[test]
+    fn backend_variants_clone_correctly() {
+        let a = Backend::LlamaCpp;
+        let b = a;
+        assert!(matches!(b, Backend::LlamaCpp));
+
+        let c = Backend::LlamaServer;
+        let d = c;
+        assert!(matches!(d, Backend::LlamaServer));
+
+        let e = Backend::Candle;
+        let f = e;
+        assert!(matches!(f, Backend::Candle));
+    }
+
+    #[test]
+    fn backend_debug_format_is_readable() {
+        assert_eq!(format!("{:?}", Backend::LlamaCpp), "LlamaCpp");
+        assert_eq!(format!("{:?}", Backend::LlamaServer), "LlamaServer");
+        assert_eq!(format!("{:?}", Backend::Candle), "Candle");
+    }
+
+    // ── InferenceProvider trait default method tests ──────────────────
+
+    #[test]
+    fn mock_provider_default_manages_own_context_is_false() {
+        let mock = MockInferenceProvider::new(vec![]);
+        assert!(
+            !mock.manages_own_context(),
+            "default manages_own_context should be false"
+        );
+    }
+
+    #[test]
+    fn mock_provider_with_manages_own_context_true() {
+        let mock = MockInferenceProvider::new(vec![]).with_manages_own_context(true);
+        assert!(
+            mock.manages_own_context(),
+            "explicitly set manages_own_context should be true"
+        );
+    }
+
+    #[test]
+    fn mock_provider_with_manages_own_context_toggle() {
+        // Setting true then verifying, then creating one with false
+        let mock_true = MockInferenceProvider::new(vec![]).with_manages_own_context(true);
+        let mock_false = MockInferenceProvider::new(vec![]).with_manages_own_context(false);
+        assert!(mock_true.manages_own_context());
+        assert!(!mock_false.manages_own_context());
+    }
+
+    #[test]
+    fn mock_provider_captures_messages_across_calls() {
+        let mut mock = MockInferenceProvider::new(vec![
+            MockResponse::Text("first".to_string()),
+            MockResponse::Text("second".to_string()),
+        ]);
+        let msgs1 = vec![ChatMessage::user("hello")];
+        let msgs2 = vec![ChatMessage::user("world")];
+
+        let _ = mock.generate_stream(&msgs1, &[]);
+        let _ = mock.generate_stream(&msgs2, &[]);
+
+        let captured = mock.captured_messages();
+        assert_eq!(captured.len(), 2, "should have captured 2 calls");
+        assert_eq!(captured[0][0].content, "hello");
+        assert_eq!(captured[1][0].content, "world");
+    }
+
+    // ── create_engine error path (feature-not-enabled) ────────────────
+
+    #[cfg(not(feature = "llama-cpp"))]
+    #[test]
+    fn create_engine_llama_cpp_rejected_without_feature() {
+        let result = create_engine(
+            Backend::LlamaCpp,
+            Path::new("/dev/null"),
+            Path::new("/dev/null"),
+            GenerationConfig::default(),
+            ServerOptions::default(),
+        );
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected error when llama-cpp feature is not enabled"),
+        };
+        assert!(
+            err.contains("llama-cpp backend requested"),
+            "should mention llama-cpp, got: {err}"
+        );
+        assert!(
+            err.contains("feature is not enabled"),
+            "should say feature not enabled, got: {err}"
+        );
+        assert!(
+            err.contains("cargo build --features llama-cpp"),
+            "should suggest rebuild command, got: {err}"
+        );
+    }
+
+    #[cfg(not(feature = "candle"))]
+    #[test]
+    fn create_engine_candle_rejected_without_feature() {
+        let result = create_engine(
+            Backend::Candle,
+            Path::new("/dev/null"),
+            Path::new("/dev/null"),
+            GenerationConfig::default(),
+            ServerOptions::default(),
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("candle backend requested"),
+            "should mention candle, got: {err}"
+        );
+        assert!(
+            err.contains("feature is not enabled"),
+            "should say feature not enabled, got: {err}"
+        );
+    }
+
+    // ── create_engine with invalid model file ─────────────────────────
+
+    #[test]
+    fn create_engine_llama_server_fails_with_nonexistent_model() {
+        let result = create_engine(
+            Backend::LlamaServer,
+            Path::new("/tmp/zipcode_test_nonexistent_model.gguf"),
+            Path::new("/dev/null"),
+            GenerationConfig::default(),
+            ServerOptions::default(),
+        );
+        assert!(result.is_err(), "loading a nonexistent model should fail");
+    }
+
+    #[cfg(feature = "candle")]
+    #[test]
+    fn create_engine_candle_fails_with_nonexistent_model() {
+        let result = create_engine(
+            Backend::Candle,
+            Path::new("/tmp/zipcode_test_nonexistent_model.gguf"),
+            Path::new("/tmp/zipcode_test_nonexistent_tokenizer.json"),
+            GenerationConfig::default(),
+            ServerOptions::default(),
+        );
+        assert!(
+            result.is_err(),
+            "loading a nonexistent model should fail for candle backend"
+        );
+    }
+
+    // ── GenerationConfig default sanity ──────────────────────────────
+
+    #[test]
+    fn generation_config_defaults_are_reasonable() {
+        let cfg = GenerationConfig::default();
+        assert!(cfg.max_tokens > 0, "default max_tokens should be positive");
+        assert!(cfg.temperature >= 0.0, "temperature should be non-negative");
+        assert!(
+            cfg.top_p > 0.0 && cfg.top_p <= 1.0,
+            "top_p should be in (0, 1]"
+        );
+    }
+
+    // ── ServerOptions default sanity ─────────────────────────────────
+
+    #[test]
+    fn server_options_defaults_are_valid() {
+        let opts = ServerOptions::default();
+        assert!(
+            opts.context_size > 0,
+            "default context_size should be positive"
+        );
     }
 }

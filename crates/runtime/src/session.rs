@@ -45,7 +45,7 @@ pub struct Session {
 }
 
 impl Session {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let id = uuid::Uuid::new_v4().to_string();
         let now = timestamp_now();
@@ -97,7 +97,7 @@ impl Session {
         Ok(session)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn path(&self) -> PathBuf {
         session_path(&self.id)
     }

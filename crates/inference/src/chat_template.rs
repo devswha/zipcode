@@ -69,7 +69,7 @@ pub fn format_message(msg: &ChatMessage, tools: &[ToolSpec]) -> String {
 /// Format an entire conversation history into a single prompt string.
 /// Tools are injected into the first user turn only.
 /// Ends with `<start_of_turn>model\n` to prime generation.
-#[must_use] 
+#[must_use]
 pub fn format_conversation(messages: &[ChatMessage], tools: &[ToolSpec]) -> String {
     let mut prompt = String::new();
     let mut tools_injected = false;
@@ -170,7 +170,7 @@ pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
 ///
 /// Uses an O(n) single-pass approach: builds the result buffer incrementally
 /// instead of reallocating the entire string on each block removal.
-#[must_use] 
+#[must_use]
 pub fn extract_text_content(output: &str) -> String {
     let mut result = String::with_capacity(output.len());
     let mut pos = 0;
