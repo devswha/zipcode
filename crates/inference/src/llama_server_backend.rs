@@ -1546,4 +1546,405 @@ mod tests {
             "HTTP 400 should be Unreachable, got {result:?}"
         );
     }
+
+    // ── Additional edge-case tests (cron audit 2026-04-23) ──────────
+
+    // ── extract_message_content edge cases ──────────────────────────
+
+    #[test]
+    fn extract_message_content_returns_empty_for_null_content() {
+        let message = json!({"content": null});
+        assert_eq!(extract_message_content(&message), "");
+    }
+
+    #[test]
+    fn extract_message_content_returns_empty_for_missing_content() {
+        let message = json!({"role": "assistant"});
+        assert_eq!(extract_message_content(&message), "");
+    }
+
+    #[test]
+    fn extract_message_content_returns_empty_for_empty_array() {
+        let message = json!({"content": []});
+        assert_eq!(extract_message_content(&message), "");
+    }
+
+    #[test]
+    fn extract_message_content_filters_non_text_parts() {
+        let message = json!({
+            "content": [
+                {"type": "image", "url": "http://example.com/img.png"},
+                {"type": "text", "text": "only this"},
+                {"type": "image_url", "image_url": {"url": "http://example.com"}},
+            ]
+        });
+        assert_eq!(extract_message_content(&message), "only this");
+    }
+
+    #[test]
+    fn extract_message_content_handles_unicode() {
+        let message = json!({"content": "안녕하세요 🌍"});
+        assert_eq!(extract_message_content(&message), "안녕하세요 🌍");
+    }
+
+    // ── parse_response_tool_calls edge cases ────────────────────────
+
+    #[test]
+    fn parse_response_tool_calls_returns_empty_when_no_tool_calls() {
+        let message = json!({"content": "hello", "role": "assistant"});
+        assert!(parse_response_tool_calls(&message).is_empty());
+    }
+
+    #[test]
+    fn parse_response_tool_calls_handles_null_tool_calls() {
+        let message = json!({"content": null, "tool_calls": null});
+        assert!(parse_response_tool_calls(&message).is_empty());
+    }
+
+    #[test]
+    fn parse_response_tool_calls_handles_empty_array() {
+        let message = json!({"tool_calls": []});
+        assert!(parse_response_tool_calls(&message).is_empty());
+    }
+
+    #[test]
+    fn parse_response_tool_calls_multiple_calls() {
+        let message = json!({
+            "tool_calls": [
+                {
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{\"path\":\"a.rs\"}"}
+                },
+                {
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}
+                },
+                {
+                    "id": "call_c",
+                    "type": "function",
+                    "function": {"name": "write_file", "arguments": "{\"path\":\"out.txt\",\"content\":\"hi\"}"}
+                }
+            ]
+        });
+        let calls = parse_response_tool_calls(&message);
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].id, "call_a");
+        assert_eq!(calls[1].name, "bash");
+        assert_eq!(calls[2].name, "write_file");
+        assert_eq!(calls[2].arguments["content"], "hi");
+    }
+
+    #[test]
+    fn parse_response_tool_calls_defaults_on_missing_fields() {
+        let message = json!({
+            "tool_calls": [
+                {"function": {"name": "grep"}}
+            ]
+        });
+        let calls = parse_response_tool_calls(&message);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_0");
+        assert_eq!(calls[0].name, "grep");
+        // Missing arguments string defaults to empty JSON object
+        assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn parse_response_tool_calls_handles_invalid_arguments_json() {
+        let message = json!({
+            "tool_calls": [
+                {
+                    "id": "call_x",
+                    "function": {"name": "bash", "arguments": "not valid json{{{"}
+                }
+            ]
+        });
+        let calls = parse_response_tool_calls(&message);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+        // Invalid arguments JSON falls back to empty object
+        assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    // ── openai_message edge cases ───────────────────────────────────
+
+    #[test]
+    fn openai_message_model_plain_no_tool_calls_key() {
+        let msg = ChatMessage::assistant("plain text answer");
+        let value = openai_message(&msg);
+        assert_eq!(value["role"], "assistant");
+        assert_eq!(value["content"], "plain text answer");
+        // Must not have tool_calls key at all (not null, not empty array)
+        assert!(
+            value.get("tool_calls").is_none(),
+            "assistant without tool_calls should not have the key"
+        );
+    }
+
+    #[test]
+    fn openai_message_model_with_multiple_tool_calls() {
+        let calls = vec![
+            ToolCallParsed {
+                id: "c1".to_string(),
+                name: "bash".to_string(),
+                arguments: json!({"command": "ls"}),
+            },
+            ToolCallParsed {
+                id: "c2".to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": "src/main.rs"}),
+            },
+            ToolCallParsed {
+                id: "c3".to_string(),
+                name: "glob_search".to_string(),
+                arguments: json!({"pattern": "*.rs"}),
+            },
+        ];
+        let msg = ChatMessage::assistant_with_tool_calls("", calls);
+        let value = openai_message(&msg);
+        let tc_array = value["tool_calls"].as_array().unwrap();
+        assert_eq!(tc_array.len(), 3);
+        assert_eq!(tc_array[0]["function"]["name"], "bash");
+        assert_eq!(tc_array[1]["function"]["name"], "read_file");
+        assert_eq!(tc_array[2]["function"]["name"], "glob_search");
+    }
+
+    #[test]
+    fn openai_message_empty_content() {
+        let msg = ChatMessage::user("");
+        let value = openai_message(&msg);
+        assert_eq!(value["content"], "");
+    }
+
+    #[test]
+    fn openai_message_unicode_content() {
+        let msg = ChatMessage::user("파일을 읽어줘 📂");
+        let value = openai_message(&msg);
+        assert_eq!(value["content"], "파일을 읽어줘 📂");
+    }
+
+    // ── parse_sse_events edge cases ─────────────────────────────────
+
+    #[test]
+    fn parse_sse_events_ignores_invalid_json() {
+        let line = "data: {not valid json at all";
+        assert!(parse_sse_events(line).is_empty());
+    }
+
+    #[test]
+    fn parse_sse_events_ignores_missing_choices() {
+        let line = r#"data: {"id":"chatcmpl-1"}"#;
+        assert!(parse_sse_events(line).is_empty());
+    }
+
+    #[test]
+    fn parse_sse_events_ignores_empty_choices_array() {
+        let line = r#"data: {"choices":[]}"#;
+        assert!(parse_sse_events(line).is_empty());
+    }
+
+    #[test]
+    fn parse_sse_events_handles_content_and_tool_calls_in_same_delta() {
+        let line = r#"data: {"choices":[{"delta":{"content":"thinking","tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":""}}]}}]}"#;
+        let events = parse_sse_events(line);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], SseEvent::ToolCallDelta { .. }));
+        assert!(matches!(events[1], SseEvent::Token(ref t) if t == "thinking"));
+    }
+
+    #[test]
+    fn parse_sse_events_ignores_null_finish_reason() {
+        let line = r#"data: {"choices":[{"finish_reason":null,"delta":{"content":"hi"}}]}"#;
+        let events = parse_sse_events(line);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], SseEvent::Token(ref t) if t == "hi"));
+    }
+
+    #[test]
+    fn parse_sse_events_handles_reasoning_and_content_together() {
+        let line = r#"data: {"choices":[{"delta":{"reasoning_content":"I think","content":"therefore"}}]}"#;
+        let events = parse_sse_events(line);
+        assert_eq!(events.len(), 2);
+        // Thinking comes first in the event order
+        assert!(matches!(events[0], SseEvent::Thinking(ref t) if t == "I think"));
+        assert!(matches!(events[1], SseEvent::Token(ref t) if t == "therefore"));
+    }
+
+    #[test]
+    fn parse_sse_events_tool_call_delta_with_missing_fields() {
+        let line = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":2}]}}]}"#;
+        let events = parse_sse_events(line);
+        assert!(matches!(
+            events.as_slice(),
+            [SseEvent::ToolCallDelta {
+                index: 2,
+                id: None,
+                name: None,
+                arguments: None
+            }]
+        ));
+    }
+
+    #[test]
+    fn parse_sse_events_finish_reason_length() {
+        let line = r#"data: {"choices":[{"finish_reason":"length","delta":{}}]}"#;
+        let events = parse_sse_events(line);
+        assert!(matches!(
+            events.as_slice(),
+            [SseEvent::FinishReason(ref r)] if r == "length"
+        ));
+    }
+
+    #[test]
+    fn parse_sse_events_finish_reason_tool_calls() {
+        let line = r#"data: {"choices":[{"finish_reason":"tool_calls","delta":{}}]}"#;
+        let events = parse_sse_events(line);
+        assert!(matches!(
+            events.as_slice(),
+            [SseEvent::FinishReason(ref r)] if r == "tool_calls"
+        ));
+    }
+
+    // ── build_chat_request edge cases ───────────────────────────────
+
+    #[test]
+    fn build_chat_request_no_tools_omits_tool_fields() {
+        let request = build_chat_request(
+            &[ChatMessage::user("hi")],
+            &[],
+            &GenerationConfig::default(),
+            "test-model",
+        );
+        assert_eq!(request["model"], "test-model");
+        assert!(request.get("tools").is_none());
+        assert!(request.get("tool_choice").is_none());
+        assert!(request.get("parse_tool_calls").is_none());
+    }
+
+    #[test]
+    fn build_chat_request_custom_config_values() {
+        let config = GenerationConfig {
+            max_tokens: 512,
+            temperature: 0.5,
+            top_p: 0.8,
+            top_k: 20,
+            repeat_penalty: 1.2,
+            repeat_last_n: 32,
+            enable_thinking: false,
+        };
+        let request =
+            build_chat_request(&[ChatMessage::user("test")], &[], &config, "custom-alias");
+        assert_eq!(request["max_tokens"], 512);
+        assert_eq!(request["temperature"], 0.5);
+        assert_eq!(request["top_p"], 0.8);
+        assert_eq!(request["top_k"], 20);
+        // f32 serializes with extra precision digits
+        let rp = request["repeat_penalty"].as_f64().unwrap();
+        assert!(
+            (rp - 1.2).abs() < 0.01,
+            "repeat_penalty should be ~1.2, got {rp}"
+        );
+        assert_eq!(request["repeat_last_n"], 32);
+        assert_eq!(request["model"], "custom-alias");
+        assert_eq!(request["stream"], true);
+    }
+
+    #[test]
+    fn build_chat_request_multiple_tools() {
+        let tools = vec![
+            ToolSpec {
+                name: "bash".to_string(),
+                description: "Run a command".to_string(),
+                parameters: json!({"type": "object", "properties": {"command": {"type": "string"}}}),
+            },
+            ToolSpec {
+                name: "read_file".to_string(),
+                description: "Read file contents".to_string(),
+                parameters: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            },
+        ];
+        let request = build_chat_request(
+            &[ChatMessage::user("do stuff")],
+            &tools,
+            &GenerationConfig::default(),
+            DEFAULT_ALIAS,
+        );
+        let tools_array = request["tools"].as_array().unwrap();
+        assert_eq!(tools_array.len(), 2);
+        assert_eq!(tools_array[0]["type"], "function");
+        assert_eq!(tools_array[0]["function"]["name"], "bash");
+        assert_eq!(tools_array[1]["function"]["name"], "read_file");
+    }
+
+    // ── flash_attention_mode_from_help edge cases ───────────────────
+
+    #[test]
+    fn flash_attention_mode_from_help_empty_string() {
+        assert_eq!(
+            flash_attention_mode_from_help(""),
+            FlashAttentionMode::LegacyFlagOnly
+        );
+    }
+
+    #[test]
+    fn flash_attention_mode_from_help_unrelated_help_text() {
+        assert_eq!(
+            flash_attention_mode_from_help("some other help text without flash attention keywords"),
+            FlashAttentionMode::LegacyFlagOnly
+        );
+    }
+
+    #[test]
+    fn flash_attention_mode_from_help_set_usage_phrase() {
+        assert_eq!(
+            flash_attention_mode_from_help(
+                "-fa, --flash-attn [on|off|auto]  set Flash Attention use"
+            ),
+            FlashAttentionMode::ExplicitOnValue
+        );
+    }
+
+    // ── stream_sse_events finish_reason mapping ─────────────────────
+
+    #[test]
+    fn stream_sse_maps_length_to_max_tokens() {
+        let port = serve_sse_response(concat!(
+            "data: {\"choices\":[{\"finish_reason\":\"length\",\"delta\":{}}]}\n\n",
+            "data: [DONE]\n\n"
+        ));
+        let request = json!({"stream": true});
+        let (tx, rx) = mpsc::channel();
+
+        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
+        drop(tx);
+
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(matches!(
+            events.last(),
+            Some(TokenEvent::Done(FinishReason::MaxTokens))
+        ));
+    }
+
+    #[test]
+    fn stream_sse_maps_tool_calls_finish_to_tool_use() {
+        let port = serve_sse_response(concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}]}\n\n",
+            "data: [DONE]\n\n"
+        ));
+        let request = json!({"stream": true});
+        let (tx, rx) = mpsc::channel();
+
+        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
+        drop(tx);
+
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(matches!(
+            events.last(),
+            Some(TokenEvent::Done(FinishReason::ToolUse))
+        ));
+    }
 }
