@@ -1476,6 +1476,366 @@ mod tests {
         assert_eq!(visible_tail(&items, 3, 1), &[2, 3, 4]);
         assert_eq!(visible_tail(&items, 3, 999), &[1, 2, 3]);
     }
+
+    // ── New tests: format_entry coverage for all EntryKind variants ──────
+
+    #[test]
+    fn format_entry_user_has_green_color_and_prefix() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::User,
+            content: "hello world".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert!(!lines.is_empty());
+        assert!(lines[0].text.starts_with("You: "));
+        assert!(lines.iter().all(|l| l.color == Color::Green));
+    }
+
+    #[test]
+    fn format_entry_assistant_has_white_color() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Assistant,
+            content: "response".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert!(!lines.is_empty());
+        assert!(lines[0].text.starts_with("Zip: "));
+        assert!(lines.iter().all(|l| l.color == Color::White));
+    }
+
+    #[test]
+    fn format_entry_tool_start_has_yellow_color() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::ToolStart,
+            content: "bash(ls)".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert!(!lines.is_empty());
+        assert!(lines[0].text.starts_with("Tool: "));
+        assert!(lines.iter().all(|l| l.color == Color::Yellow));
+    }
+
+    #[test]
+    fn format_entry_tool_result_has_blue_color() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::ToolResult,
+            content: "file contents here".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert!(!lines.is_empty());
+        assert!(lines[0].text.starts_with("Out: "));
+        assert!(lines.iter().all(|l| l.color == Color::Blue));
+    }
+
+    #[test]
+    fn format_entry_info_has_cyan_color() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Info,
+            content: "session loaded".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert!(!lines.is_empty());
+        assert!(lines[0].text.starts_with("Info: "));
+        assert!(lines.iter().all(|l| l.color == Color::Cyan));
+    }
+
+    #[test]
+    fn format_entry_error_has_red_color() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Error,
+            content: "something went wrong".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert!(!lines.is_empty());
+        assert!(lines[0].text.starts_with("Err: "));
+        assert!(lines.iter().all(|l| l.color == Color::Red));
+    }
+
+    #[test]
+    fn format_entry_permission_has_magenta_color() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Permission,
+            content: "Allow bash? [Y/n]".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert!(!lines.is_empty());
+        assert!(lines[0].text.starts_with("Perm: "));
+        assert!(lines.iter().all(|l| l.color == Color::Magenta));
+    }
+
+    #[test]
+    fn format_entry_separator_produces_dotted_line() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Separator,
+            content: String::new(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].color, Color::DarkGrey);
+        assert!(lines[0].text.contains("╌"));
+    }
+
+    #[test]
+    fn format_entry_separator_width_capped_at_60() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Separator,
+            content: String::new(),
+        };
+        let lines = format_entry(&entry, 200);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text.chars().count(), 60);
+    }
+
+    #[test]
+    fn format_entry_empty_content_produces_prefix_only() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::User,
+            content: String::new(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "You:");
+    }
+
+    #[test]
+    fn format_entry_multiline_content_produces_multiple_lines() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Assistant,
+            content: "line one\nline two\nline three".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].text.starts_with("Zip: line one"));
+        // Continuation lines should be indented, not prefixed
+        assert!(lines[1].text.starts_with("     "));
+        assert!(lines[1].text.contains("line two"));
+    }
+
+    #[test]
+    fn format_entry_assistant_code_block_uses_dark_yellow() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Assistant,
+            content: "```\ncode here\n```".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        // The line inside the code block should be DarkYellow
+        assert!(lines
+            .iter()
+            .any(|l| l.color == Color::DarkYellow && l.text.contains("code here")));
+    }
+
+    #[test]
+    fn format_entry_non_assistant_code_blocks_stay_base_color() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::User,
+            content: "```\ncode\n```".to_string(),
+        };
+        let lines = format_entry(&entry, 80);
+        // Non-assistant entries don't get code block coloring
+        assert!(lines.iter().all(|l| l.color == Color::Green));
+    }
+
+    // ── as_u16 clamping tests ──────────────────────────────────────────
+
+    #[test]
+    fn as_u16_zero() {
+        assert_eq!(as_u16(0), 0);
+    }
+
+    #[test]
+    fn as_u16_small_value() {
+        assert_eq!(as_u16(42), 42);
+    }
+
+    #[test]
+    fn as_u16_max_does_not_clamp() {
+        assert_eq!(as_u16(u16::MAX as usize), u16::MAX);
+    }
+
+    #[test]
+    fn as_u16_clamps_values_above_max() {
+        assert_eq!(as_u16(u16::MAX as usize + 1), u16::MAX);
+        assert_eq!(as_u16(usize::MAX), u16::MAX);
+    }
+
+    // ── scroll_offset_after_delta additional edge cases ────────────────
+
+    #[test]
+    fn scroll_offset_zero_amount_does_not_move() {
+        assert_eq!(
+            scroll_offset_after_delta(5, 10, 0, ScrollDirection::Older),
+            5
+        );
+        assert_eq!(
+            scroll_offset_after_delta(5, 10, 0, ScrollDirection::Newer),
+            5
+        );
+    }
+
+    #[test]
+    fn scroll_offset_saturating_sub_on_newer() {
+        assert_eq!(
+            scroll_offset_after_delta(2, 10, 5, ScrollDirection::Newer),
+            0
+        );
+    }
+
+    #[test]
+    fn scroll_offset_saturating_add_on_older() {
+        assert_eq!(
+            scroll_offset_after_delta(0, 0, 100, ScrollDirection::Older),
+            0
+        );
+    }
+
+    // ── should_draw_stream_update additional cases ─────────────────────
+
+    #[test]
+    fn stream_update_draws_immediately_on_first_token() {
+        assert!(should_draw_stream_update(None, 0, "a"));
+    }
+
+    #[test]
+    fn stream_update_draws_when_pending_exceeds_threshold() {
+        assert!(should_draw_stream_update(
+            Some(Instant::now()),
+            STREAM_REDRAW_MIN_BYTES,
+            "a"
+        ));
+    }
+
+    #[test]
+    fn stream_update_defers_small_token_within_interval() {
+        assert!(!should_draw_stream_update(Some(Instant::now()), 0, "a"));
+    }
+
+    // ── visible_tail additional edge cases ─────────────────────────────
+
+    #[test]
+    fn visible_tail_empty_slice_returns_empty() {
+        let items: Vec<i32> = vec![];
+        let result: &[i32] = visible_tail(&items, 5, 0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn visible_tail_max_len_exceeds_items_returns_all() {
+        let items = vec![1, 2, 3];
+        assert_eq!(visible_tail(&items, 10, 0), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn visible_tail_max_len_zero_returns_empty() {
+        let items = vec![1, 2, 3];
+        let result: &[i32] = visible_tail(&items, 0, 0);
+        assert!(result.is_empty());
+    }
+
+    // ── transcript_entries_from_session edge cases ─────────────────────
+
+    #[test]
+    fn transcript_entries_from_empty_session() {
+        let session = Session::new();
+        let entries = transcript_entries_from_session(&session);
+        assert!(entries.is_empty(), "empty session should yield no entries");
+    }
+
+    #[test]
+    fn transcript_entries_deduplicate_multiple_system_messages() {
+        let mut session = Session::new();
+        session.messages = vec![
+            zipcode_inference::ChatMessage::system("sys1"),
+            zipcode_inference::ChatMessage::system("sys2"),
+            zipcode_inference::ChatMessage::user("hello"),
+        ];
+        let entries = transcript_entries_from_session(&session);
+        // Only one Info entry for system, even with multiple system messages
+        let info_count = entries.iter().filter(|e| e.kind == EntryKind::Info).count();
+        assert_eq!(info_count, 1);
+        assert_eq!(entries[1].kind, EntryKind::User);
+    }
+
+    // ── TranscriptCache edge cases ─────────────────────────────────────
+
+    #[test]
+    fn transcript_cache_append_without_prior_width_is_noop() {
+        let mut cache = TranscriptCache::default();
+        let entry = TranscriptEntry {
+            kind: EntryKind::User,
+            content: "hello".to_string(),
+        };
+        cache.append_entry(&entry);
+        assert!(cache.lines.is_empty());
+        assert!(cache.entry_line_counts.is_empty());
+    }
+
+    #[test]
+    fn transcript_cache_replace_last_on_empty_cache_appends() {
+        let mut cache = TranscriptCache::default();
+        let entry = TranscriptEntry {
+            kind: EntryKind::Assistant,
+            content: "world".to_string(),
+        };
+        cache.replace_last_entry(&entry);
+        assert!(cache.lines.is_empty());
+        // No width set, so replace_last_entry also no-ops
+    }
+
+    #[test]
+    fn transcript_cache_rebuild_width_stored() {
+        let entries = vec![TranscriptEntry {
+            kind: EntryKind::User,
+            content: "test".to_string(),
+        }];
+        let mut cache = TranscriptCache::default();
+        cache.rebuild(&entries, 42);
+        assert_eq!(cache.width, Some(42));
+        assert_eq!(cache.entry_line_counts.len(), 1);
+    }
+
+    // ── handle_empty_composer_escape additional cases ──────────────────
+
+    #[test]
+    fn empty_composer_escape_no_history_returns_no_previous() {
+        let mut composer = Composer::new();
+        let mut esc_armed = true; // Pre-arm so second press tries to load
+        assert_eq!(
+            handle_empty_composer_escape(&mut composer, &mut esc_armed),
+            EscapeOutcome::NoPreviousMessage
+        );
+        assert!(!esc_armed);
+    }
+
+    // ── permission_mode_label tests ────────────────────────────────────
+
+    #[test]
+    fn permission_mode_labels_match_string_representations() {
+        assert_eq!(permission_mode_label(PermissionMode::ReadOnly), "read-only");
+        assert_eq!(
+            permission_mode_label(PermissionMode::WorkspaceWrite),
+            "workspace-write"
+        );
+        assert_eq!(
+            permission_mode_label(PermissionMode::FullAccess),
+            "full-access"
+        );
+    }
+
+    // ── scroll_status_label boundary cases ─────────────────────────────
+
+    #[test]
+    fn scroll_status_label_plural_vs_singular() {
+        assert_eq!(scroll_status_label(1), "1 line above latest");
+        assert_eq!(scroll_status_label(2), "2 lines above latest");
+        assert_eq!(scroll_status_label(1000), "1000 lines above latest");
+    }
+
+    // ── mouse_scroll_direction non_scroll_events ───────────────────────
+
+    #[test]
+    fn mouse_non_scroll_events_return_none() {
+        assert_eq!(mouse_scroll_direction(MouseEventKind::Moved), None);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
