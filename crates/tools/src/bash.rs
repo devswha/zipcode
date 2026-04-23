@@ -113,6 +113,7 @@ mod tests {
             parent_session_id: None,
             depth: 0,
             budget_tokens: None,
+            spawn_child: None,
         }
     }
 
@@ -164,6 +165,7 @@ mod tests {
             parent_session_id: None,
             depth: 0,
             budget_tokens: None,
+            spawn_child: None,
         };
         let command = format!(
             "python3 -c 'import pathlib, time; time.sleep(1); pathlib.Path(r\"{}\").write_text(\"leaked\")' & sleep 60",

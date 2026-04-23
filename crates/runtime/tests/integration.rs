@@ -133,6 +133,7 @@ fn build_test_loop_with_engine(
         tool_specs,
         cwd: dir.path().to_path_buf(),
         last_sent_idx: 0,
+        child_session_ids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 

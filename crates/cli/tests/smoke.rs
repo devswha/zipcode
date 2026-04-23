@@ -400,7 +400,7 @@ fn setup_repl_fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::create_dir_all(helper_path.parent().expect("helper parent"))
         .expect("create helper dir");
     let model_path = model_dir.join("fake.gguf");
-    std::fs::write(&model_path, b"gguf").expect("write fake model");
+    std::fs::write(&model_path, b"GGUF").expect("write fake model");
     write_fake_llama_server(&helper_path);
     (home, model_path, helper_path)
 }
@@ -463,7 +463,7 @@ fn doctor_runs() {
 fn doctor_accepts_global_model_flag_after_subcommand() {
     let dir = make_temp_dir("doctor-model-dir");
     let model = dir.join("test.gguf");
-    std::fs::write(&model, b"gguf").expect("write fake gguf");
+    std::fs::write(&model, b"GGUF").expect("write fake gguf");
 
     let output = zipcode_bin()
         .args(["doctor", "--model"])
@@ -762,7 +762,7 @@ fn doctor_reports_missing_server_for_gemma4_without_llama_server() {
     let isolated_bin = home.join("bin");
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&isolated_bin).expect("create isolated bin dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write fake tokenizer");
 
     let output = zipcode_bin()
@@ -794,7 +794,7 @@ fn doctor_allows_llama_server_without_tokenizer() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_executable(
         &zipcode_bin_dir.join("llama-server"),
         "#!/bin/sh\necho fake llama-server\n",
@@ -828,7 +828,7 @@ fn doctor_auto_selects_llama_server_for_gemma4_when_helper_exists() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_fake_llama_server(&zipcode_bin_dir.join("llama-server"));
 
     let output = zipcode_bin()
@@ -858,7 +858,7 @@ fn bare_zipcode_and_doctor_agree_when_helper_is_found_on_path_for_gemma4() {
     let path_dir = home.join("path-bin");
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&path_dir).expect("create PATH dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_fake_llama_server(&path_dir.join("llama-server"));
 
     let doctor = zipcode_bin()
@@ -908,7 +908,7 @@ fn stale_saved_helper_path_does_not_block_valid_path_fallback_discovery() {
     let path_dir = home.join("path-bin");
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&path_dir).expect("create PATH dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_fake_llama_server(&path_dir.join("llama-server"));
     write_file(
         &home.join(".zipcode/config.json"),
@@ -949,7 +949,7 @@ fn doctor_resolves_tilde_global_llama_server_bin() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&helper_dir).expect("create helper dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_fake_llama_server(&helper_dir.join("my-helper"));
     write_file(
         &home.join(".zipcode/config.json"),
@@ -988,7 +988,7 @@ fn startup_surfaces_stale_saved_helper_path_when_fallback_is_used() {
     let path_dir = home.join("path-bin");
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&path_dir).expect("create PATH dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_fake_llama_server(&path_dir.join("llama-server"));
     write_file(
         &home.join(".zipcode/config.json"),
@@ -1030,7 +1030,7 @@ fn doctor_backend_candle_does_not_claim_gemma4_is_ready() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write fake tokenizer");
     write_fake_llama_server(&zipcode_bin_dir.join("llama-server"));
 
@@ -1062,7 +1062,7 @@ fn prompt_explicit_llama_cpp_is_rejected_for_gemma4() {
     let helper_path = home.join("path-bin/llama-server");
     std::fs::create_dir_all(helper_path.parent().expect("helper parent"))
         .expect("create helper dir");
-    std::fs::write(&model_path, b"gguf").expect("write fake gguf");
+    std::fs::write(&model_path, b"GGUF").expect("write fake gguf");
     write_fake_llama_server(&helper_path);
 
     let output = zipcode_bin()
@@ -1102,7 +1102,7 @@ fn doctor_reports_unrunnable_helper_gpu_offload_config() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_cpu_only_llama_server(&zipcode_bin_dir.join("llama-server"));
     write_file(
         &home.join(".zipcode/config.json"),
@@ -1148,7 +1148,7 @@ fn bare_zipcode_surfaces_unrunnable_helper_gpu_offload_config() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
     std::fs::create_dir_all(&path_dir).expect("create PATH dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_cpu_only_llama_server(&zipcode_bin_dir.join("llama-server"));
     write_file(
         &home.join(".zipcode/config.json"),
@@ -1195,7 +1195,7 @@ fn doctor_times_out_hanging_helper_device_probe() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     write_hanging_list_devices_llama_server(&zipcode_bin_dir.join("llama-server"));
     write_file(
         &home.join(".zipcode/config.json"),
@@ -1249,7 +1249,7 @@ fn doctor_resolves_tilde_project_model_dir() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create helper dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("demo.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("demo.gguf"), b"GGUF").expect("write fake gguf");
     write_executable(
         &zipcode_bin_dir.join("llama-server"),
         "#!/bin/sh\necho fake llama-server\n",
@@ -1323,7 +1323,7 @@ fn setup_writes_config_and_wrapper_when_smoke_skipped() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create zipcode bin dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write fake tokenizer");
     write_executable(
         &zipcode_bin_dir.join("llama-server"),
@@ -1384,7 +1384,7 @@ fn doctor_stays_ready_after_setup_skip_smoke() {
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&zipcode_bin_dir).expect("create zipcode bin dir");
     std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
-    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"gguf").expect("write fake gguf");
+    std::fs::write(model_dir.join("gemma-4-test.gguf"), b"GGUF").expect("write fake gguf");
     std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write fake tokenizer");
     write_executable(
         &zipcode_bin_dir.join("llama-server"),
@@ -1468,7 +1468,7 @@ fn root_install_script_bootstraps_clone_users_into_ready_state() {
     let helper = asset_dir.join("llama-server");
     let install_script = repo_root().join("install.sh");
 
-    std::fs::write(&model, b"gguf").expect("write fake gguf");
+    std::fs::write(&model, b"GGUF").expect("write fake gguf");
     std::fs::write(&tokenizer, b"{}").expect("write fake tokenizer");
     write_executable(&helper, "#!/bin/sh\necho fake llama-server\n");
 
@@ -1551,9 +1551,9 @@ fn root_install_script_reuses_existing_model_and_helper_without_prompt() {
 
     std::fs::create_dir_all(&model_dir).expect("create model dir");
     std::fs::create_dir_all(&helper_dir).expect("create helper dir");
-    std::fs::write(model_dir.join("gemma-4-e2b-it-Q8_0.gguf"), b"gguf")
+    std::fs::write(model_dir.join("gemma-4-e2b-it-Q8_0.gguf"), b"GGUF")
         .expect("write gemma 4 model");
-    std::fs::write(model_dir.join("qwen2.5-0.5b-instruct-q4_k_m.gguf"), b"gguf")
+    std::fs::write(model_dir.join("qwen2.5-0.5b-instruct-q4_k_m.gguf"), b"GGUF")
         .expect("write secondary model");
     std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
     write_executable(
@@ -1619,7 +1619,7 @@ fn root_install_script_reuses_installed_helper_wrapper_safely() {
     let helper = asset_dir.join("llama-server");
     let install_script = repo_root().join("install.sh");
 
-    std::fs::write(&model, b"gguf").expect("write fake gguf");
+    std::fs::write(&model, b"GGUF").expect("write fake gguf");
     std::fs::write(&tokenizer, b"{}").expect("write fake tokenizer");
     write_executable(
         &helper,
@@ -1695,7 +1695,7 @@ fn root_install_script_interviews_users_with_links_then_paths() {
     let helper = asset_dir.join("llama-server");
     let install_script = repo_root().join("install.sh");
 
-    std::fs::write(&model, b"gguf").expect("write fake gguf");
+    std::fs::write(&model, b"GGUF").expect("write fake gguf");
     std::fs::write(&tokenizer, b"{}").expect("write fake tokenizer");
     write_executable(&helper, "#!/bin/sh\necho fake llama-server\n");
 
@@ -1787,13 +1787,13 @@ while [ "$#" -gt 0 ]; do
 done
 mkdir -p "$dir"
 if [ "$preset" = "31b" ]; then
-  printf 'gguf' > "$dir/gemma-4-31b-it-q8_0.gguf"
-  printf 'gguf' > "$dir/gemma-4-31b-it-f16.gguf"
+  printf 'GGUF' > "$dir/gemma-4-31b-it-q8_0.gguf"
+  printf 'GGUF' > "$dir/gemma-4-31b-it-f16.gguf"
 else
-  printf 'gguf' > "$dir/gemma-4-e2b-it-q8_0.gguf"
+  printf 'GGUF' > "$dir/gemma-4-e2b-it-q8_0.gguf"
 fi
-printf 'gguf' > "$dir/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-printf 'gguf' > "$dir/mmproj-gemma-4-31b-it-f16.gguf"
+printf 'GGUF' > "$dir/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+printf 'GGUF' > "$dir/mmproj-gemma-4-31b-it-f16.gguf"
 printf '{}' > "$dir/tokenizer.json"
 echo "fake downloader wrote $preset assets to $dir"
 "#,
@@ -1948,9 +1948,9 @@ fn root_install_script_handles_multiple_existing_models_and_still_reaches_ready_
     let install_script = repo_root().join("install.sh");
 
     std::fs::create_dir_all(&model_dir).expect("create model dir");
-    std::fs::write(model_dir.join("gemma-4-e2b-it-q8_0.gguf"), b"gguf").expect("write model 1");
-    std::fs::write(model_dir.join("gemma-4-e2b-it-f16.gguf"), b"gguf").expect("write model 2");
-    std::fs::write(model_dir.join("mmproj-gemma-4-e2b-it-f16.gguf"), b"gguf")
+    std::fs::write(model_dir.join("gemma-4-e2b-it-q8_0.gguf"), b"GGUF").expect("write model 1");
+    std::fs::write(model_dir.join("gemma-4-e2b-it-f16.gguf"), b"GGUF").expect("write model 2");
+    std::fs::write(model_dir.join("mmproj-gemma-4-e2b-it-f16.gguf"), b"GGUF")
         .expect("write mmproj");
     std::fs::write(model_dir.join("tokenizer.json"), b"{}").expect("write tokenizer");
 
@@ -2073,7 +2073,7 @@ fn fullscreen_repl_e2e_accepts_status_and_quit() {
     std::fs::create_dir_all(helper_path.parent().expect("helper parent"))
         .expect("create helper dir");
     let model_path = model_dir.join("fake.gguf");
-    std::fs::write(&model_path, b"gguf").expect("write fake model");
+    std::fs::write(&model_path, b"GGUF").expect("write fake model");
     write_executable(
         &helper_path,
         r#"#!/usr/bin/python3

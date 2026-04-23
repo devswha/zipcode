@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ExitStatus};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -307,8 +308,42 @@ pub enum PermissionMode {
     FullAccess,
 }
 
-/// Context passed to every tool execution
+/// Result returned when a child agent completes.
 #[derive(Debug, Clone)]
+pub struct ChildResult {
+    pub summary: String,
+    pub tool_call_count: usize,
+    pub child_session_id: String,
+}
+
+/// Callback type for spawning a child agent from within a tool.
+///
+/// Parameters: task_prompt, tool_allowlist, permission_override, max_tokens
+pub type SpawnChildFn = dyn Fn(
+        &str,
+        Option<&[String]>,
+        Option<PermissionMode>,
+        Option<usize>,
+    ) -> anyhow::Result<ChildResult>
+    + Send
+    + Sync;
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("cwd", &self.cwd)
+            .field("permission", &self.permission)
+            .field("session_id", &self.session_id)
+            .field("parent_session_id", &self.parent_session_id)
+            .field("depth", &self.depth)
+            .field("budget_tokens", &self.budget_tokens)
+            .field("spawn_child", &self.spawn_child.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
+}
+
+/// Context passed to every tool execution
+#[derive(Clone)]
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub permission: PermissionMode,
@@ -322,6 +357,10 @@ pub struct ToolContext {
     /// Soft token budget for the owning conversation. None means no
     /// explicit cap (inherit from parent or use provider default).
     pub budget_tokens: Option<usize>,
+    /// Callback injected by the runtime to spawn a child conversation loop.
+    /// None when the tool is executed outside a full ConversationLoop context
+    /// (e.g., unit tests, CLI one-shot mode).
+    pub spawn_child: Option<Arc<SpawnChildFn>>,
 }
 
 /// Result from a tool execution
@@ -502,6 +541,7 @@ mod tests {
             parent_session_id: None,
             depth: 0,
             budget_tokens: None,
+            spawn_child: None,
         }
     }
 

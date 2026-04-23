@@ -52,6 +52,26 @@ impl PermissionPolicy {
         }
     }
 
+    /// Create a child `PermissionPolicy` from this parent.
+    ///
+    /// - `None` → clone the parent's mode verbatim.
+    /// - `Some(m)` where `m` ≤ parent → adopt `m` (downgrade allowed).
+    /// - `Some(m)` where `m` > parent → keep the parent's mode (escalation refused).
+    #[must_use]
+    pub fn inherit_for_child(&self, override_mode: Option<PermissionMode>) -> Self {
+        let child_mode = match override_mode {
+            None => self.mode,
+            Some(m) => {
+                if mode_rank(m) <= mode_rank(self.mode) {
+                    m
+                } else {
+                    self.mode
+                }
+            }
+        };
+        Self { mode: child_mode }
+    }
+
     /// Prompt user for Y/N approval. Returns true if approved.
     #[must_use]
     pub fn prompt_user(message: &str) -> bool {
@@ -61,6 +81,15 @@ impl PermissionPolicy {
         io::stdin().read_line(&mut input).ok();
         let trimmed = input.trim().to_lowercase();
         trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+    }
+}
+
+/// Numeric rank for permission level comparison. Higher = more permissive.
+const fn mode_rank(mode: PermissionMode) -> u8 {
+    match mode {
+        PermissionMode::ReadOnly => 0,
+        PermissionMode::WorkspaceWrite => 1,
+        PermissionMode::FullAccess => 2,
     }
 }
 
@@ -221,6 +250,50 @@ mod tests {
             PermissionCheck::Allowed,
             "FullAccess should allow unknown tool names"
         );
+    }
+
+    // ── inherit_for_child tests ───────────────────────────────────
+
+    #[test]
+    fn test_inherit_for_child_none_clones_parent() {
+        let parent = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        let child = parent.inherit_for_child(None);
+        assert_eq!(child.mode(), PermissionMode::WorkspaceWrite);
+    }
+
+    #[test]
+    fn test_inherit_for_child_downgrade_allowed() {
+        let parent = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        let child = parent.inherit_for_child(Some(PermissionMode::ReadOnly));
+        assert_eq!(child.mode(), PermissionMode::ReadOnly);
+    }
+
+    #[test]
+    fn test_inherit_for_child_same_mode_allowed() {
+        let parent = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        let child = parent.inherit_for_child(Some(PermissionMode::WorkspaceWrite));
+        assert_eq!(child.mode(), PermissionMode::WorkspaceWrite);
+    }
+
+    #[test]
+    fn test_inherit_for_child_escalation_refused() {
+        let parent = PermissionPolicy::new(PermissionMode::ReadOnly);
+        let child = parent.inherit_for_child(Some(PermissionMode::FullAccess));
+        assert_eq!(child.mode(), PermissionMode::ReadOnly);
+    }
+
+    #[test]
+    fn test_inherit_for_child_full_access_parent_allows_downgrade() {
+        let parent = PermissionPolicy::new(PermissionMode::FullAccess);
+        let child = parent.inherit_for_child(Some(PermissionMode::ReadOnly));
+        assert_eq!(child.mode(), PermissionMode::ReadOnly);
+    }
+
+    #[test]
+    fn test_inherit_for_child_workspace_write_escalation_to_full_access_refused() {
+        let parent = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        let child = parent.inherit_for_child(Some(PermissionMode::FullAccess));
+        assert_eq!(child.mode(), PermissionMode::WorkspaceWrite);
     }
 
     #[test]

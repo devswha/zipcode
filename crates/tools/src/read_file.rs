@@ -159,6 +159,7 @@ mod tests {
             parent_session_id: None,
             depth: 0,
             budget_tokens: None,
+            spawn_child: None,
         }
     }
 
@@ -274,6 +275,7 @@ mod tests {
             parent_session_id: None,
             depth: 0,
             budget_tokens: None,
+            spawn_child: None,
         };
 
         let tool = ReadFileTool;

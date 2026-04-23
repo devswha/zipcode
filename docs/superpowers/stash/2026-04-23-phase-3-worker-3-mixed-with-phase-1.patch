@@ -1,0 +1,875 @@
+diff --git a/crates/runtime/src/lib.rs b/crates/runtime/src/lib.rs
+index 1960b39..623141e 100644
+--- a/crates/runtime/src/lib.rs
++++ b/crates/runtime/src/lib.rs
+@@ -5,6 +5,10 @@ pub mod prompt;
+ pub mod session;
+ 
+ pub use config::ZipcodeConfig;
+-pub use conversation::{ConversationLoop, StreamCallback};
++pub use conversation::{compute_child_budget, ConversationLoop, StreamCallback, MAX_AGENT_DEPTH};
+ pub use permission::{parse_permission_mode, PermissionCheck, PermissionPolicy};
+-pub use session::{CompactPolicy, CompactResult, Session, COMPACTED_SUMMARY_MARKER};
++pub use session::{
++    CompactPolicy, CompactResult, Session, TieredCompactor, COMPACTED_SUMMARY_MARKER,
++    TOOL_PAIR_SUMMARY_MARKER,
++};
++pub use zipcode_tools::ChildResult;
+diff --git a/crates/runtime/src/session.rs b/crates/runtime/src/session.rs
+index 4dc324d..06309a5 100644
+--- a/crates/runtime/src/session.rs
++++ b/crates/runtime/src/session.rs
+@@ -1,4 +1,5 @@
+ use std::fmt::Write;
++use std::sync::{Arc, Mutex};
+ 
+ use anyhow::{Context, Result};
+ use serde::{Deserialize, Serialize};
+@@ -6,15 +7,36 @@ use std::path::PathBuf;
+ use zipcode_inference::{ChatMessage, Role};
+ 
+ pub const COMPACTED_SUMMARY_MARKER: &str = "[Compacted context summary]";
++pub const TOOL_PAIR_SUMMARY_MARKER: &str = "[Tool-pair summary]";
+ const DEFAULT_RETAIN_USER_TURNS: usize = 4;
+ const DEFAULT_MAX_SUMMARY_BULLETS: usize = 12;
+ const DEFAULT_MAX_SUMMARY_LINE_CHARS: usize = 120;
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++/// Tier 1: background tool-pair summarization trigger threshold (pairs).
++const DEFAULT_TIER1_PAIR_CUTOFF: usize = 10;
++/// Tier 1: number of oldest pairs to batch when triggered.
++const DEFAULT_TIER1_BATCH_SIZE: usize = 10;
++/// Tier 2: reactive compaction context usage threshold (0.0–1.0).
++const DEFAULT_TIER2_USAGE_THRESHOLD: f64 = 0.80;
++/// Default context window token estimate (32K).
++const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 32_768;
++/// Rough chars-per-token estimate used for token counting without a tokenizer.
++const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
++
++#[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct CompactPolicy {
+     pub retain_user_turns: usize,
+     pub max_summary_bullets: usize,
+     pub max_summary_line_chars: usize,
++    /// Tier 1: start background summarization once this many tool pairs exist.
++    pub tier1_pair_cutoff: usize,
++    /// Tier 1: how many of the oldest pairs to summarize per background pass.
++    pub tier1_batch_size: usize,
++    /// Tier 2: trigger reactive compaction when estimated token usage exceeds
++    /// this fraction of `context_window_tokens`.
++    pub tier2_usage_threshold: f64,
++    /// Tier 2: total context window size in tokens used for usage estimation.
++    pub context_window_tokens: usize,
+ }
+ 
+ impl Default for CompactPolicy {
+@@ -23,6 +45,10 @@ impl Default for CompactPolicy {
+             retain_user_turns: DEFAULT_RETAIN_USER_TURNS,
+             max_summary_bullets: DEFAULT_MAX_SUMMARY_BULLETS,
+             max_summary_line_chars: DEFAULT_MAX_SUMMARY_LINE_CHARS,
++            tier1_pair_cutoff: DEFAULT_TIER1_PAIR_CUTOFF,
++            tier1_batch_size: DEFAULT_TIER1_BATCH_SIZE,
++            tier2_usage_threshold: DEFAULT_TIER2_USAGE_THRESHOLD,
++            context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
+         }
+     }
+ }
+@@ -42,6 +68,8 @@ pub struct Session {
+     pub messages: Vec<ChatMessage>,
+     pub created_at: String,
+     pub updated_at: String,
++    #[serde(skip_serializing_if = "Option::is_none", default)]
++    pub parent_id: Option<String>,
+ }
+ 
+ impl Session {
+@@ -54,9 +82,18 @@ impl Session {
+             messages: Vec::new(),
+             created_at: now.clone(),
+             updated_at: now,
++            parent_id: None,
+         }
+     }
+ 
++    /// Create a new child session that records its parent's session ID.
++    #[must_use]
++    pub fn new_child(parent_id: String) -> Self {
++        let mut child = Self::new();
++        child.parent_id = Some(parent_id);
++        child
++    }
++
+     /// Persist the session to `~/.zipcode/sessions/{id}.json`.
+     ///
+     /// # Errors
+@@ -102,6 +139,16 @@ impl Session {
+         session_path(&self.id)
+     }
+ 
++    /// Return the filesystem path for a session by ID, without loading it.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error if the ID fails path-traversal validation.
++    pub fn path_for_id(id: &str) -> anyhow::Result<PathBuf> {
++        validate_session_id(id)?;
++        Ok(session_path(id))
++    }
++
+     pub fn compact(&mut self, policy: CompactPolicy) -> CompactResult {
+         let before_messages = self.messages.len();
+         let system_prefix_len = usize::from(
+@@ -158,6 +205,129 @@ impl Session {
+         self.messages.push(msg);
+         self.updated_at = timestamp_now();
+     }
++
++    /// Estimate rough token count for all messages using a chars/token heuristic.
++    #[must_use]
++    pub fn estimated_tokens(&self) -> usize {
++        let total_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
++        total_chars / CHARS_PER_TOKEN_ESTIMATE
++    }
++
++    /// Count how many complete tool-call+result pairs exist in the message list.
++    #[must_use]
++    pub fn tool_pair_count(&self) -> usize {
++        self.messages
++            .iter()
++            .filter(|m| m.role == Role::Tool)
++            .count()
++    }
++
++    /// **Tier 1** — Synchronously summarize the oldest `batch_size` tool pairs.
++    ///
++    /// Scans for the first N (tool-call, tool-result) pairs and replaces them
++    /// with a single compact summary message. Returns the number of messages
++    /// removed. Does nothing if fewer than `batch_size` pairs exist.
++    pub fn compact_tool_pairs(&mut self, batch_size: usize, max_line_chars: usize) -> usize {
++        let pairs = collect_tool_pairs(&self.messages);
++        if pairs.len() < batch_size {
++            return 0;
++        }
++
++        let to_summarize = &pairs[..batch_size];
++        let summary = build_tool_pair_summary(to_summarize, &self.messages, max_line_chars);
++
++        // Indices of messages to remove (all indices covered by the batch pairs)
++        let mut remove_indices: std::collections::BTreeSet<usize> =
++            std::collections::BTreeSet::new();
++        for &(call_idx, result_idx) in to_summarize {
++            remove_indices.insert(call_idx);
++            remove_indices.insert(result_idx);
++        }
++
++        let first_idx = *remove_indices.iter().next().unwrap_or(&0);
++        let removed_count = remove_indices.len();
++
++        // Build new message list: keep everything except removed indices,
++        // inserting the summary at the position of the first removed message.
++        let mut new_messages: Vec<ChatMessage> =
++            Vec::with_capacity(self.messages.len() - removed_count + 1);
++        let mut inserted = false;
++        for (idx, msg) in self.messages.drain(..).enumerate() {
++            if remove_indices.contains(&idx) {
++                if !inserted {
++                    new_messages.push(ChatMessage::assistant(&summary));
++                    inserted = true;
++                }
++            } else {
++                new_messages.push(msg);
++            }
++        }
++        if !inserted {
++            new_messages.insert(
++                first_idx.min(new_messages.len()),
++                ChatMessage::assistant(&summary),
++            );
++        }
++        self.messages = new_messages;
++        self.updated_at = timestamp_now();
++        removed_count
++    }
++
++    /// **Tier 2** — Progressive tool-response eviction before full compaction.
++    ///
++    /// Evicts the oldest tool *results* (keeping the call stubs) in progressive
++    /// steps (10 % → 20 % → 50 % → 100 %) until estimated token usage drops
++    /// below `threshold`. Returns total messages removed.
++    pub fn evict_tool_responses_progressive(&mut self, threshold_tokens: usize) -> usize {
++        let tool_result_indices: Vec<usize> = self
++            .messages
++            .iter()
++            .enumerate()
++            .filter(|(_, m)| m.role == Role::Tool)
++            .map(|(i, _)| i)
++            .collect();
++
++        if tool_result_indices.is_empty() {
++            return 0;
++        }
++
++        let total = tool_result_indices.len();
++        let steps = [(total / 10).max(1), (total / 5).max(1), total / 2, total];
++
++        let mut removed = 0usize;
++        for &step in &steps {
++            if self.estimated_tokens() <= threshold_tokens {
++                break;
++            }
++            let to_evict = step.saturating_sub(removed);
++            if to_evict == 0 {
++                continue;
++            }
++            // Evict the next `to_evict` oldest tool results
++            let evict_start = removed;
++            let evict_end = (evict_start + to_evict).min(total);
++            let evict_set: std::collections::BTreeSet<usize> = tool_result_indices
++                [evict_start..evict_end]
++                .iter()
++                .copied()
++                .collect();
++            // Evict in reverse order to keep indices stable
++            let mut offset = 0usize;
++            let mut new_messages = Vec::with_capacity(self.messages.len() - evict_set.len());
++            for (idx, msg) in self.messages.drain(..).enumerate() {
++                if evict_set.contains(&(idx + offset)) {
++                    offset += 1;
++                } else {
++                    new_messages.push(msg);
++                }
++            }
++            self.messages = new_messages;
++            self.updated_at = timestamp_now();
++            removed += to_evict;
++        }
++
++        removed
++    }
+ }
+ 
+ impl Default for Session {
+@@ -166,6 +336,170 @@ impl Default for Session {
+     }
+ }
+ 
++/// Shared state for the background Tier-1 compactor task.
++#[derive(Clone)]
++pub struct TieredCompactor {
++    /// Shared session messages — the background task writes compacted messages back.
++    messages: Arc<Mutex<Vec<ChatMessage>>>,
++    policy: CompactPolicy,
++}
++
++impl TieredCompactor {
++    #[must_use]
++    pub fn new(policy: CompactPolicy) -> Self {
++        Self {
++            messages: Arc::new(Mutex::new(Vec::new())),
++            policy,
++        }
++    }
++
++    /// Sync the compactor's view with the live session messages.
++    pub fn sync_from(&self, messages: &[ChatMessage]) {
++        if let Ok(mut guard) = self.messages.lock() {
++            *guard = messages.to_vec();
++        }
++    }
++
++    /// Read back the (possibly compacted) messages.
++    #[must_use]
++    pub fn read_messages(&self) -> Vec<ChatMessage> {
++        self.messages.lock().map(|g| g.clone()).unwrap_or_default()
++    }
++
++    /// Spawn a background Tier-1 task. Non-blocking. Failures are silently
++    /// dropped — the caller's session is unaffected if the task panics.
++    pub fn spawn_tier1_background(&self) {
++        let messages_ref = Arc::clone(&self.messages);
++        let policy = self.policy;
++
++        tokio::spawn(async move {
++            let pairs = {
++                let guard = match messages_ref.lock() {
++                    Ok(g) => g,
++                    Err(_) => return,
++                };
++                collect_tool_pairs(&guard)
++            };
++
++            if pairs.len() < policy.tier1_batch_size {
++                return;
++            }
++
++            let to_summarize = &pairs[..policy.tier1_batch_size];
++
++            let summary = {
++                let guard = match messages_ref.lock() {
++                    Ok(g) => g,
++                    Err(_) => return,
++                };
++                build_tool_pair_summary(to_summarize, &guard, policy.max_summary_line_chars)
++            };
++
++            let mut guard = match messages_ref.lock() {
++                Ok(g) => g,
++                Err(_) => return,
++            };
++
++            let mut remove_indices: std::collections::BTreeSet<usize> =
++                std::collections::BTreeSet::new();
++            for &(call_idx, result_idx) in to_summarize {
++                remove_indices.insert(call_idx);
++                remove_indices.insert(result_idx);
++            }
++
++            let first_idx = *remove_indices.iter().next().unwrap_or(&0);
++            let removed_count = remove_indices.len();
++            let mut new_messages: Vec<ChatMessage> =
++                Vec::with_capacity(guard.len() - removed_count + 1);
++            let mut inserted = false;
++            for (idx, msg) in guard.drain(..).enumerate() {
++                if remove_indices.contains(&idx) {
++                    if !inserted {
++                        new_messages.push(ChatMessage::assistant(&summary));
++                        inserted = true;
++                    }
++                } else {
++                    new_messages.push(msg);
++                }
++            }
++            if !inserted {
++                new_messages.insert(
++                    first_idx.min(new_messages.len()),
++                    ChatMessage::assistant(&summary),
++                );
++            }
++            *guard = new_messages;
++        });
++    }
++
++    /// Check if Tier-2 reactive compaction should trigger given current usage.
++    #[must_use]
++    pub fn needs_tier2(&self, estimated_tokens: usize) -> bool {
++        let threshold =
++            (self.policy.context_window_tokens as f64 * self.policy.tier2_usage_threshold) as usize;
++        estimated_tokens >= threshold
++    }
++
++    /// Token threshold for Tier-2 eviction (80% of context window).
++    #[must_use]
++    pub fn tier2_threshold_tokens(&self) -> usize {
++        (self.policy.context_window_tokens as f64 * self.policy.tier2_usage_threshold) as usize
++    }
++}
++
++/// Collect (call_msg_idx, result_msg_idx) pairs from the message list.
++/// A pair is a Model message with tool_calls followed by a Tool message.
++fn collect_tool_pairs(messages: &[ChatMessage]) -> Vec<(usize, usize)> {
++    let mut pairs = Vec::new();
++    let mut i = 0;
++    while i < messages.len() {
++        if messages[i].role == Role::Model && messages[i].tool_calls.is_some() {
++            if let Some(result_idx) = messages[i + 1..]
++                .iter()
++                .position(|m| m.role == Role::Tool)
++                .map(|offset| i + 1 + offset)
++            {
++                pairs.push((i, result_idx));
++                i = result_idx + 1;
++                continue;
++            }
++        }
++        i += 1;
++    }
++    pairs
++}
++
++/// Build a compact one-line summary for a batch of tool pairs.
++fn build_tool_pair_summary(
++    pairs: &[(usize, usize)],
++    messages: &[ChatMessage],
++    max_line_chars: usize,
++) -> String {
++    let mut lines = Vec::with_capacity(pairs.len());
++    for &(call_idx, result_idx) in pairs {
++        let call_msg = &messages[call_idx];
++        let result_msg = &messages[result_idx];
++        let tool_names = call_msg
++            .tool_calls
++            .as_ref()
++            .map(|calls| {
++                calls
++                    .iter()
++                    .map(|c| c.name.as_str())
++                    .collect::<Vec<_>>()
++                    .join(", ")
++            })
++            .unwrap_or_default();
++        let result_snippet = truncate_inline(&result_msg.content, max_line_chars / 2);
++        lines.push(format!("- called {tool_names}: {result_snippet}"));
++    }
++    format!(
++        "{TOOL_PAIR_SUMMARY_MARKER}\nSummarized {} tool pair(s):\n{}",
++        pairs.len(),
++        lines.join("\n")
++    )
++}
++
+ fn validate_session_id(id: &str) -> Result<()> {
+     let is_valid = !id.is_empty()
+         && id
+@@ -367,12 +701,14 @@ mod tests {
+             ],
+             created_at: timestamp_now(),
+             updated_at: timestamp_now(),
++            parent_id: None,
+         };
+ 
+         let result = session.compact(CompactPolicy {
+             retain_user_turns: 2,
+             max_summary_bullets: 8,
+             max_summary_line_chars: 80,
++            ..CompactPolicy::default()
+         });
+ 
+         assert!(result.changed);
+@@ -404,6 +740,7 @@ mod tests {
+             ],
+             created_at: timestamp_now(),
+             updated_at: timestamp_now(),
++            parent_id: None,
+         };
+ 
+         let policy = CompactPolicy {
+@@ -722,6 +1059,7 @@ mod tests {
+             ],
+             created_at: timestamp_now(),
+             updated_at: timestamp_now(),
++            parent_id: None,
+         };
+ 
+         let result = session.compact(CompactPolicy {
+@@ -757,6 +1095,7 @@ mod tests {
+             ],
+             created_at: timestamp_now(),
+             updated_at: timestamp_now(),
++            parent_id: None,
+         };
+ 
+         let result = session.compact(CompactPolicy {
+@@ -777,6 +1116,7 @@ mod tests {
+             messages: vec![ChatMessage::system("sys"), ChatMessage::assistant("hello")],
+             created_at: timestamp_now(),
+             updated_at: timestamp_now(),
++            parent_id: None,
+         };
+ 
+         let result = session.compact(CompactPolicy {
+@@ -803,12 +1143,14 @@ mod tests {
+             ],
+             created_at: timestamp_now(),
+             updated_at: timestamp_now(),
++            parent_id: None,
+         };
+ 
+         let result = session.compact(CompactPolicy {
+             retain_user_turns: 2,
+             max_summary_bullets: 10,
+             max_summary_line_chars: 80,
++            ..CompactPolicy::default()
+         });
+ 
+         assert!(result.changed);
+@@ -838,6 +1180,7 @@ mod tests {
+             ],
+             created_at: timestamp_now(),
+             updated_at: timestamp_now(),
++            parent_id: None,
+         };
+ 
+         let result = session.compact(CompactPolicy {
+@@ -875,4 +1218,382 @@ mod tests {
+             "updated_at should be >= before push"
+         );
+     }
++
++    // ── new_child tests ───────────────────────────────────────────
++
++    #[test]
++    fn test_new_child_records_parent_id() {
++        let parent = Session::new();
++        let child = Session::new_child(parent.id.clone());
++        assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
++    }
++
++    #[test]
++    fn test_new_session_has_no_parent_id() {
++        let session = Session::new();
++        assert!(session.parent_id.is_none());
++    }
++
++    // ── estimated_tokens tests ────────────────────────────────────
++
++    #[test]
++    fn test_estimated_tokens_empty_session() {
++        let session = Session::new();
++        assert_eq!(session.estimated_tokens(), 0);
++    }
++
++    #[test]
++    fn test_estimated_tokens_scales_with_content() {
++        let mut session = Session::new();
++        // 400-char content → ~100 tokens
++        session.push_message(ChatMessage::user(&"x".repeat(400)));
++        assert_eq!(session.estimated_tokens(), 100);
++    }
++
++    // ── tool_pair_count tests ─────────────────────────────────────
++
++    #[test]
++    fn test_tool_pair_count_zero_when_no_tool_results() {
++        let mut session = Session::new();
++        session.push_message(ChatMessage::user("hello"));
++        session.push_message(ChatMessage::assistant("world"));
++        assert_eq!(session.tool_pair_count(), 0);
++    }
++
++    #[test]
++    fn test_tool_pair_count_counts_tool_role_messages() {
++        let mut session = Session::new();
++        let call = ToolCallParsed {
++            id: "c1".to_string(),
++            name: "read_file".to_string(),
++            arguments: serde_json::json!({"file_path": "foo.rs"}),
++        };
++        session.push_message(ChatMessage::assistant_with_tool_calls("", vec![call]));
++        session.push_message(ChatMessage::tool_result("c1", "file contents"));
++        assert_eq!(session.tool_pair_count(), 1);
++    }
++
++    // ── Tier-1: compact_tool_pairs tests ─────────────────────────
++
++    fn make_session_with_tool_pairs(n: usize) -> Session {
++        let mut session = Session {
++            id: "test".to_string(),
++            messages: vec![ChatMessage::system("system")],
++            created_at: timestamp_now(),
++            updated_at: timestamp_now(),
++            parent_id: None,
++        };
++        for i in 0..n {
++            let call = ToolCallParsed {
++                id: format!("c{i}"),
++                name: "read_file".to_string(),
++                arguments: serde_json::json!({"file_path": format!("file{i}.rs")}),
++            };
++            session.push_message(ChatMessage::assistant_with_tool_calls(
++                "checking",
++                vec![call],
++            ));
++            session.push_message(ChatMessage::tool_result(
++                &format!("c{i}"),
++                &format!("content of file{i}"),
++            ));
++        }
++        session
++    }
++
++    #[test]
++    fn test_compact_tool_pairs_does_nothing_when_below_batch_size() {
++        let mut session = make_session_with_tool_pairs(3);
++        let before_len = session.messages.len();
++        let removed = session.compact_tool_pairs(5, 80);
++        assert_eq!(removed, 0);
++        assert_eq!(session.messages.len(), before_len);
++    }
++
++    #[test]
++    fn test_compact_tool_pairs_removes_pairs_and_inserts_summary() {
++        let mut session = make_session_with_tool_pairs(5);
++        // 1 system + 5×(call+result) = 11 messages
++        assert_eq!(session.messages.len(), 11);
++
++        let removed = session.compact_tool_pairs(3, 80);
++        // Each pair = 2 messages, 3 pairs removed → 6 messages removed, 1 summary inserted
++        assert_eq!(removed, 6);
++        // New length: 11 - 6 + 1 = 6
++        assert_eq!(session.messages.len(), 6);
++
++        // Summary marker must appear
++        let has_summary = session
++            .messages
++            .iter()
++            .any(|m| m.content.contains(TOOL_PAIR_SUMMARY_MARKER));
++        assert!(has_summary, "summary message should be present");
++    }
++
++    #[test]
++    fn test_compact_tool_pairs_summary_contains_tool_names() {
++        let mut session = make_session_with_tool_pairs(2);
++        session.compact_tool_pairs(2, 80);
++
++        let summary = session
++            .messages
++            .iter()
++            .find(|m| m.content.contains(TOOL_PAIR_SUMMARY_MARKER))
++            .expect("summary message must exist");
++        assert!(
++            summary.content.contains("read_file"),
++            "summary should mention the tool name"
++        );
++    }
++
++    #[test]
++    fn test_compact_tool_pairs_preserves_trailing_non_pair_messages() {
++        let mut session = make_session_with_tool_pairs(3);
++        session.push_message(ChatMessage::user("final question"));
++        session.push_message(ChatMessage::assistant("final answer"));
++
++        let before_len = session.messages.len();
++        session.compact_tool_pairs(3, 80);
++
++        // The final user+assistant pair must still be present
++        let last_user = session.messages.iter().rev().find(|m| m.role == Role::User);
++        assert_eq!(
++            last_user.map(|m| m.content.as_str()),
++            Some("final question")
++        );
++        let _ = before_len; // just confirming no panic
++    }
++
++    // ── Tier-2: evict_tool_responses_progressive tests ────────────
++
++    #[test]
++    fn test_evict_tool_responses_does_nothing_when_no_tool_results() {
++        let mut session = Session::new();
++        session.push_message(ChatMessage::user("hello"));
++        let before_len = session.messages.len();
++        let removed = session.evict_tool_responses_progressive(1_000_000);
++        assert_eq!(removed, 0);
++        assert_eq!(session.messages.len(), before_len);
++    }
++
++    #[test]
++    fn test_evict_tool_responses_stops_when_threshold_met_immediately() {
++        let mut session = make_session_with_tool_pairs(5);
++        // Token threshold much larger than session → no eviction needed
++        let removed = session.evict_tool_responses_progressive(1_000_000);
++        assert_eq!(removed, 0);
++    }
++
++    #[test]
++    fn test_evict_tool_responses_removes_messages_when_over_threshold() {
++        // Build a session with large tool results to exceed a small threshold
++        let mut session = Session {
++            id: "t".to_string(),
++            messages: vec![ChatMessage::system("sys")],
++            created_at: timestamp_now(),
++            updated_at: timestamp_now(),
++            parent_id: None,
++        };
++        for i in 0..10 {
++            let call = ToolCallParsed {
++                id: format!("c{i}"),
++                name: "read_file".to_string(),
++                arguments: serde_json::json!({}),
++            };
++            session.push_message(ChatMessage::assistant_with_tool_calls("", vec![call]));
++            // 500-char content per tool result → ~125 tokens each
++            session.push_message(ChatMessage::tool_result(&format!("c{i}"), &"x".repeat(500)));
++        }
++        let initial_tokens = session.estimated_tokens();
++        // Set threshold to force eviction
++        let threshold = initial_tokens / 2;
++        let removed = session.evict_tool_responses_progressive(threshold);
++        assert!(removed > 0, "should have evicted some tool responses");
++        assert!(
++            session.estimated_tokens() <= threshold,
++            "tokens should be at or below threshold after eviction"
++        );
++    }
++
++    // ── TieredCompactor tests ─────────────────────────────────────
++
++    #[test]
++    fn test_tiered_compactor_needs_tier2_below_threshold() {
++        let policy = CompactPolicy {
++            context_window_tokens: 1000,
++            tier2_usage_threshold: 0.8,
++            ..CompactPolicy::default()
++        };
++        let compactor = TieredCompactor::new(policy);
++        // 799 tokens → below 80% of 1000
++        assert!(!compactor.needs_tier2(799));
++    }
++
++    #[test]
++    fn test_tiered_compactor_needs_tier2_at_threshold() {
++        let policy = CompactPolicy {
++            context_window_tokens: 1000,
++            tier2_usage_threshold: 0.8,
++            ..CompactPolicy::default()
++        };
++        let compactor = TieredCompactor::new(policy);
++        // 800 tokens → exactly 80% of 1000
++        assert!(compactor.needs_tier2(800));
++    }
++
++    #[test]
++    fn test_tiered_compactor_needs_tier2_above_threshold() {
++        let policy = CompactPolicy {
++            context_window_tokens: 1000,
++            tier2_usage_threshold: 0.8,
++            ..CompactPolicy::default()
++        };
++        let compactor = TieredCompactor::new(policy);
++        assert!(compactor.needs_tier2(999));
++    }
++
++    #[test]
++    fn test_tiered_compactor_tier2_threshold_tokens() {
++        let policy = CompactPolicy {
++            context_window_tokens: 32_768,
++            tier2_usage_threshold: 0.8,
++            ..CompactPolicy::default()
++        };
++        let compactor = TieredCompactor::new(policy);
++        // 80% of 32768 = 26214
++        assert_eq!(compactor.tier2_threshold_tokens(), 26_214);
++    }
++
++    #[test]
++    fn test_tiered_compactor_sync_and_read() {
++        let policy = CompactPolicy::default();
++        let compactor = TieredCompactor::new(policy);
++        let msgs = vec![ChatMessage::user("hello"), ChatMessage::assistant("world")];
++        compactor.sync_from(&msgs);
++        let read_back = compactor.read_messages();
++        assert_eq!(read_back.len(), 2);
++        assert_eq!(read_back[0].content, "hello");
++    }
++
++    // ── collect_tool_pairs helper tests ──────────────────────────
++
++    #[test]
++    fn test_collect_tool_pairs_empty() {
++        let pairs = collect_tool_pairs(&[]);
++        assert!(pairs.is_empty());
++    }
++
++    #[test]
++    fn test_collect_tool_pairs_no_tool_messages() {
++        let messages = vec![ChatMessage::user("hello"), ChatMessage::assistant("world")];
++        let pairs = collect_tool_pairs(&messages);
++        assert!(pairs.is_empty());
++    }
++
++    #[test]
++    fn test_collect_tool_pairs_one_pair() {
++        let call = ToolCallParsed {
++            id: "c1".to_string(),
++            name: "bash".to_string(),
++            arguments: serde_json::json!({}),
++        };
++        let messages = vec![
++            ChatMessage::assistant_with_tool_calls("", vec![call]),
++            ChatMessage::tool_result("c1", "output"),
++        ];
++        let pairs = collect_tool_pairs(&messages);
++        assert_eq!(pairs.len(), 1);
++        assert_eq!(pairs[0], (0, 1));
++    }
++
++    #[test]
++    fn test_collect_tool_pairs_two_consecutive_pairs() {
++        let call1 = ToolCallParsed {
++            id: "c1".to_string(),
++            name: "bash".to_string(),
++            arguments: serde_json::json!({}),
++        };
++        let call2 = ToolCallParsed {
++            id: "c2".to_string(),
++            name: "read_file".to_string(),
++            arguments: serde_json::json!({}),
++        };
++        let messages = vec![
++            ChatMessage::assistant_with_tool_calls("", vec![call1]),
++            ChatMessage::tool_result("c1", "out1"),
++            ChatMessage::assistant_with_tool_calls("", vec![call2]),
++            ChatMessage::tool_result("c2", "out2"),
++        ];
++        let pairs = collect_tool_pairs(&messages);
++        assert_eq!(pairs.len(), 2);
++        assert_eq!(pairs[0], (0, 1));
++        assert_eq!(pairs[1], (2, 3));
++    }
++
++    // ── 100-turn synthetic conversation overflow test ─────────────
++
++    #[test]
++    fn test_100_turn_synthetic_dialog_no_overflow_at_32k() {
++        let context_window = 32_768usize;
++        let policy = CompactPolicy {
++            retain_user_turns: 4,
++            tier1_pair_cutoff: 10,
++            tier1_batch_size: 10,
++            tier2_usage_threshold: 0.8,
++            context_window_tokens: context_window,
++            ..CompactPolicy::default()
++        };
++        let threshold = (context_window as f64 * 0.8) as usize;
++
++        let mut session = Session {
++            id: "synthetic".to_string(),
++            messages: vec![ChatMessage::system("you are a helpful assistant")],
++            created_at: timestamp_now(),
++            updated_at: timestamp_now(),
++            parent_id: None,
++        };
++
++        for turn in 0..100 {
++            // Each turn: user message + tool call + tool result (200 chars each) + assistant reply
++            let call = ToolCallParsed {
++                id: format!("c{turn}"),
++                name: "read_file".to_string(),
++                arguments: serde_json::json!({"file_path": format!("file{turn}.rs")}),
++            };
++            session.push_message(ChatMessage::user(&format!(
++                "Turn {turn}: please read the file"
++            )));
++            session.push_message(ChatMessage::assistant_with_tool_calls(
++                "reading",
++                vec![call],
++            ));
++            // 200-char tool result ≈ 50 tokens
++            session.push_message(ChatMessage::tool_result(
++                &format!("c{turn}"),
++                &"x".repeat(200),
++            ));
++            session.push_message(ChatMessage::assistant(&format!(
++                "Turn {turn}: done reading"
++            )));
++
++            // Tier 1: background-style tool-pair summarization
++            if session.tool_pair_count() > policy.tier1_pair_cutoff {
++                session.compact_tool_pairs(policy.tier1_batch_size, policy.max_summary_line_chars);
++            }
++
++            // Tier 2: reactive compaction
++            if session.estimated_tokens() >= threshold {
++                session.evict_tool_responses_progressive(threshold);
++                if session.estimated_tokens() >= threshold {
++                    session.compact(policy);
++                }
++            }
++        }
++
++        let final_tokens = session.estimated_tokens();
++        assert!(
++            final_tokens < context_window,
++            "final token estimate {final_tokens} must be below context window {context_window}"
++        );
++    }
+ }
