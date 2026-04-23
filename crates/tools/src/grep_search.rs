@@ -478,4 +478,273 @@ mod tests {
             result.content
         );
     }
+
+    // --- New edge-case tests (10 added) ---
+
+    #[test]
+    fn test_unicode_content_in_matches() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("unicode.txt"),
+            "안녕하세요 hello 🦀\n普通文本\nmore text\n",
+        )
+        .unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "안녕" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        assert!(
+            result.content.contains("안녕하세요"),
+            "should find Korean text in output, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("🦀"),
+            "should preserve emoji in output, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_path_traversal_via_path_param() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), "SECRET_DATA\n").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({
+            "pattern": "SECRET_DATA",
+            "path": "../../*.txt"
+        });
+
+        let result = tool.execute(args, &ctx);
+        assert!(
+            result.is_err(),
+            "path traversal should be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_nonexistent_path_param() {
+        let dir = TempDir::new().unwrap();
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({
+            "pattern": "anything",
+            "path": "/tmp/absolutely_nonexistent_dir_for_zipcode_test_12345"
+        });
+        let result = tool.execute(args, &ctx);
+        assert!(result.is_err(), "nonexistent path should return error");
+    }
+
+    #[test]
+    fn test_case_insensitive_regex() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("mixed.rs"),
+            "fn Hello() {}\nfn hello() {}\nfn HELLO() {}\n",
+        )
+        .unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "(?i)hello" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        assert!(
+            result.content.contains("Hello"),
+            "should match Hello with (?i), got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("hello"),
+            "should match hello with (?i), got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("HELLO"),
+            "should match HELLO with (?i), got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_multiple_matches_per_line() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("multi.txt"), "aaa bbb aaa\nbbb\n").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "aaa" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        // grep_search reports the line once when regex matches it
+        assert!(
+            result.content.contains("multi.txt:1: aaa bbb aaa"),
+            "should report the line containing matches, got: {}",
+            result.content
+        );
+        // Line 2 does not contain 'aaa' so should not appear
+        assert!(
+            !result.content.contains("multi.txt:2:"),
+            "line 2 should not match, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_nested_directory_search() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        let lib = src.join("lib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(lib.join("mod.rs"), "fn helper() {}\n").unwrap();
+        fs::write(
+            lib.join("utils.rs"),
+            "fn util() -> fn helper() { helper() }\n",
+        )
+        .unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "fn helper" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        // mod.rs defines `fn helper()`, utils.rs mentions `fn helper` in a return type
+        assert!(
+            result.content.contains("src/lib/mod.rs"),
+            "should find match in nested src/lib/mod.rs, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("src/lib/utils.rs"),
+            "should find match in deeply nested src/lib/utils.rs, got: {}",
+            result.content
+        );
+        // main.rs only has `fn main`, not `fn helper`
+        assert!(
+            !result.content.contains("src/main.rs"),
+            "src/main.rs should not match, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_glob_filter_with_nested_dirs() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("subdir");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("code.rs"), "let x = 42;\n").unwrap();
+        fs::write(sub.join("notes.txt"), "let y = 42;\n").unwrap();
+        fs::write(dir.path().join("top.rs"), "let z = 42;\n").unwrap();
+        fs::write(dir.path().join("top.txt"), "let w = 42;\n").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({
+            "pattern": "let .* = 42",
+            "glob": "*.rs"
+        });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        assert!(
+            result.content.contains("top.rs"),
+            "should find .rs at top level, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("subdir/code.rs"),
+            "should find .rs in nested dir, got: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains(".txt"),
+            "should not include .txt files, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_special_chars_in_filename() {
+        let dir = TempDir::new().unwrap();
+        let filename = "my [test] file.rs";
+        fs::write(dir.path().join(filename), "TODO: fix this later\n").unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "TODO" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        assert!(
+            result.content.contains("TODO"),
+            "should find match in file with special chars name, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_empty_pattern_matches_everything() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("data.txt"),
+            "line one\nline two\nline three\n",
+        )
+        .unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        // Empty regex matches every line
+        assert!(
+            result.content.contains("line one"),
+            "empty pattern should match all lines, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("line two"),
+            "empty pattern should match line two, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("line three"),
+            "empty pattern should match line three, got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_single_match_near_budget_boundary() {
+        let dir = TempDir::new().unwrap();
+        // Create a single line that is just under the budget, then a few more lines
+        // to verify truncation kicks in when the budget is actually exceeded
+        let long_line: String = "x".repeat(MAX_SEARCH_OUTPUT_BYTES - 100);
+        let content =
+            format!("match_line: {long_line}\nmatch_line: short one\nmatch_line: another\n");
+        fs::write(dir.path().join("budget.txt"), content).unwrap();
+
+        let tool = GrepSearchTool;
+        let ctx = make_ctx(&dir);
+        let args = serde_json::json!({ "pattern": "match_line" });
+        let result = tool.execute(args, &ctx).unwrap();
+
+        // The first line alone is near the budget, so subsequent lines may or may not
+        // be truncated. The key assertion is that we don't panic and the output is bounded.
+        assert!(
+            result.content.contains("match_line"),
+            "should find at least the first match, got: {}",
+            result.content
+        );
+        assert!(
+            result.content.len() <= MAX_SEARCH_OUTPUT_BYTES + SEARCH_STOP_MESSAGE.len() + 200,
+            "output should not wildly exceed budget, got {} bytes",
+            result.content.len()
+        );
+    }
 }
