@@ -14,7 +14,7 @@ use zipcode_runtime::config::{expand_user_path, find_project_root, resolve_proje
 use zipcode_runtime::prompt::build_system_prompt;
 use zipcode_runtime::{
     parse_permission_mode, CompactPolicy, CompactResult, ConversationLoop, PermissionPolicy,
-    Session, ZipcodeConfig,
+    Session, SkillRegistry, SkillTool, ZipcodeConfig,
 };
 use zipcode_tools::{
     agent::AgentTool, bash::BashTool, edit_file::EditFileTool, glob_search::GlobSearchTool,
@@ -811,12 +811,32 @@ pub fn prepare_loop(
         Err(error) => return Err(error).context("Failed to load inference engine"),
     };
 
+    // Load skills from .zipcode/skills/ if present (silent on missing dir)
+    let skills_dir = project_root.join(".zipcode/skills");
+    let skill_registry = match SkillRegistry::load_from(&skills_dir) {
+        Ok(r) => {
+            if r.names().is_empty() {
+                None
+            } else {
+                Some(std::sync::Arc::new(r))
+            }
+        }
+        Err(_) => None,
+    };
+
     // Build tools and system prompt
-    let registry = build_registry();
+    let mut registry = build_registry();
+    if let Some(ref sr) = skill_registry {
+        registry.register(Box::new(SkillTool {
+            registry: std::sync::Arc::clone(sr),
+        }));
+    }
     let resolved_permission_mode = permission_mode.unwrap_or(&config.permission_mode);
     let effective_permission = parse_permission_mode(resolved_permission_mode)?;
     let permission_str = resolved_permission_mode.to_string();
-    let (system_prompt, tool_specs) = build_system_prompt(&cwd, &registry, &permission_str);
+    let skill_catalog = skill_registry.as_ref().map(|r| r.catalog_for_prompt());
+    let (system_prompt, tool_specs) =
+        build_system_prompt(&cwd, &registry, &permission_str, skill_catalog.as_deref());
 
     let permission = PermissionPolicy::new(effective_permission);
 
@@ -832,6 +852,7 @@ pub fn prepare_loop(
             depth: 0,
             last_sent_idx: 0,
             child_session_ids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            skill_registry,
         },
         effective_backend,
         startup_notices,

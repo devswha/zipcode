@@ -10,9 +10,9 @@ use zipcode_runtime::config::{
 use zipcode_runtime::ZipcodeConfig;
 
 use crate::repl::{
-    discover_helper, has_nonempty_parent, is_probably_gemma4_model, resolve_effective_backend,
-    resolve_model_path, resolve_requested_backend, run_oneshot, server_options_from_config,
-    validate_backend_configuration,
+    discover_helper, has_nonempty_parent, is_probably_gemma4_model, prepare_loop,
+    resolve_effective_backend, resolve_model_path, resolve_requested_backend, run_oneshot,
+    server_options_from_config, validate_backend_configuration, CliCallback,
 };
 use crate::tui::run_interactive_with_ui;
 use crate::UiMode;
@@ -169,6 +169,71 @@ pub fn run_prompt_command(
             Ok(())
         }
     }
+}
+
+/// Parse `key=value` strings into a `HashMap<String, String>`.
+/// Returns an error if any entry is missing the `=` separator.
+fn parse_params(raw: &[String]) -> Result<std::collections::HashMap<String, String>> {
+    let mut map = std::collections::HashMap::new();
+    for entry in raw {
+        let (k, v) = entry
+            .split_once('=')
+            .ok_or_else(|| anyhow!("invalid --param '{entry}': expected key=value"))?;
+        map.insert(k.to_string(), v.to_string());
+    }
+    Ok(map)
+}
+
+/// Invoke a named skill as a one-shot task and print the child summary to stdout.
+pub fn run_skill_command(
+    skill_name: &str,
+    raw_params: &[String],
+    model_path: Option<&Path>,
+    permission_mode: Option<&str>,
+    backend_override: Option<&str>,
+) -> Result<()> {
+    use zipcode_runtime::config::find_project_root;
+    use zipcode_runtime::SkillRegistry;
+
+    let params = parse_params(raw_params)?;
+
+    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+    let project_root = find_project_root(&cwd);
+    let skills_dir = project_root.join(".zipcode/skills");
+
+    let registry = SkillRegistry::load_from(&skills_dir).unwrap_or_default();
+
+    let skill = match registry.get(skill_name) {
+        Some(s) => s,
+        None => {
+            let mut available = registry.names();
+            available.sort();
+            if available.is_empty() {
+                eprintln!("skill '{skill_name}' not found. No skills are available.");
+                eprintln!("Add skill files to .zipcode/skills/");
+            } else {
+                eprintln!(
+                    "skill '{skill_name}' not found. Available skills: {}",
+                    available.join(", ")
+                );
+            }
+            std::process::exit(1);
+        }
+    };
+
+    let task_prompt = skill.render(&params);
+
+    let launch = prepare_loop(model_path, permission_mode, backend_override, None)?;
+    for notice in &launch.startup_notices {
+        eprintln!("\x1b[33m[notice]\x1b[0m {notice}");
+    }
+    let mut conv = launch.conv;
+    let mut cb = CliCallback::new();
+    cb.start_turn();
+    conv.run_turn(&task_prompt, &mut cb)?;
+    cb.stop_turn();
+    println!();
+    Ok(())
 }
 
 /// Run the doctor command: check version, GPU support, local AI files, and fallback readiness.

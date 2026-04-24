@@ -62,6 +62,7 @@ fn build_loop(
         depth: 0,
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
+        skill_registry: None,
     }
 }
 
@@ -172,6 +173,7 @@ fn test_agent_delegation_depth_exceeded() {
         depth: MAX_AGENT_DEPTH, // at the limit
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
+        skill_registry: None,
     };
 
     let err = conv.spawn_child("go deeper", None, None, None).unwrap_err();
@@ -281,6 +283,7 @@ fn test_agent_delegation_permission_escalation_blocked() {
         depth: 0,
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
+        skill_registry: None,
     };
 
     conv.spawn_child(

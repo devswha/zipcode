@@ -66,6 +66,23 @@ impl Tool for SkillTool {
             None => HashMap::new(),
         };
 
+        // A parameter without a default is required: missing it would silently
+        // render an empty string into the child's task prompt, which produces a
+        // broken instruction ("Focus on .") rather than a clear failure.
+        let missing: Vec<&str> = skill
+            .parameters
+            .iter()
+            .filter(|p| p.default.is_none() && !params.contains_key(&p.name))
+            .map(|p| p.name.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return Ok(ToolResult::error(&format!(
+                "skill '{}' missing required parameters: [{}]",
+                name,
+                missing.join(", ")
+            )));
+        }
+
         let rendered_task = skill.render(&params);
 
         let spawn_fn = match ctx.spawn_child.as_ref() {
@@ -267,6 +284,53 @@ mod tests {
         let list = list.as_ref().unwrap();
         assert!(list.contains(&"read_file".to_string()));
         assert!(list.contains(&"grep_search".to_string()));
+    }
+
+    #[test]
+    fn test_skill_tool_rejects_missing_required_param() {
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        // Skill declares `scope` with no default → required.
+        let dir = TempDir::new().unwrap();
+        let content = "---\nname: scoped\ndescription: scope-required skill\nparameters:\n  - name: scope\n---\nFocus on {{ scope }}.\n";
+        let path = dir.path().join("scoped.md");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        let registry = Arc::new(SkillRegistry::load_from(dir.path()).unwrap());
+        std::mem::forget(dir);
+
+        let tool = SkillTool { registry };
+
+        // Call without providing `scope` → must error, must NOT invoke callback.
+        let invoked: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let invoked_clone = Arc::clone(&invoked);
+        let cb: Arc<SpawnChildFn> = Arc::new(move |_task, _al, _perm, _tok| {
+            *invoked_clone.lock().unwrap() = true;
+            Ok(ChildResult {
+                summary: String::new(),
+                tool_call_count: 0,
+                child_session_id: "s".to_string(),
+            })
+        });
+
+        let result = tool
+            .execute(
+                serde_json::json!({"name": "scoped"}),
+                &ctx_with_callback(cb),
+            )
+            .unwrap();
+
+        assert!(
+            result.content.contains("missing required parameters"),
+            "expected missing-param error, got: {}",
+            result.content
+        );
+        assert!(result.content.contains("scope"));
+        assert!(
+            !*invoked.lock().unwrap(),
+            "spawn callback must not be invoked when required params are missing"
+        );
     }
 
     #[test]

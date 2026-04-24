@@ -13,6 +13,7 @@ use zipcode_tools::{execute_tool, ChildResult, PermissionMode, ToolContext, Tool
 
 use crate::permission::{PermissionCheck, PermissionPolicy};
 use crate::session::Session;
+use crate::skills::SkillRegistry;
 
 /// Maximum sub-agent nesting depth. Depth 0 = top-level user session.
 pub const MAX_AGENT_DEPTH: u32 = 2;
@@ -72,6 +73,8 @@ pub struct ConversationLoop {
     /// Child agents spawned by this loop: (session_id, saved_path) for orphan cleanup.
     /// Path captured at spawn time so Drop doesn't re-derive from env var.
     pub child_session_ids: Arc<Mutex<Vec<(String, std::path::PathBuf)>>>,
+    /// Optional skill registry for skill tool invocation.
+    pub skill_registry: Option<Arc<SkillRegistry>>,
 }
 
 impl ConversationLoop {
@@ -325,6 +328,7 @@ impl ConversationLoop {
                     depth: current_depth + 1,
                     last_sent_idx: 0,
                     child_session_ids: Arc::new(Mutex::new(Vec::new())),
+                    skill_registry: None,
                 };
 
                 let mut sink = DevNullCallback;
@@ -410,6 +414,7 @@ impl ConversationLoop {
             depth: self.depth + 1,
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
+            skill_registry: None,
         };
 
         let mut sink = DevNullCallback;
@@ -936,6 +941,7 @@ mod tests {
             depth: MAX_AGENT_DEPTH,
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
+            skill_registry: None,
         };
 
         let result = conv.spawn_child("do something", None, None, None);
@@ -970,6 +976,7 @@ mod tests {
             depth: 0,
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
+            skill_registry: None,
         };
 
         let result = conv.spawn_child("task 1", None, None, None).unwrap();
@@ -1005,6 +1012,7 @@ mod tests {
                 depth: 0,
                 last_sent_idx: 0,
                 child_session_ids: Arc::clone(&child_ids_shared),
+                skill_registry: None,
             };
 
             let result = conv.spawn_child("cleanup test", None, None, None).unwrap();

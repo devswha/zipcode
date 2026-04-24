@@ -91,6 +91,14 @@ enum Commands {
         /// The text to send to the model
         text: String,
     },
+    /// Invoke a named skill as a one-shot task
+    Skill {
+        /// Skill name to invoke
+        name: String,
+        /// Parameter substitutions in key=value form (repeatable)
+        #[arg(long = "param", value_name = "KEY=VALUE", num_args = 1)]
+        params: Vec<String>,
+    },
     /// Check system health: model files, CUDA, version
     Doctor,
     /// Discover local prerequisites, write config, and optionally run a smoke prompt
@@ -154,6 +162,9 @@ fn main() -> Result<()> {
         }
         Some(Commands::Prompt { text }) => {
             commands::run_prompt_command(&text, model_path, permission_mode, backend, session_id)?;
+        }
+        Some(Commands::Skill { name, params }) => {
+            commands::run_skill_command(&name, &params, model_path, permission_mode, backend)?;
         }
         None => {
             commands::run_default(model_path, permission_mode, backend, session_id, cli.ui)?;

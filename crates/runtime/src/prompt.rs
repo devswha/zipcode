@@ -29,6 +29,7 @@ pub fn build_system_prompt(
     cwd: &Path,
     registry: &ToolRegistry,
     permission_mode: &str,
+    skill_catalog: Option<&str>,
 ) -> (String, Vec<ToolSpec>) {
     let mut prompt = BASE_SYSTEM_PROMPT.to_string();
     let project_root = find_project_root(cwd);
@@ -36,6 +37,14 @@ pub fn build_system_prompt(
     // Add permission context
     let _ = write!(prompt, "\n\nPermission mode: {permission_mode}");
     let _ = write!(prompt, "\nWorking directory: {}", cwd.display());
+
+    // Inject skill catalog when available
+    if let Some(catalog) = skill_catalog {
+        if !catalog.is_empty() {
+            prompt.push_str("\n\n## Available Skills\nInvoke with the `skill` tool using {name: \"...\", params: {...}}.\n\n");
+            prompt.push_str(catalog);
+        }
+    }
 
     // Load .zipcode.md if present
     let memory_path = project_root.join(".zipcode.md");
@@ -76,7 +85,8 @@ mod tests {
     #[test]
     fn test_base_prompt_content() {
         let registry = ToolRegistry::new();
-        let (prompt, _) = build_system_prompt(Path::new("/tmp"), &registry, "workspace-write");
+        let (prompt, _) =
+            build_system_prompt(Path::new("/tmp"), &registry, "workspace-write", None);
         assert!(prompt.contains("zipcode"));
         assert!(prompt.contains("workspace-write"));
         assert!(prompt.contains("analyze a repository or project path"));
@@ -88,7 +98,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join(".zipcode.md"), "Use Rust for everything").unwrap();
         let registry = ToolRegistry::new();
-        let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access");
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access", None);
         assert!(prompt.contains("Use Rust for everything"));
     }
 
@@ -99,7 +109,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(dir.path().join(".zipcode.md"), "Root instructions").unwrap();
         let registry = ToolRegistry::new();
-        let (prompt, _) = build_system_prompt(&nested, &registry, "workspace-write");
+        let (prompt, _) = build_system_prompt(&nested, &registry, "workspace-write", None);
         assert!(prompt.contains("Root instructions"));
         assert!(prompt.contains(&nested.display().to_string()));
     }
@@ -111,7 +121,7 @@ mod tests {
         std::fs::write(dir.path().join("dirty.txt"), "dirty").unwrap();
 
         let registry = ToolRegistry::new();
-        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write");
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write", None);
         assert!(!prompt.contains("# Git Status"));
         assert!(!prompt.contains("dirty.txt"));
     }
@@ -126,7 +136,7 @@ mod tests {
         registry.register(Box::new(WriteFileTool));
 
         let dir = tempfile::TempDir::new().unwrap();
-        let (_, specs) = build_system_prompt(dir.path(), &registry, "full-access");
+        let (_, specs) = build_system_prompt(dir.path(), &registry, "full-access", None);
 
         assert!(
             !specs.is_empty(),
@@ -168,7 +178,7 @@ mod tests {
         std::fs::write(dir.path().join(".zipcode.md"), "").unwrap();
 
         let registry = ToolRegistry::new();
-        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write");
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write", None);
 
         // Should still have the "# Project Instructions" header even with empty file
         assert!(
@@ -184,7 +194,7 @@ mod tests {
     fn test_cwd_displayed_in_prompt() {
         let dir = tempfile::TempDir::new().unwrap();
         let registry = ToolRegistry::new();
-        let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access");
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access", None);
 
         let expected_path = dir.path().display().to_string();
         assert!(
@@ -200,7 +210,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         // Do NOT create .zipcode.md
         let registry = ToolRegistry::new();
-        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write");
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write", None);
 
         assert!(
             !prompt.contains("# Project Instructions"),
@@ -212,7 +222,7 @@ mod tests {
     fn test_empty_registry_produces_empty_tool_specs() {
         let registry = ToolRegistry::new();
         let dir = tempfile::TempDir::new().unwrap();
-        let (_, specs) = build_system_prompt(dir.path(), &registry, "read-only");
+        let (_, specs) = build_system_prompt(dir.path(), &registry, "read-only", None);
 
         assert!(
             specs.is_empty(),
@@ -240,7 +250,7 @@ mod tests {
 
         let registry = ToolRegistry::new();
         // The function must not panic regardless of whether the file is readable
-        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write");
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "workspace-write", None);
 
         // On non-root Unix, the file is unreadable so content should NOT appear.
         // On root or non-Unix, the content WILL appear. Either way, no panic.
@@ -252,5 +262,44 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&md_path, std::fs::Permissions::from_mode(0o644));
         }
+    }
+
+    #[test]
+    fn test_prompt_injects_skill_catalog_when_present() {
+        let registry = ToolRegistry::new();
+        let dir = tempfile::TempDir::new().unwrap();
+        let catalog = "review: Review recently changed code\nsearch: Search the codebase";
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access", Some(catalog));
+
+        assert!(
+            prompt.contains("## Available Skills"),
+            "prompt should contain skill catalog header"
+        );
+        assert!(
+            prompt.contains("review: Review recently changed code"),
+            "prompt should contain skill entry"
+        );
+        assert!(
+            prompt.contains("search: Search the codebase"),
+            "prompt should contain second skill entry"
+        );
+    }
+
+    #[test]
+    fn test_prompt_omits_skill_section_when_catalog_none_or_empty() {
+        let registry = ToolRegistry::new();
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let (prompt_none, _) = build_system_prompt(dir.path(), &registry, "full-access", None);
+        assert!(
+            !prompt_none.contains("## Available Skills"),
+            "None catalog should not add skill section"
+        );
+
+        let (prompt_empty, _) = build_system_prompt(dir.path(), &registry, "full-access", Some(""));
+        assert!(
+            !prompt_empty.contains("## Available Skills"),
+            "empty catalog should not add skill section"
+        );
     }
 }

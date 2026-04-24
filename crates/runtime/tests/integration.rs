@@ -135,6 +135,7 @@ fn build_test_loop_with_engine(
         depth: 0,
         last_sent_idx: 0,
         child_session_ids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        skill_registry: None,
     }
 }
 
