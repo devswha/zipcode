@@ -42,7 +42,7 @@ impl PermissionPolicy {
             },
             PermissionMode::WorkspaceWrite => match tool_name {
                 "read_file" | "glob_search" | "grep_search" | "tool_search" | "write_file"
-                | "edit_file" | "todo_write" => PermissionCheck::Allowed,
+                | "edit_file" | "todo_write" | "skill" => PermissionCheck::Allowed,
                 "bash" | "repl" => PermissionCheck::NeedsApproval(format!(
                     "Tool '{tool_name}' requires approval in workspace-write mode"
                 )),
@@ -311,5 +311,36 @@ mod tests {
             PermissionCheck::Denied(_) => {}
             other => panic!("Expected Denied after set_mode(ReadOnly), got {other:?}"),
         }
+    }
+
+    // ── skill tool permission tests ──────────────────────────────
+
+    #[test]
+    fn test_workspace_write_allows_skill_tool() {
+        let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
+        assert_eq!(
+            policy.check("skill", &serde_json::json!({})),
+            PermissionCheck::Allowed,
+            "skill tool should be allowed in workspace-write mode"
+        );
+    }
+
+    #[test]
+    fn test_read_only_denies_skill_tool() {
+        let policy = PermissionPolicy::new(PermissionMode::ReadOnly);
+        match policy.check("skill", &serde_json::json!({})) {
+            PermissionCheck::Denied(_) => {}
+            other => panic!("Expected Denied for skill in read-only mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_full_access_allows_skill_tool() {
+        let policy = PermissionPolicy::new(PermissionMode::FullAccess);
+        assert_eq!(
+            policy.check("skill", &serde_json::json!({})),
+            PermissionCheck::Allowed,
+            "skill tool should be allowed in full-access mode"
+        );
     }
 }
