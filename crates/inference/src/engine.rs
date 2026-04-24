@@ -11,7 +11,7 @@ use candle_transformers::models::quantized_llama as gemma;
 use tokenizers::Tokenizer;
 use tracing::{info, warn};
 
-use crate::chat_template::{self, ToolSpec};
+use crate::chat_template::{self, ChatTemplate, ToolSpec};
 use crate::sampler::Sampler;
 use crate::types::{ChatMessage, FinishReason, GenerationConfig, InferenceError, TokenEvent};
 use crate::InferenceProvider;
@@ -166,7 +166,12 @@ impl InferenceEngine {
 
             // Check for stop tokens (EOS or <end_of_turn>)
             if end_of_turn == Some(token) {
-                let tool_calls = chat_template::parse_tool_calls(&generated_text);
+                // The candle backend is feature-gated and known broken for
+                // Gemma 4 (see CLAUDE.md "Current Limitations"). When it is
+                // revived, replace this hard-coded GemmaTemplate with a
+                // template field auto-selected from the model path the same
+                // way LlamaServerProvider does it.
+                let tool_calls = chat_template::GemmaTemplate.parse_tool_calls(&generated_text);
                 if tool_calls.is_empty() {
                     let _ = tx.send(TokenEvent::Done(FinishReason::Stop));
                 } else {

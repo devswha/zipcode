@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
 
-use crate::chat_template::ToolSpec;
+use crate::chat_template::{ChatTemplate, GemmaTemplate, ToolSpec};
 use crate::types::{ChatMessage, FinishReason, InferenceError, TokenEvent, ToolCallParsed};
 use crate::InferenceProvider;
 
@@ -29,6 +29,10 @@ pub struct MockInferenceProvider {
     /// `with_prompt_eval_count()`.  `None` by default so tests that do not
     /// opt in leave tier-2 logic inactive.
     prompt_eval_count_mock: Option<usize>,
+    /// Chat template associated with this mock provider.
+    /// Defaults to [`GemmaTemplate`]; override with [`Self::with_template`].
+    /// Stored as `Arc` so [`clone_for_child`] can share it without cloning the inner value.
+    template: Arc<dyn ChatTemplate>,
 }
 
 impl MockInferenceProvider {
@@ -39,6 +43,7 @@ impl MockInferenceProvider {
             manages_own_context_flag: false,
             captured_messages: Arc::new(Mutex::new(Vec::new())),
             prompt_eval_count_mock: None,
+            template: Arc::new(GemmaTemplate),
         }
     }
 
@@ -59,6 +64,24 @@ impl MockInferenceProvider {
             prompt_eval_count_mock: Some(count),
             ..self
         }
+    }
+
+    /// Override the chat template reported by this mock provider.
+    ///
+    /// The mock does not use the template for actual generation, but stores it
+    /// so tests can assert that the correct template is selected and threaded
+    /// through the provider construction path.
+    #[must_use]
+    pub fn with_template(self, template: Box<dyn ChatTemplate>) -> Self {
+        Self {
+            template: Arc::from(template),
+            ..self
+        }
+    }
+
+    /// Return the chat template currently associated with this provider.
+    pub fn template(&self) -> &dyn ChatTemplate {
+        self.template.as_ref()
     }
 
     /// Returns a clone of the message slices captured by each `generate_stream` call.
@@ -89,6 +112,7 @@ impl InferenceProvider for MockInferenceProvider {
             manages_own_context_flag: self.manages_own_context_flag,
             captured_messages: Arc::clone(&self.captured_messages),
             prompt_eval_count_mock: self.prompt_eval_count_mock,
+            template: Arc::clone(&self.template),
         }))
     }
 

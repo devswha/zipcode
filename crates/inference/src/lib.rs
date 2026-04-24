@@ -9,10 +9,12 @@ pub mod llama_server_backend;
 pub mod mock;
 #[cfg(feature = "candle")]
 pub mod sampler;
+pub mod template_registry;
 pub mod types;
 
 pub use chat_template::{
-    extract_text_content, format_conversation, format_message, parse_tool_calls, ToolSpec,
+    extract_text_content, format_conversation, format_message, parse_tool_calls, ChatMLTemplate,
+    ChatTemplate, EmulatorTemplate, GemmaTemplate, Llama31Template, ToolSpec,
 };
 #[cfg(feature = "candle")]
 pub use device::select_device;
@@ -22,6 +24,7 @@ pub use engine::InferenceEngine;
 pub use llama_cpp_backend::LlamaCppProvider;
 pub use llama_server_backend::{LlamaServerProvider, ServerOptions, DEFAULT_CONTEXT_SIZE};
 pub use mock::{MockInferenceProvider, MockResponse};
+pub use template_registry::{default_registry, ModelEntry, TemplateRegistry};
 pub use types::*;
 
 /// Abstraction over inference backends — real or mock.

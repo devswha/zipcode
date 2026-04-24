@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use tracing::{debug, info};
 
-use crate::chat_template::ToolSpec;
+use crate::chat_template::{ChatTemplate, GemmaTemplate, ToolSpec};
 use crate::types::{
     ChatMessage, FinishReason, GenerationConfig, InferenceError, TokenEvent, ToolCallParsed,
 };
@@ -100,6 +100,13 @@ pub struct LlamaServerProvider {
     /// / `prompt_eval_count`.  Written by the streaming thread; read by
     /// `last_prompt_eval_count()` after the stream has been drained.
     last_eval_count: Arc<Mutex<Option<usize>>>,
+    /// Chat-prompt template associated with this provider.
+    ///
+    /// Selected automatically from the model path via [`TemplateRegistry`] in
+    /// local mode; defaults to [`GemmaTemplate`] in remote mode (where no
+    /// model path is available).  Override after construction with
+    /// [`Self::with_template`].
+    template: Box<dyn ChatTemplate>,
 }
 
 impl LlamaServerProvider {
@@ -157,6 +164,8 @@ impl LlamaServerProvider {
             model_alias,
             config: GenerationConfig::default(),
             last_eval_count: Arc::new(Mutex::new(None)),
+            // Remote mode: no model path available, default to GemmaTemplate.
+            template: Box::new(GemmaTemplate),
         })
     }
 
@@ -223,11 +232,57 @@ impl LlamaServerProvider {
             model_alias,
             config: GenerationConfig::default(),
             last_eval_count: Arc::new(Mutex::new(None)),
+            // Auto-select template from model filename via registry.
+            // User-supplied overrides live in `~/.zipcode/models/registry.json`;
+            // a missing or malformed file transparently falls back to the
+            // built-in defaults.
+            template: {
+                let model_name = model_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let registry = dirs::home_dir()
+                    .map(|h| h.join(".zipcode/models/registry.json"))
+                    .and_then(|p| {
+                        crate::template_registry::TemplateRegistry::load_from(&p)
+                            .map_err(|e| {
+                                tracing::warn!(
+                                    "failed to load ~/.zipcode/models/registry.json: {e}; \
+                                     using built-in defaults"
+                                );
+                                e
+                            })
+                            .ok()
+                    })
+                    .unwrap_or_else(crate::template_registry::default_registry);
+                registry.template_for_model(&model_name)
+            },
         })
     }
 
     pub const fn set_config(&mut self, config: GenerationConfig) {
         self.config = config;
+    }
+
+    /// Override the chat template associated with this provider.
+    ///
+    /// By default the template is auto-selected from the model path via
+    /// [`TemplateRegistry::for_model_path`] (local mode) or set to
+    /// [`GemmaTemplate`] (remote mode). Call this after [`Self::load`] to
+    /// force a specific template, for example in tests or when auto-detection
+    /// is wrong for a non-standard filename.
+    ///
+    /// Consistent with [`Self::set_config`]: uses `&mut self` because
+    /// `LlamaServerProvider` implements `Drop` and cannot be consumed by a
+    /// builder.
+    pub fn set_template(&mut self, template: Box<dyn ChatTemplate>) {
+        self.template = template;
+    }
+
+    /// Return the name of the active chat template.
+    pub fn template_name(&self) -> &'static str {
+        self.template.name()
     }
 
     /// Call the local server using the OpenAI-compatible chat completions API with SSE streaming.

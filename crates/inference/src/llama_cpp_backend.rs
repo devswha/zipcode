@@ -15,7 +15,7 @@ use std::sync::mpsc;
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-use crate::chat_template::{self, ToolSpec};
+use crate::chat_template::{self, ChatTemplate, ToolSpec};
 use crate::types::{ChatMessage, FinishReason, GenerationConfig, InferenceError, TokenEvent};
 use crate::InferenceProvider;
 
@@ -167,7 +167,12 @@ impl LlamaCppProvider {
 
             // Check for end-of-generation
             if self.model.is_eog_token(token) {
-                let tool_calls = chat_template::parse_tool_calls(&generated_text);
+                // The llama-cpp-rs backend is feature-gated and known broken
+                // for Gemma 4 today (see CLAUDE.md "Current Limitations").
+                // When it is revived, replace this hard-coded GemmaTemplate
+                // with a template field auto-selected from the model path,
+                // matching LlamaServerProvider.
+                let tool_calls = chat_template::GemmaTemplate.parse_tool_calls(&generated_text);
                 if !tool_calls.is_empty() {
                     for call in tool_calls {
                         let _ = tx.send(TokenEvent::ToolCall(call));
