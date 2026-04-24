@@ -42,6 +42,13 @@ pub trait InferenceProvider: Send {
     fn manages_own_context(&self) -> bool {
         false
     }
+
+    /// Return a fresh provider instance suitable for a child agent, or `None`
+    /// if this backend cannot be cloned (e.g. it holds exclusive OS resources).
+    /// Child agents call this to get their own independent provider.
+    fn clone_for_child(&self) -> Option<Box<dyn InferenceProvider>> {
+        None
+    }
 }
 
 /// Which inference backend to use.

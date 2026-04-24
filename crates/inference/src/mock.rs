@@ -20,7 +20,9 @@ pub enum MockResponse {
 }
 
 pub struct MockInferenceProvider {
-    responses: VecDeque<MockResponse>,
+    /// Shared response queue — parent and cloned children draw from the same
+    /// deque so tests can pre-load responses for both in one place.
+    responses: Arc<Mutex<VecDeque<MockResponse>>>,
     manages_own_context_flag: bool,
     pub captured_messages: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
 }
@@ -29,7 +31,7 @@ impl MockInferenceProvider {
     #[must_use]
     pub fn new(responses: Vec<MockResponse>) -> Self {
         Self {
-            responses: VecDeque::from(responses),
+            responses: Arc::new(Mutex::new(VecDeque::from(responses))),
             manages_own_context_flag: false,
             captured_messages: Arc::new(Mutex::new(Vec::new())),
         }
@@ -37,9 +39,11 @@ impl MockInferenceProvider {
 
     /// Set whether this mock reports that it manages its own context.
     #[must_use]
-    pub const fn with_manages_own_context(mut self, v: bool) -> Self {
-        self.manages_own_context_flag = v;
-        self
+    pub fn with_manages_own_context(self, v: bool) -> Self {
+        Self {
+            manages_own_context_flag: v,
+            ..self
+        }
     }
 
     /// Returns a clone of the message slices captured by each `generate_stream` call.
@@ -62,6 +66,16 @@ impl InferenceProvider for MockInferenceProvider {
         self.manages_own_context_flag
     }
 
+    /// Clone shares the same response queue so pre-loaded child responses are
+    /// consumed in order alongside parent responses from a single `new()` call.
+    fn clone_for_child(&self) -> Option<Box<dyn crate::InferenceProvider>> {
+        Some(Box::new(Self {
+            responses: Arc::clone(&self.responses),
+            manages_own_context_flag: self.manages_own_context_flag,
+            captured_messages: Arc::clone(&self.captured_messages),
+        }))
+    }
+
     fn generate_stream(
         &mut self,
         messages: &[ChatMessage],
@@ -73,14 +87,25 @@ impl InferenceProvider for MockInferenceProvider {
             .push(messages.to_vec());
         let (tx, rx) = mpsc::channel();
 
-        match self.responses.pop_front() {
+        let next = self
+            .responses
+            .lock()
+            .expect("mock responses mutex should never be poisoned")
+            .pop_front();
+
+        match next {
             Some(MockResponse::Text(text)) => {
                 let _ = tx.send(TokenEvent::Token(text));
                 let _ = tx.send(TokenEvent::Done(FinishReason::Stop));
             }
             Some(MockResponse::ToolCall { name, args }) => {
+                let remaining = self
+                    .responses
+                    .lock()
+                    .expect("mock responses mutex should never be poisoned")
+                    .len();
                 let call = ToolCallParsed {
-                    id: format!("mock_call_{}", self.responses.len()),
+                    id: format!("mock_call_{remaining}"),
                     name,
                     arguments: args,
                 };
