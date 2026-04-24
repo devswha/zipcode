@@ -9,6 +9,10 @@ pub enum Role {
     System,
 }
 
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
@@ -17,6 +21,13 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallParsed>>,
+    /// When `true`, this message is hidden from the inference provider and
+    /// excluded from token estimates.  Used by the two-tier context compaction
+    /// system to mark original tool-call / tool-result messages after they
+    /// have been summarised, without physically removing them (preserving
+    /// session replay and debugging fidelity).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub agent_invisible: bool,
 }
 
 impl ChatMessage {
@@ -27,6 +38,7 @@ impl ChatMessage {
             content: content.to_string(),
             tool_call_id: None,
             tool_calls: None,
+            agent_invisible: false,
         }
     }
 
@@ -37,6 +49,7 @@ impl ChatMessage {
             content: content.to_string(),
             tool_call_id: None,
             tool_calls: None,
+            agent_invisible: false,
         }
     }
 
@@ -47,6 +60,7 @@ impl ChatMessage {
             content: content.to_string(),
             tool_call_id: None,
             tool_calls: None,
+            agent_invisible: false,
         }
     }
 
@@ -57,6 +71,7 @@ impl ChatMessage {
             content: content.to_string(),
             tool_call_id: None,
             tool_calls: Some(calls),
+            agent_invisible: false,
         }
     }
 
@@ -67,6 +82,7 @@ impl ChatMessage {
             content: content.to_string(),
             tool_call_id: Some(call_id.to_string()),
             tool_calls: None,
+            agent_invisible: false,
         }
     }
 }

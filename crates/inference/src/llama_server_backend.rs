@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -95,6 +95,11 @@ pub struct LlamaServerProvider {
     port: u16,
     model_alias: String,
     config: GenerationConfig,
+    /// Number of prompt tokens evaluated in the most recent request, as
+    /// reported by llama-server in `usage.prompt_tokens` / `timings.prompt_n`
+    /// / `prompt_eval_count`.  Written by the streaming thread; read by
+    /// `last_prompt_eval_count()` after the stream has been drained.
+    last_eval_count: Arc<Mutex<Option<usize>>>,
 }
 
 impl LlamaServerProvider {
@@ -151,6 +156,7 @@ impl LlamaServerProvider {
             port,
             model_alias,
             config: GenerationConfig::default(),
+            last_eval_count: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -216,6 +222,7 @@ impl LlamaServerProvider {
             port,
             model_alias,
             config: GenerationConfig::default(),
+            last_eval_count: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -234,9 +241,12 @@ impl LlamaServerProvider {
         let request = build_chat_request(messages, tools, &self.config, &self.model_alias);
         let host = self.host.clone();
         let port = self.port;
+        // Share the eval-count slot with the spawned thread so the count is
+        // available on the provider after the caller drains the Receiver.
+        let eval_count = Arc::clone(&self.last_eval_count);
 
         std::thread::spawn(move || {
-            if let Err(e) = stream_sse_events(&host, port, &request, &tx) {
+            if let Err(e) = stream_sse_events(&host, port, &request, &tx, &eval_count) {
                 let _ = tx.send(TokenEvent::Error(InferenceError::GenerationError(
                     e.to_string(),
                 )));
@@ -276,6 +286,14 @@ impl InferenceProvider for LlamaServerProvider {
         // server-side Jinja chat-template rendering (`--jinja`), this
         // provider does not need the caller to re-send full history.
         true
+    }
+
+    fn last_prompt_eval_count(&self) -> Option<usize> {
+        self.last_eval_count
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .copied()
     }
 }
 
@@ -721,11 +739,26 @@ fn open_sse_stream(host: &str, port: u16, request_body: &str) -> Result<BufReade
     Ok(reader)
 }
 
+/// Try to extract the prompt-token count from a raw SSE data payload.
+/// Checks `usage.prompt_tokens` (OpenAI streaming format),
+/// `timings.prompt_n` (llama-server native), and `prompt_eval_count`
+/// (older llama-server field). Returns `None` silently on any parse
+/// failure so the caller never panics.
+fn try_extract_prompt_eval_count(data: &str) -> Option<usize> {
+    let json: Value = serde_json::from_str(data.trim()).ok()?;
+    json["usage"]["prompt_tokens"]
+        .as_u64()
+        .or_else(|| json["timings"]["prompt_n"].as_u64())
+        .or_else(|| json["prompt_eval_count"].as_u64())
+        .map(|n| n as usize)
+}
+
 fn stream_sse_events(
     host: &str,
     port: u16,
     request: &Value,
     tx: &mpsc::Sender<TokenEvent>,
+    eval_count_out: &Mutex<Option<usize>>,
 ) -> Result<()> {
     let body = serde_json::to_string(request)?;
     let mut reader = open_sse_stream(host, port, &body)?;
@@ -756,6 +789,18 @@ fn stream_sse_events(
         let line = line.trim();
         if line.chars().all(|c| c.is_ascii_hexdigit()) && !line.is_empty() {
             continue;
+        }
+
+        // Opportunistically extract prompt_eval_count from the raw SSE
+        // payload before routing it through parse_sse_events.  The count
+        // may appear in any chunk (usage, timings, or top-level field);
+        // the last non-None value seen wins.
+        if let Some(data) = line.strip_prefix("data: ") {
+            if let Some(count) = try_extract_prompt_eval_count(data) {
+                if let Ok(mut guard) = eval_count_out.lock() {
+                    *guard = Some(count);
+                }
+            }
         }
 
         for event in parse_sse_events(line) {
@@ -1004,7 +1049,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
+        stream_sse_events("127.0.0.1", port, &request, &tx, &Mutex::new(None)).unwrap();
         drop(tx);
 
         let events: Vec<_> = rx.into_iter().collect();
@@ -1038,7 +1083,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
+        stream_sse_events("127.0.0.1", port, &request, &tx, &Mutex::new(None)).unwrap();
         drop(tx);
 
         let events: Vec<_> = rx.into_iter().collect();
@@ -1058,7 +1103,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        let error = stream_sse_events("127.0.0.1", port, &request, &tx)
+        let error = stream_sse_events("127.0.0.1", port, &request, &tx, &Mutex::new(None))
             .unwrap_err()
             .to_string();
         drop(tx);
@@ -1168,7 +1213,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
+        stream_sse_events("127.0.0.1", port, &request, &tx, &Mutex::new(None)).unwrap();
         drop(tx);
 
         let events: Vec<_> = rx.into_iter().collect();
@@ -1918,7 +1963,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
+        stream_sse_events("127.0.0.1", port, &request, &tx, &Mutex::new(None)).unwrap();
         drop(tx);
 
         let events: Vec<_> = rx.into_iter().collect();
@@ -1938,7 +1983,7 @@ mod tests {
         let request = json!({"stream": true});
         let (tx, rx) = mpsc::channel();
 
-        stream_sse_events("127.0.0.1", port, &request, &tx).unwrap();
+        stream_sse_events("127.0.0.1", port, &request, &tx, &Mutex::new(None)).unwrap();
         drop(tx);
 
         let events: Vec<_> = rx.into_iter().collect();

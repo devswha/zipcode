@@ -49,6 +49,29 @@ pub trait InferenceProvider: Send {
     fn clone_for_child(&self) -> Option<Box<dyn InferenceProvider>> {
         None
     }
+
+    /// Return the number of prompt tokens evaluated in the most recent
+    /// `generate_stream` call, as reported by the inference backend.
+    ///
+    /// Used by the context-management tier-2 compaction heuristic to detect
+    /// when the context window is approaching capacity and tool-response
+    /// eviction should be triggered.  The default returns `None` (opt-out),
+    /// so existing backends that do not expose this counter remain unaffected.
+    ///
+    /// ## Contract
+    /// - Callers **must** read this only after the `Receiver<TokenEvent>`
+    ///   returned by `generate_stream` has been fully drained; the backend
+    ///   may update the counter mid-stream and an early read can return a
+    ///   stale or zero value.
+    /// - Implementations **must not** assume concurrent calls to
+    ///   `generate_stream` are safe.  The runtime drives a single stream per
+    ///   provider per turn; implementations that share the counter across
+    ///   parallel generations need their own synchronisation.
+    /// - A backend that cannot report the count reliably (or does not expose
+    ///   one at all) should return `None` rather than a guess.
+    fn last_prompt_eval_count(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Which inference backend to use.

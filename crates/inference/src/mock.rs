@@ -25,6 +25,10 @@ pub struct MockInferenceProvider {
     responses: Arc<Mutex<VecDeque<MockResponse>>>,
     manages_own_context_flag: bool,
     pub captured_messages: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
+    /// Fixed value returned by `last_prompt_eval_count()`, set via
+    /// `with_prompt_eval_count()`.  `None` by default so tests that do not
+    /// opt in leave tier-2 logic inactive.
+    prompt_eval_count_mock: Option<usize>,
 }
 
 impl MockInferenceProvider {
@@ -34,6 +38,7 @@ impl MockInferenceProvider {
             responses: Arc::new(Mutex::new(VecDeque::from(responses))),
             manages_own_context_flag: false,
             captured_messages: Arc::new(Mutex::new(Vec::new())),
+            prompt_eval_count_mock: None,
         }
     }
 
@@ -42,6 +47,16 @@ impl MockInferenceProvider {
     pub fn with_manages_own_context(self, v: bool) -> Self {
         Self {
             manages_own_context_flag: v,
+            ..self
+        }
+    }
+
+    /// Fix the value returned by `last_prompt_eval_count()`.
+    /// Used by tier-2 tests to simulate context usage without a real server.
+    #[must_use]
+    pub fn with_prompt_eval_count(self, count: usize) -> Self {
+        Self {
+            prompt_eval_count_mock: Some(count),
             ..self
         }
     }
@@ -73,7 +88,12 @@ impl InferenceProvider for MockInferenceProvider {
             responses: Arc::clone(&self.responses),
             manages_own_context_flag: self.manages_own_context_flag,
             captured_messages: Arc::clone(&self.captured_messages),
+            prompt_eval_count_mock: self.prompt_eval_count_mock,
         }))
+    }
+
+    fn last_prompt_eval_count(&self) -> Option<usize> {
+        self.prompt_eval_count_mock
     }
 
     fn generate_stream(
