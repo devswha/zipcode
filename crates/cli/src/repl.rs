@@ -853,6 +853,7 @@ pub fn prepare_loop(
             last_sent_idx: 0,
             child_session_ids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             skill_registry,
+            compact_policy: CompactPolicy::default(),
         },
         effective_backend,
         startup_notices,

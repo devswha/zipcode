@@ -136,6 +136,7 @@ fn build_test_loop_with_engine(
         last_sent_idx: 0,
         child_session_ids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         skill_registry: None,
+        compact_policy: zipcode_runtime::CompactPolicy::default(),
     }
 }
 

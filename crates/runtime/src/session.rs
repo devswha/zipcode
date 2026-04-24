@@ -6,15 +6,29 @@ use std::path::PathBuf;
 use zipcode_inference::{ChatMessage, Role};
 
 pub const COMPACTED_SUMMARY_MARKER: &str = "[Compacted context summary]";
+pub const TOOL_PAIR_SUMMARY_MARKER: &str = "[compacted tool calls]";
+
 const DEFAULT_RETAIN_USER_TURNS: usize = 4;
 const DEFAULT_MAX_SUMMARY_BULLETS: usize = 12;
 const DEFAULT_MAX_SUMMARY_LINE_CHARS: usize = 120;
+const DEFAULT_TIER1_PAIR_CUTOFF: usize = 10;
+const DEFAULT_TIER1_BATCH_SIZE: usize = 10;
+const DEFAULT_TIER2_USAGE_THRESHOLD: f64 = 0.8;
+const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 32768;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompactPolicy {
     pub retain_user_turns: usize,
     pub max_summary_bullets: usize,
     pub max_summary_line_chars: usize,
+    /// Number of visible tool pairs above which tier-1 compaction triggers.
+    pub tier1_pair_cutoff: usize,
+    /// Number of tool pairs to summarise in a single tier-1 compaction pass.
+    pub tier1_batch_size: usize,
+    /// Context-usage fraction (0.0–1.0) at which tier-2 eviction triggers.
+    pub tier2_usage_threshold: f64,
+    /// Estimated total context window size in tokens (used for tier-2 ratio).
+    pub context_window_tokens: usize,
 }
 
 impl Default for CompactPolicy {
@@ -23,7 +37,28 @@ impl Default for CompactPolicy {
             retain_user_turns: DEFAULT_RETAIN_USER_TURNS,
             max_summary_bullets: DEFAULT_MAX_SUMMARY_BULLETS,
             max_summary_line_chars: DEFAULT_MAX_SUMMARY_LINE_CHARS,
+            tier1_pair_cutoff: DEFAULT_TIER1_PAIR_CUTOFF,
+            tier1_batch_size: DEFAULT_TIER1_BATCH_SIZE,
+            tier2_usage_threshold: DEFAULT_TIER2_USAGE_THRESHOLD,
+            context_window_tokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
         }
+    }
+}
+
+impl CompactPolicy {
+    /// Resolve the tier-2 eviction threshold in tokens, guarding against NaN,
+    /// infinity, and out-of-range threshold values by clamping to `[0, 1]`.
+    /// Unsafe callers would otherwise compute `threshold = 0` from NaN via
+    /// `as usize`, evicting the entire session on every turn.
+    #[must_use]
+    pub fn tier2_threshold_tokens(&self) -> usize {
+        let pct = if self.tier2_usage_threshold.is_finite() {
+            self.tier2_usage_threshold.clamp(0.0, 1.0)
+        } else {
+            DEFAULT_TIER2_USAGE_THRESHOLD
+        };
+        let window = self.context_window_tokens as f64;
+        (window * pct).floor() as usize
     }
 }
 
@@ -190,6 +225,119 @@ impl Session {
         self.messages.push(msg);
         self.updated_at = timestamp_now();
     }
+
+    /// Estimate the number of tokens in the current conversation using a
+    /// chars-per-4 heuristic.  Only agent-visible messages are counted.
+    #[must_use]
+    pub fn estimated_tokens(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|m| !m.agent_invisible)
+            .map(|m| m.content.chars().count() / 4)
+            .sum()
+    }
+
+    /// Return the number of visible `Role::Tool` messages (tool results).
+    #[must_use]
+    pub fn tool_pair_count(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|m| m.role == Role::Tool && !m.agent_invisible)
+            .count()
+    }
+
+    /// **Tier 1** — Summarise the oldest `batch_size` (assistant-with-tool-calls,
+    /// tool-result) pairs into a single assistant message prefixed with
+    /// `TOOL_PAIR_SUMMARY_MARKER`, and mark the originals `agent_invisible`.
+    ///
+    /// Returns the number of pairs compacted, or 0 if there are fewer than
+    /// `batch_size` visible pairs (no-op in that case).
+    pub fn compact_tool_pairs(&mut self, batch_size: usize, max_line_chars: usize) -> usize {
+        // batch_size == 0 is a misconfiguration — never useful. Return 0 rather
+        // than panicking on the empty `batch[0]` indexing that would follow.
+        if batch_size == 0 {
+            return 0;
+        }
+
+        let pairs = collect_tool_pairs(&self.messages);
+        if pairs.len() < batch_size {
+            return 0;
+        }
+
+        let batch = &pairs[..batch_size];
+        let summary_text = build_tool_pair_summary(batch, &self.messages, max_line_chars);
+        let insert_before = batch[0].0;
+
+        // Atomicity: insert the summary FIRST, then mark originals invisible.
+        // If a panic occurs after `insert` but before the marking loop runs,
+        // the session has a spurious summary but still sees the originals — a
+        // recoverable state. The reverse order would leave originals hidden
+        // with no summary, silently losing information.
+        let summary_msg = ChatMessage {
+            role: Role::Model,
+            content: summary_text,
+            tool_call_id: None,
+            tool_calls: None,
+            agent_invisible: false,
+        };
+        self.messages.insert(insert_before, summary_msg);
+
+        // All batch indices were >= insert_before; inserting shifted them by 1.
+        for &(asst_idx, tool_idx) in batch {
+            self.messages[asst_idx + 1].agent_invisible = true;
+            self.messages[tool_idx + 1].agent_invisible = true;
+        }
+
+        self.updated_at = timestamp_now();
+        batch_size
+    }
+
+    /// **Tier 2** — Progressively evict tool-result messages when the estimated
+    /// token count exceeds `threshold_tokens`.
+    ///
+    /// Eviction proceeds in steps (10 % → 20 % → 50 % → 100 % of the
+    /// original visible tool-result count), stopping as soon as
+    /// `estimated_tokens()` drops below `threshold_tokens`.
+    ///
+    /// Indices collected before the first eviction step are reused across all
+    /// steps; messages are never removed, only flagged `agent_invisible = true`,
+    /// so indices remain stable.
+    ///
+    /// Returns `true` if any eviction occurred, `false` if already under
+    /// threshold.
+    pub fn evict_tool_responses_progressive(&mut self, threshold_tokens: usize) -> bool {
+        if self.estimated_tokens() <= threshold_tokens {
+            return false;
+        }
+
+        // Collect indices once; reused across all eviction steps.
+        let tool_indices: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.role == Role::Tool && !m.agent_invisible)
+            .map(|(i, _)| i)
+            .collect();
+
+        let total = tool_indices.len();
+        if total == 0 {
+            return false;
+        }
+
+        for pct in [10usize, 20, 50, 100] {
+            // Ceiling division: evict at least 1 message per step.
+            let cutoff = (total * pct).div_ceil(100);
+            for &idx in &tool_indices[..cutoff] {
+                self.messages[idx].agent_invisible = true;
+            }
+            if self.estimated_tokens() <= threshold_tokens {
+                break;
+            }
+        }
+
+        self.updated_at = timestamp_now();
+        true
+    }
 }
 
 impl Default for Session {
@@ -208,6 +356,68 @@ fn validate_session_id(id: &str) -> Result<()> {
     } else {
         anyhow::bail!("Invalid session id: {id}")
     }
+}
+
+/// Collect (assistant_index, tool_result_index) pairs from `messages`.
+///
+/// A pair is defined as an agent-visible assistant message that carries at
+/// least one tool call immediately followed (no gap) by an agent-visible
+/// `Role::Tool` message.
+fn collect_tool_pairs(messages: &[ChatMessage]) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    let mut i = 0;
+    while i + 1 < messages.len() {
+        let asst = &messages[i];
+        let tool = &messages[i + 1];
+        if asst.role == Role::Model
+            && asst.tool_calls.is_some()
+            && !asst.agent_invisible
+            && tool.role == Role::Tool
+            && !tool.agent_invisible
+        {
+            pairs.push((i, i + 1));
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    pairs
+}
+
+/// Build a multi-line summary string for the given tool-call pairs.
+///
+/// Each line has the form `tool_name(args_preview) → result_preview`.
+fn build_tool_pair_summary(
+    pairs: &[(usize, usize)],
+    messages: &[ChatMessage],
+    max_line_chars: usize,
+) -> String {
+    let mut lines = Vec::with_capacity(pairs.len());
+    for &(asst_idx, tool_idx) in pairs {
+        let asst = &messages[asst_idx];
+        let tool = &messages[tool_idx];
+
+        let tool_name = asst
+            .tool_calls
+            .as_ref()
+            .and_then(|calls| calls.first())
+            .map(|c| c.name.as_str())
+            .unwrap_or("unknown");
+
+        let args_preview = asst
+            .tool_calls
+            .as_ref()
+            .and_then(|calls| calls.first())
+            .map(|c| truncate_inline(&c.arguments.to_string(), max_line_chars / 4))
+            .unwrap_or_default();
+
+        let result_preview = truncate_inline(&tool.content, max_line_chars / 2);
+
+        let line = format!("{tool_name}({args_preview}) → {result_preview}");
+        lines.push(truncate_inline(&line, max_line_chars));
+    }
+
+    format!("{TOOL_PAIR_SUMMARY_MARKER}\n{}", lines.join("\n"))
 }
 
 fn session_path(id: &str) -> PathBuf {
@@ -410,6 +620,7 @@ mod tests {
             retain_user_turns: 2,
             max_summary_bullets: 8,
             max_summary_line_chars: 80,
+            ..CompactPolicy::default()
         });
 
         assert!(result.changed);
@@ -856,6 +1067,7 @@ mod tests {
             retain_user_turns: 2,
             max_summary_bullets: 10,
             max_summary_line_chars: 80,
+            ..CompactPolicy::default()
         });
 
         assert!(result.changed);
@@ -905,6 +1117,310 @@ mod tests {
             result.retained_messages + 2, // system + summary + retained
             "after = system + summary + retained"
         );
+    }
+
+    // ── agent_invisible / tier primitives tests ──────────────────
+
+    #[test]
+    fn test_chat_message_agent_invisible_serde_roundtrip() {
+        let mut msg = ChatMessage::user("hello");
+        msg.agent_invisible = true;
+        let json = serde_json::to_string(&msg).unwrap();
+        // agent_invisible=true must appear in JSON
+        assert!(
+            json.contains("agent_invisible"),
+            "agent_invisible should be serialized when true: {json}"
+        );
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert!(
+            back.agent_invisible,
+            "agent_invisible should round-trip as true"
+        );
+    }
+
+    #[test]
+    fn test_chat_message_agent_invisible_default_false_when_deserializing_old_format() {
+        // JSON without agent_invisible field (legacy format)
+        let json = r#"{"role":"user","content":"hello"}"#;
+        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        assert!(
+            !msg.agent_invisible,
+            "missing field should default to false"
+        );
+        // And agent_invisible=false must NOT appear in serialized output
+        let serialized = serde_json::to_string(&ChatMessage::user("hi")).unwrap();
+        assert!(
+            !serialized.contains("agent_invisible"),
+            "agent_invisible=false should be skipped in serialization: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_compact_policy_new_tier_fields_defaults() {
+        let policy = CompactPolicy::default();
+        assert_eq!(policy.tier1_pair_cutoff, 10);
+        assert_eq!(policy.tier1_batch_size, 10);
+        assert!(
+            (policy.tier2_usage_threshold - 0.8).abs() < f64::EPSILON,
+            "tier2_usage_threshold should default to 0.8"
+        );
+        assert_eq!(policy.context_window_tokens, 32768);
+    }
+
+    #[test]
+    fn test_estimated_tokens_counts_all_messages() {
+        let mut session = Session::new();
+        // "hello" = 5 chars / 4 = 1; "world foo" = 9 chars / 4 = 2
+        session.push_message(ChatMessage::user("hello"));
+        session.push_message(ChatMessage::assistant("world foo"));
+        let tokens = session.estimated_tokens();
+        assert_eq!(
+            tokens,
+            1 + 2,
+            "chars/4 heuristic across all visible messages"
+        );
+    }
+
+    #[test]
+    fn test_estimated_tokens_excludes_agent_invisible() {
+        let mut session = Session::new();
+        let mut invisible = ChatMessage::user("invisible content here big");
+        invisible.agent_invisible = true;
+        session.messages.push(invisible);
+        session.push_message(ChatMessage::user("hi")); // 2 chars / 4 = 0
+        let tokens = session.estimated_tokens();
+        // Only "hi" (0 tokens) is visible; the big message is excluded
+        assert_eq!(
+            tokens, 0,
+            "agent_invisible message should not count toward tokens"
+        );
+    }
+
+    #[test]
+    fn test_tool_pair_count_counts_tool_messages() {
+        let mut session = Session::new();
+        session.push_message(ChatMessage::tool_result("c1", "output1"));
+        session.push_message(ChatMessage::tool_result("c2", "output2"));
+        session.push_message(ChatMessage::user("question"));
+        assert_eq!(session.tool_pair_count(), 2);
+    }
+
+    #[test]
+    fn test_tool_pair_count_excludes_agent_invisible() {
+        let mut session = Session::new();
+        session.push_message(ChatMessage::tool_result("c1", "visible"));
+        let mut invisible_tool = ChatMessage::tool_result("c2", "invisible");
+        invisible_tool.agent_invisible = true;
+        session.messages.push(invisible_tool);
+        assert_eq!(session.tool_pair_count(), 1);
+    }
+
+    #[test]
+    fn test_compact_tool_pairs_no_op_below_batch_size() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "foo.rs"}),
+        };
+        let mut session = Session::new();
+        session.push_message(ChatMessage::assistant_with_tool_calls(
+            "thinking",
+            vec![call],
+        ));
+        session.push_message(ChatMessage::tool_result("c1", "contents"));
+        // 1 pair < batch_size=5 → no-op
+        let count = session.compact_tool_pairs(5, 120);
+        assert_eq!(count, 0, "should be no-op when pairs < batch_size");
+        assert!(
+            !session.messages[0].agent_invisible,
+            "original should remain visible"
+        );
+    }
+
+    #[test]
+    fn test_compact_tool_pairs_creates_summary_and_marks_invisible() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let mut session = Session::new();
+        // Two pairs → batch_size=2 triggers compaction
+        let call2 = ToolCallParsed {
+            id: "c2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "main.rs"}),
+        };
+        session.push_message(ChatMessage::assistant_with_tool_calls("step1", vec![call]));
+        session.push_message(ChatMessage::tool_result("c1", "file1.rs\nfile2.rs"));
+        session.push_message(ChatMessage::assistant_with_tool_calls("step2", vec![call2]));
+        session.push_message(ChatMessage::tool_result("c2", "fn main() {}"));
+
+        let count = session.compact_tool_pairs(2, 120);
+        assert_eq!(count, 2, "should report 2 pairs compacted");
+
+        // Find the summary message (the inserted one)
+        let summary_msg = session
+            .messages
+            .iter()
+            .find(|m| m.content.starts_with(TOOL_PAIR_SUMMARY_MARKER))
+            .expect("summary message should exist");
+        assert!(!summary_msg.agent_invisible, "summary must be visible");
+        assert!(
+            summary_msg.content.contains("bash"),
+            "summary should mention tool name"
+        );
+
+        // Originals must be invisible
+        let invisible_count = session
+            .messages
+            .iter()
+            .filter(|m| m.agent_invisible)
+            .count();
+        assert_eq!(
+            invisible_count, 4,
+            "all 4 original messages should be invisible"
+        );
+    }
+
+    #[test]
+    fn test_compact_tool_pairs_preserves_order() {
+        let mk_call = |id: &str, name: &str| ToolCallParsed {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let mut session = Session::new();
+        session.push_message(ChatMessage::user("start"));
+        session.push_message(ChatMessage::assistant_with_tool_calls(
+            "t1",
+            vec![mk_call("c1", "tool_a")],
+        ));
+        session.push_message(ChatMessage::tool_result("c1", "result_a"));
+        session.push_message(ChatMessage::assistant_with_tool_calls(
+            "t2",
+            vec![mk_call("c2", "tool_b")],
+        ));
+        session.push_message(ChatMessage::tool_result("c2", "result_b"));
+        session.push_message(ChatMessage::user("end"));
+
+        session.compact_tool_pairs(2, 120);
+
+        // User "start" should still be first, user "end" last
+        assert_eq!(session.messages[0].content, "start");
+        let last = session.messages.last().unwrap();
+        assert_eq!(last.content, "end");
+
+        // Summary message must exist and come before the trailing user message
+        let summary_pos = session
+            .messages
+            .iter()
+            .position(|m| m.content.starts_with(TOOL_PAIR_SUMMARY_MARKER))
+            .expect("summary must exist");
+        let end_pos = session.messages.len() - 1;
+        assert!(
+            summary_pos < end_pos,
+            "summary must precede trailing user turn"
+        );
+    }
+
+    #[test]
+    fn test_evict_tool_responses_no_op_under_threshold() {
+        let mut session = Session::new();
+        session.push_message(ChatMessage::tool_result("c1", "tiny"));
+        // With "tiny" = 4 chars, estimated_tokens = 1
+        // threshold = 100 → already under → false
+        let evicted = session.evict_tool_responses_progressive(100);
+        assert!(!evicted, "should return false when already under threshold");
+        assert!(
+            !session.messages[0].agent_invisible,
+            "no messages should be evicted"
+        );
+    }
+
+    #[test]
+    fn test_evict_tool_responses_progressive_10_percent() {
+        let mut session = Session::new();
+        // 10 tool-result messages, each exactly 40 chars → 10 tokens each (chars/4).
+        // Total: 100 tokens. Threshold: 95. After evicting 10% (1 msg) → 90 < 95 → stop.
+        for i in 0..10u8 {
+            let content = "x".repeat(40); // 40 chars / 4 = 10 tokens
+            session.push_message(ChatMessage::tool_result(&format!("c{i}"), &content));
+        }
+        let evicted = session.evict_tool_responses_progressive(95);
+        assert!(evicted, "should return true when eviction happened");
+
+        let invisible_count = session
+            .messages
+            .iter()
+            .filter(|m| m.agent_invisible)
+            .count();
+        // After evicting 1 message (10%), 90 tokens < 95 threshold → stops at first step.
+        assert_eq!(
+            invisible_count, 1,
+            "only 10% (1 of 10) should be evicted to satisfy threshold"
+        );
+    }
+
+    #[test]
+    fn test_evict_tool_responses_progressive_escalates_to_100_percent() {
+        let mut session = Session::new();
+        // 10 tool results, each 400 chars → 100 tokens each → 1000 total
+        for i in 0..10 {
+            let content = "y".repeat(400);
+            session.push_message(ChatMessage::tool_result(&format!("c{i}"), &content));
+        }
+        // threshold=0 → never satisfied until all are evicted
+        let evicted = session.evict_tool_responses_progressive(0);
+        assert!(evicted);
+        let invisible_count = session
+            .messages
+            .iter()
+            .filter(|m| m.agent_invisible)
+            .count();
+        assert_eq!(
+            invisible_count, 10,
+            "all 10 should be evicted when threshold=0"
+        );
+    }
+
+    #[test]
+    fn test_evict_tool_responses_indices_stable_across_steps() {
+        // Regression: indices collected before the first eviction step must
+        // remain valid in subsequent steps (messages are not removed, only
+        // flagged, so indices are inherently stable).
+        let mut session = Session::new();
+        for i in 0..10 {
+            let content = "z".repeat(200); // 50 tokens each; total 500
+            session.push_message(ChatMessage::tool_result(&format!("c{i}"), &content));
+        }
+        // threshold=1 → almost everything must be evicted
+        let evicted = session.evict_tool_responses_progressive(1);
+        assert!(evicted);
+
+        // All messages must still be present (no deletions)
+        assert_eq!(
+            session.messages.len(),
+            10,
+            "no messages should be deleted, only flagged"
+        );
+
+        // At threshold=1, at most 1 token remains visible (chars/4 = 0 for short).
+        // Verify the invisible ones are the oldest (lowest indices).
+        let invisible: Vec<usize> = session
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.agent_invisible)
+            .map(|(i, _)| i)
+            .collect();
+        // Invisible set must be a prefix (oldest-first eviction)
+        for (pos, &idx) in invisible.iter().enumerate() {
+            assert_eq!(
+                idx, pos,
+                "eviction must proceed oldest-first (index {idx} at position {pos})"
+            );
+        }
     }
 
     // ── updated_at mutation tests ─────────────────────────────────

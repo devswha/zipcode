@@ -63,6 +63,7 @@ fn build_loop(
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
         skill_registry: None,
+        compact_policy: zipcode_runtime::CompactPolicy::default(),
     }
 }
 
@@ -174,6 +175,7 @@ fn test_agent_delegation_depth_exceeded() {
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
         skill_registry: None,
+        compact_policy: zipcode_runtime::CompactPolicy::default(),
     };
 
     let err = conv.spawn_child("go deeper", None, None, None).unwrap_err();
@@ -284,6 +286,7 @@ fn test_agent_delegation_permission_escalation_blocked() {
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
         skill_registry: None,
+        compact_policy: zipcode_runtime::CompactPolicy::default(),
     };
 
     conv.spawn_child(

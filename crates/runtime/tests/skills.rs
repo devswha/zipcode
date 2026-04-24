@@ -6,7 +6,8 @@ use zipcode_inference::{
     FinishReason, MockInferenceProvider, MockResponse, Role, TokenEvent, ToolCallParsed,
 };
 use zipcode_runtime::{
-    ConversationLoop, PermissionPolicy, Session, SkillRegistry, SkillTool, StreamCallback,
+    CompactPolicy, ConversationLoop, PermissionPolicy, Session, SkillRegistry, SkillTool,
+    StreamCallback,
 };
 use zipcode_tools::PermissionMode;
 
@@ -102,6 +103,7 @@ fn build_loop_with_skill_tool(
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
         skill_registry: Some(Arc::clone(&skill_registry)),
+        compact_policy: CompactPolicy::default(),
     }
 }
 

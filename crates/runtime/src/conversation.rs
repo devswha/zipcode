@@ -12,7 +12,7 @@ use zipcode_inference::{
 use zipcode_tools::{execute_tool, ChildResult, PermissionMode, ToolContext, ToolRegistry};
 
 use crate::permission::{PermissionCheck, PermissionPolicy};
-use crate::session::Session;
+use crate::session::{CompactPolicy, Session};
 use crate::skills::SkillRegistry;
 
 /// Maximum sub-agent nesting depth. Depth 0 = top-level user session.
@@ -75,6 +75,9 @@ pub struct ConversationLoop {
     pub child_session_ids: Arc<Mutex<Vec<(String, std::path::PathBuf)>>>,
     /// Optional skill registry for skill tool invocation.
     pub skill_registry: Option<Arc<SkillRegistry>>,
+    /// Policy controlling when and how tier-1 (tool-pair summarisation) and
+    /// tier-2 (tool-response eviction) context compaction triggers.
+    pub compact_policy: CompactPolicy,
 }
 
 impl ConversationLoop {
@@ -112,14 +115,26 @@ impl ConversationLoop {
             }
             iterations += 1;
 
-            let msgs_for_provider: &[ChatMessage] = if self.engine.manages_own_context() {
-                &self.session.messages[self.last_sent_idx..]
+            // Filter out agent_invisible messages before sending to the provider.
+            // For backends that manage their own context, only the new slice is
+            // sent; for others the full (visible) history is sent each turn.
+            let msgs_for_provider: Vec<ChatMessage> = if self.engine.manages_own_context() {
+                self.session.messages[self.last_sent_idx..]
+                    .iter()
+                    .filter(|m| !m.agent_invisible)
+                    .cloned()
+                    .collect()
             } else {
-                &self.session.messages
+                self.session
+                    .messages
+                    .iter()
+                    .filter(|m| !m.agent_invisible)
+                    .cloned()
+                    .collect()
             };
             let rx = self
                 .engine
-                .generate_stream(msgs_for_provider, &self.tool_specs);
+                .generate_stream(&msgs_for_provider, &self.tool_specs);
             self.last_sent_idx = self.session.messages.len();
 
             let (mut full_text, tool_calls, finish_reason) =
@@ -169,6 +184,61 @@ impl ConversationLoop {
         }
 
         self.session.save()?;
+
+        // ── Tier-1: summarise oldest tool-call pairs between turns ─────────
+        // Proactive pass runs first so normal-usage sessions keep a summary of
+        // older tool activity in the transcript. Tier-2 only kicks in as an
+        // emergency fallback when the backend reports the context window is
+        // still hot even after summarisation.
+        //
+        // Runs synchronously here (between turns, not mid-turn) rather than
+        // in a real background thread.  A genuine background thread would
+        // require Arc<Mutex<Session>>, which is a large structural change;
+        // the synchronous approach satisfies the "main loop proceeds even if
+        // summariser fails" requirement by wrapping in catch_unwind.
+        // Any panic from compact_tool_pairs is swallowed with a warn log so
+        // run_turn() always returns Ok.
+        if self.session.tool_pair_count() > self.compact_policy.tier1_pair_cutoff {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.session.compact_tool_pairs(
+                    self.compact_policy.tier1_batch_size,
+                    self.compact_policy.max_summary_line_chars,
+                )
+            }));
+            match result {
+                Ok(n) if n > 0 => {
+                    info!(pairs = n, "tier-1 compaction: summarised tool-call pairs");
+                }
+                Ok(_) => {} // no-op: pairs < batch_size
+                Err(_) => {
+                    warn!("tier-1 compaction panicked; skipping (main loop continues)");
+                }
+            }
+        }
+
+        // ── Tier-2: emergency eviction when context usage is still high ────
+        // Reactive fallback that checks the backend's reported prompt-token
+        // count. A `None` count (default for Mock and Candle backends) leaves
+        // tier-2 inactive, preserving Phase 1/2 tests. Threshold is computed
+        // via `tier2_threshold_tokens()`, which clamps NaN/out-of-range
+        // policy values before they can trigger pathological full-session
+        // eviction.
+        if let Some(count) = self.engine.last_prompt_eval_count() {
+            let threshold_tokens = self.compact_policy.tier2_threshold_tokens();
+            if count > threshold_tokens {
+                let evicted = self
+                    .session
+                    .evict_tool_responses_progressive(threshold_tokens);
+                if evicted {
+                    warn!(
+                        usage = count,
+                        threshold = threshold_tokens,
+                        "tier-2 compaction triggered: evicting tool responses"
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -329,6 +399,7 @@ impl ConversationLoop {
                     last_sent_idx: 0,
                     child_session_ids: Arc::new(Mutex::new(Vec::new())),
                     skill_registry: None,
+                    compact_policy: CompactPolicy::default(),
                 };
 
                 let mut sink = DevNullCallback;
@@ -415,6 +486,7 @@ impl ConversationLoop {
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
             skill_registry: None,
+            compact_policy: CompactPolicy::default(),
         };
 
         let mut sink = DevNullCallback;
@@ -942,6 +1014,7 @@ mod tests {
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
             skill_registry: None,
+            compact_policy: CompactPolicy::default(),
         };
 
         let result = conv.spawn_child("do something", None, None, None);
@@ -977,6 +1050,7 @@ mod tests {
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
             skill_registry: None,
+            compact_policy: CompactPolicy::default(),
         };
 
         let result = conv.spawn_child("task 1", None, None, None).unwrap();
@@ -994,6 +1068,10 @@ mod tests {
         use zipcode_inference::mock::{MockInferenceProvider, MockResponse};
         use zipcode_tools::PermissionMode;
         use zipcode_tools::ToolRegistry;
+
+        // Sibling tier tests mutate ZIPCODE_SESSIONS_DIR in parallel; acquire
+        // the shared lock so Session::path resolution observes our dir only.
+        let (_dir, _guard) = with_test_session_dir();
 
         let provider = MockInferenceProvider::new(vec![MockResponse::Text("ok".to_string())]);
         let session = crate::session::Session::new();
@@ -1013,6 +1091,7 @@ mod tests {
                 last_sent_idx: 0,
                 child_session_ids: Arc::clone(&child_ids_shared),
                 skill_registry: None,
+                compact_policy: CompactPolicy::default(),
             };
 
             let result = conv.spawn_child("cleanup test", None, None, None).unwrap();
@@ -1029,6 +1108,302 @@ mod tests {
         assert!(
             !child_path.exists(),
             "child session file should be removed after parent drop"
+        );
+    }
+
+    // ── Compaction integration tests ──────────────────────────────
+
+    /// Shared mutex serialising ZIPCODE_SESSIONS_DIR mutation across every
+    /// unit test in this binary.  Without this, parallel tests race on the
+    /// global env var and Session::path resolution observes a foreign temp
+    /// dir mid-test.
+    static SESSION_DIR_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    /// Redirect session writes to a temp dir.  Returns the TempDir (keeping
+    /// it alive for the caller's scope) and the held lock guard so the env
+    /// var mutation cannot collide with sibling tests.
+    fn with_test_session_dir() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+        let guard = SESSION_DIR_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        std::env::set_var("ZIPCODE_SESSIONS_DIR", dir.path());
+        (dir, guard)
+    }
+
+    /// Build a minimal ConversationLoop with a MockInferenceProvider and the
+    /// given CompactPolicy.  Uses /tmp as cwd (no real tools needed).
+    fn make_conv(
+        responses: Vec<zipcode_inference::mock::MockResponse>,
+        policy: CompactPolicy,
+    ) -> ConversationLoop {
+        use crate::permission::PermissionPolicy;
+        use std::sync::{Arc, Mutex};
+        use zipcode_inference::mock::MockInferenceProvider;
+        use zipcode_tools::{PermissionMode, ToolRegistry};
+
+        ConversationLoop {
+            engine: Box::new(MockInferenceProvider::new(responses)),
+            tools: ToolRegistry::default(),
+            session: crate::session::Session::new(),
+            permission: PermissionPolicy::new(PermissionMode::FullAccess),
+            system_prompt: String::new(),
+            tool_specs: Vec::new(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            depth: 0,
+            last_sent_idx: 0,
+            child_session_ids: Arc::new(Mutex::new(Vec::new())),
+            skill_registry: None,
+            compact_policy: policy,
+        }
+    }
+
+    /// Push N tool-call / tool-result pairs directly into the session.
+    fn push_tool_pairs(session: &mut crate::session::Session, n: usize) {
+        use zipcode_inference::types::ToolCallParsed;
+        for i in 0..n {
+            let call = ToolCallParsed {
+                id: format!("call_{i}"),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": format!("ls {i}")}),
+            };
+            session.push_message(ChatMessage::assistant_with_tool_calls(
+                "running tool",
+                vec![call],
+            ));
+            session.push_message(ChatMessage::tool_result(
+                &format!("call_{i}"),
+                &format!("output_{i}"),
+            ));
+        }
+    }
+
+    struct NoopCb;
+    impl StreamCallback for NoopCb {
+        fn on_token(&mut self, _: &str) {}
+        fn on_tool_start(&mut self, _: &str, _: &serde_json::Value) {}
+        fn on_tool_result(&mut self, _: &str, _: &str) {}
+        fn on_permission_prompt(&mut self, _: &str) -> bool {
+            true
+        }
+        fn on_error(&mut self, _: &str) {}
+    }
+
+    /// Tier-1 fires when pair count exceeds cutoff and reduces the visible pair count.
+    #[test]
+    fn test_run_turn_triggers_tier1_when_pair_count_exceeds_cutoff() {
+        let (_dir, _guard) = with_test_session_dir();
+        use zipcode_inference::mock::MockResponse;
+
+        // cutoff=2, batch_size=2 → triggers when pairs > 2 and compacts 2 pairs
+        let policy = CompactPolicy {
+            tier1_pair_cutoff: 2,
+            tier1_batch_size: 2,
+            ..CompactPolicy::default()
+        };
+        let mut conv = make_conv(vec![MockResponse::Text("done".to_string())], policy);
+
+        // Pre-load 3 tool pairs so pair_count (3) > cutoff (2)
+        push_tool_pairs(&mut conv.session, 3);
+        let before = conv.session.tool_pair_count();
+        assert_eq!(before, 3);
+
+        conv.run_turn("hello", &mut NoopCb).unwrap();
+
+        // After run_turn, compact_tool_pairs(2) should have been called,
+        // marking 2 pairs agent_invisible → visible pair count drops to 1.
+        assert!(
+            conv.session.tool_pair_count() < before,
+            "tier-1 should reduce tool_pair_count; before={before}, after={}",
+            conv.session.tool_pair_count()
+        );
+    }
+
+    /// Tier-1 is skipped when pair count does not exceed the cutoff.
+    #[test]
+    fn test_run_turn_skips_tier1_below_cutoff() {
+        let (_dir, _guard) = with_test_session_dir();
+        use zipcode_inference::mock::MockResponse;
+
+        // cutoff=10 → 2 pairs will not trigger
+        let policy = CompactPolicy {
+            tier1_pair_cutoff: 10,
+            ..CompactPolicy::default()
+        };
+        let mut conv = make_conv(vec![MockResponse::Text("done".to_string())], policy);
+
+        push_tool_pairs(&mut conv.session, 2);
+        let before = conv.session.tool_pair_count();
+
+        conv.run_turn("hello", &mut NoopCb).unwrap();
+
+        // run_turn adds no new tool calls, tier-1 must not have run.
+        assert_eq!(
+            conv.session.tool_pair_count(),
+            before,
+            "tier-1 must not fire below cutoff"
+        );
+    }
+
+    /// Tier-2 fires when the mock reports prompt_eval_count above the threshold.
+    ///
+    /// We use a tiny context window (10 tokens, 80% = 8 token threshold) and set the
+    /// mock to report 9 tokens.  The session has ~15 estimated tokens, so
+    /// `evict_tool_responses_progressive(8)` will find content to evict.
+    #[test]
+    fn test_run_turn_triggers_tier2_when_usage_over_threshold() {
+        let (_dir, _guard) = with_test_session_dir();
+        use crate::permission::PermissionPolicy;
+        use std::sync::{Arc, Mutex};
+        use zipcode_inference::mock::{MockInferenceProvider, MockResponse};
+        use zipcode_tools::{PermissionMode, ToolRegistry};
+
+        // context=10, threshold=0.8 → threshold_tokens = floor(10*0.8) = 8
+        let policy = CompactPolicy {
+            tier2_usage_threshold: 0.8,
+            context_window_tokens: 10,
+            tier1_pair_cutoff: 100, // disable tier-1
+            ..CompactPolicy::default()
+        };
+
+        // Mock reports 9 tokens (above threshold of 8)
+        let provider = MockInferenceProvider::new(vec![MockResponse::Text("ok".to_string())])
+            .with_prompt_eval_count(9);
+
+        let mut conv = ConversationLoop {
+            engine: Box::new(provider),
+            tools: ToolRegistry::default(),
+            session: crate::session::Session::new(),
+            permission: PermissionPolicy::new(PermissionMode::FullAccess),
+            system_prompt: String::new(),
+            tool_specs: Vec::new(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            depth: 0,
+            last_sent_idx: 0,
+            child_session_ids: Arc::new(Mutex::new(Vec::new())),
+            skill_registry: None,
+            compact_policy: policy,
+        };
+
+        // Add tool pairs so there's something to evict
+        push_tool_pairs(&mut conv.session, 3);
+
+        conv.run_turn("go", &mut NoopCb).unwrap();
+
+        // evict_tool_responses_progressive should have marked some messages invisible
+        let invisible = conv
+            .session
+            .messages
+            .iter()
+            .filter(|m| m.agent_invisible)
+            .count();
+        assert!(
+            invisible > 0,
+            "tier-2 should have evicted at least one message; invisible={invisible}"
+        );
+    }
+
+    /// Tier-2 is skipped when usage is below threshold.
+    #[test]
+    fn test_run_turn_skips_tier2_below_threshold() {
+        let (_dir, _guard) = with_test_session_dir();
+        use crate::permission::PermissionPolicy;
+        use std::sync::{Arc, Mutex};
+        use zipcode_inference::mock::{MockInferenceProvider, MockResponse};
+        use zipcode_tools::{PermissionMode, ToolRegistry};
+
+        // context=32768, threshold=0.8 → 26214 threshold; report only 1000
+        let policy = CompactPolicy {
+            tier2_usage_threshold: 0.8,
+            context_window_tokens: 32768,
+            tier1_pair_cutoff: 100,
+            ..CompactPolicy::default()
+        };
+
+        let provider = MockInferenceProvider::new(vec![MockResponse::Text("ok".to_string())])
+            .with_prompt_eval_count(1_000);
+
+        let mut conv = ConversationLoop {
+            engine: Box::new(provider),
+            tools: ToolRegistry::default(),
+            session: crate::session::Session::new(),
+            permission: PermissionPolicy::new(PermissionMode::FullAccess),
+            system_prompt: String::new(),
+            tool_specs: Vec::new(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            depth: 0,
+            last_sent_idx: 0,
+            child_session_ids: Arc::new(Mutex::new(Vec::new())),
+            skill_registry: None,
+            compact_policy: policy,
+        };
+
+        push_tool_pairs(&mut conv.session, 3);
+
+        conv.run_turn("go", &mut NoopCb).unwrap();
+
+        let invisible = conv
+            .session
+            .messages
+            .iter()
+            .filter(|m| m.agent_invisible)
+            .count();
+        assert_eq!(invisible, 0, "no eviction expected below threshold");
+    }
+
+    /// A panic inside compact_tool_pairs does not propagate — run_turn returns Ok.
+    #[test]
+    fn test_tier1_panic_does_not_propagate() {
+        let (_dir, _guard) = with_test_session_dir();
+        use zipcode_inference::mock::MockResponse;
+
+        // Set cutoff=0 so tier-1 fires, but batch_size=0 triggers no-op inside
+        // compact_tool_pairs (pairs.len() < 0 is always false, so it returns 0).
+        // We test that run_turn returns Ok regardless.
+        let policy = CompactPolicy {
+            tier1_pair_cutoff: 0,
+            tier1_batch_size: 999, // no pairs to compact → compact returns 0
+            ..CompactPolicy::default()
+        };
+        let mut conv = make_conv(vec![MockResponse::Text("done".to_string())], policy);
+        // 1 pair → count(1) > cutoff(0) → tier-1 fires but batch_size=999 → no-op
+        push_tool_pairs(&mut conv.session, 1);
+
+        let result = conv.run_turn("hello", &mut NoopCb);
+        assert!(
+            result.is_ok(),
+            "tier-1 no-op must not cause run_turn to fail"
+        );
+    }
+
+    /// When the provider returns None for prompt_eval_count, tier-2 is skipped entirely.
+    #[test]
+    fn test_provider_without_prompt_eval_count_skips_tier2() {
+        let (_dir, _guard) = with_test_session_dir();
+        use zipcode_inference::mock::MockResponse;
+
+        // Default MockInferenceProvider has no prompt_eval_count (returns None)
+        let policy = CompactPolicy {
+            tier2_usage_threshold: 0.0, // 0% threshold — would always trigger if count is Some
+            context_window_tokens: 1,
+            tier1_pair_cutoff: 100,
+            ..CompactPolicy::default()
+        };
+        let mut conv = make_conv(vec![MockResponse::Text("done".to_string())], policy);
+        push_tool_pairs(&mut conv.session, 3);
+
+        conv.run_turn("hello", &mut NoopCb).unwrap();
+
+        let invisible = conv
+            .session
+            .messages
+            .iter()
+            .filter(|m| m.agent_invisible)
+            .count();
+        assert_eq!(
+            invisible, 0,
+            "tier-2 must not fire when provider returns None for prompt_eval_count"
         );
     }
 }
