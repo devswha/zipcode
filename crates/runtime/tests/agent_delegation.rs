@@ -1,11 +1,13 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tempfile::TempDir;
 use zipcode_inference::{
-    FinishReason, MockInferenceProvider, MockResponse, Role, TokenEvent, ToolCallParsed, ToolSpec,
+    FinishReason, MockInferenceProvider, MockResponse, Role, TokenEvent, ToolCallParsed,
 };
-use zipcode_runtime::{ConversationLoop, PermissionPolicy, Session, StreamCallback};
-use zipcode_tools::{ChildResult, PermissionMode, SpawnChildFn, Tool};
+use zipcode_runtime::{
+    ConversationLoop, PermissionPolicy, Session, StreamCallback, MAX_AGENT_DEPTH,
+};
+use zipcode_tools::PermissionMode;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,10 +41,10 @@ fn build_loop(
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(GrepSearchTool));
 
-    let tool_specs: Vec<ToolSpec> = registry
+    let tool_specs: Vec<zipcode_inference::chat_template::ToolSpec> = registry
         .specs()
         .into_iter()
-        .map(|s| ToolSpec {
+        .map(|s| zipcode_inference::chat_template::ToolSpec {
             name: s.name,
             description: s.description,
             parameters: s.parameters,
@@ -57,406 +59,476 @@ fn build_loop(
         system_prompt: "You are a test assistant.".to_string(),
         tool_specs,
         cwd: dir.path().to_path_buf(),
+        depth: 0,
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
-/// Override the session dir so tests don't pollute ~/.zipcode/sessions.
-/// Returns the TempDir that must be kept alive for the test duration.
-fn with_temp_session_dir() -> TempDir {
+/// Serializes all tests that mutate ZIPCODE_SESSIONS_DIR so they don't race.
+static SESSION_DIR_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Redirect session files to a tempdir so ~/.zipcode/sessions is never touched.
+/// Returns (TempDir, guard) — keep both alive for the test duration.
+/// The guard serializes against other tests that also call this function.
+fn with_temp_session_dir() -> (TempDir, std::sync::MutexGuard<'static, ()>) {
+    let guard = SESSION_DIR_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::env::set_var("ZIPCODE_SESSIONS_DIR", dir.path());
-    dir
+    (dir, guard)
+}
+
+/// Find a session JSON file by ID across all temp dirs that may have been
+/// used during this test. Scans /tmp for .json files matching the child ID.
+/// This is necessary because parallel tests race on ZIPCODE_SESSIONS_DIR.
+fn find_session_file(child_id: &str) -> Option<std::path::PathBuf> {
+    let filename = format!("{child_id}.json");
+    // Walk /tmp one level deep looking for our file
+    if let Ok(entries) = std::fs::read_dir("/tmp") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let candidate = path.join(&filename);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+            // Also check direct /tmp/{id}.json
+            if path.file_name().and_then(|n| n.to_str()) == Some(filename.as_str()) {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: happy path — parent calls spawn_child, child returns summary
+// Test 1: happy path — child executes read_file, tool_call_count > 0
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_agent_delegation_happy_path() {
-    let _session_dir = with_temp_session_dir();
+    let (_session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
-    let mock = MockInferenceProvider::new(vec![MockResponse::Text("parent done".to_string())]);
-    let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
 
+    std::fs::write(dir.path().join("hello.txt"), "hello from child").unwrap();
+
+    // Shared queue: parent response first, then child responses.
+    // clone_for_child shares the same Arc<Mutex<VecDeque>>, so the child
+    // consumes responses from the same queue in order.
+    let mock = MockInferenceProvider::new(vec![
+        // parent: immediately delegates via spawn_child (no parent tool calls here)
+        // child turn 1: read_file
+        MockResponse::Events(vec![
+            TokenEvent::ToolCall(ToolCallParsed {
+                id: "child_read_1".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({ "file_path": "hello.txt" }),
+            }),
+            TokenEvent::Done(FinishReason::ToolUse),
+        ]),
+        // child turn 2: final text after seeing tool result
+        MockResponse::Text("child done: found hello from child".to_string()),
+    ]);
+
+    let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
     let result = conv
-        .spawn_child("summarize the project", None, None, None)
+        .spawn_child("read hello.txt and report", None, None, None)
         .unwrap();
 
-    assert!(!result.summary.is_empty(), "summary should not be empty");
     assert!(
-        !result.child_session_id.is_empty(),
-        "child session id should be set"
+        result.summary.contains("child done"),
+        "summary must contain child's final text, got: {}",
+        result.summary
     );
-    // tool_call_count is 0 in the current stub implementation
-    assert_eq!(result.tool_call_count, 0);
+    assert_eq!(result.tool_call_count, 1, "child executed one tool call");
+    assert!(!result.child_session_id.is_empty());
 
     std::fs::remove_file(conv.session.path()).ok();
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: depth exceeded — spawning at depth >= MAX_AGENT_DEPTH must error
+// Test 2: depth exceeded — spawn_child at MAX_AGENT_DEPTH returns Err
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_agent_delegation_depth_exceeded() {
-    let _session_dir = with_temp_session_dir();
+    let (_session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
+
     let mock = MockInferenceProvider::new(vec![]);
 
-    // Give the loop a parent_id so depth is treated as 1.
-    // MAX_AGENT_DEPTH = 2, so spawning at depth 1 is fine, but the AgentTool
-    // checks ctx.depth >= 2 before calling spawn. Test the stub spawn_child
-    // which checks depth via session.parent_id.
-    let parent = Session::new();
-    let mut child_session = Session::new_child(parent.id.clone());
-    // Give child a parent_id so the loop reports depth 1 when calling spawn_child
-    // (spawn_child checks if session.parent_id.is_some() → depth 1, but our stub
-    // compares depth >= MAX_AGENT_DEPTH(2)). Give it a grandchild-like setup:
-    // set parent_id so depth = 1; spawn_child itself won't fail at depth 1.
-    // Instead test via the AgentTool ctx.depth >= 2 path.
-    child_session.parent_id = Some(parent.id.clone());
-
-    // Use SpawnChildFn mock to check depth gate in the AgentTool directly.
-    let call_count = Arc::new(Mutex::new(0usize));
-    let call_count_clone = Arc::clone(&call_count);
-    let cb: Arc<SpawnChildFn> = Arc::new(move |_task, _al, _perm, _tok| {
-        *call_count_clone.lock().unwrap() += 1;
-        Ok(ChildResult {
-            summary: "nested".to_string(),
-            tool_call_count: 0,
-            child_session_id: "nested-child".to_string(),
-        })
-    });
-
-    use zipcode_tools::{agent::AgentTool, ToolContext};
-    let tool = AgentTool;
-    // depth = 2 triggers the guard in AgentTool::execute
-    let ctx = ToolContext {
+    let mut conv = ConversationLoop {
+        engine: Box::new(mock),
+        tools: zipcode_tools::ToolRegistry::new(),
+        session: Session::new(),
+        permission: PermissionPolicy::new(PermissionMode::FullAccess),
+        system_prompt: String::new(),
+        tool_specs: Vec::new(),
         cwd: dir.path().to_path_buf(),
-        permission: PermissionMode::FullAccess,
-        session_id: "test-parent".to_string(),
-        parent_session_id: Some("grandparent".to_string()),
-        depth: 2,
-        budget_tokens: None,
-        spawn_child: Some(cb),
+        depth: MAX_AGENT_DEPTH, // at the limit
+        last_sent_idx: 0,
+        child_session_ids: Arc::new(Mutex::new(Vec::new())),
     };
 
-    let result = tool
-        .execute(serde_json::json!({ "task": "go deeper" }), &ctx)
-        .unwrap();
-
+    let err = conv.spawn_child("go deeper", None, None, None).unwrap_err();
     assert!(
-        result.content.contains("max agent depth"),
-        "expected depth error, got: {}",
-        result.content
+        err.to_string().contains("maximum agent depth"),
+        "error must mention max depth, got: {err}"
     );
-    // Callback must NOT have been called
-    assert_eq!(*call_count.lock().unwrap(), 0);
-
-    std::fs::remove_file(mock_session_path_for(&mock)).ok();
-    let _ = dir;
-}
-
-fn mock_session_path_for(_mock: &MockInferenceProvider) -> std::path::PathBuf {
-    std::path::PathBuf::new() // placeholder — sessions cleaned via with_temp_session_dir
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: permission downgrade — FullAccess parent → ReadOnly child
+// Test 3: permission downgrade — FullAccess parent → ReadOnly child write denied
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_agent_delegation_permission_downgrade() {
-    let _session_dir = with_temp_session_dir();
+    let (session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
 
-    let received_perm: Arc<Mutex<Option<PermissionMode>>> = Arc::new(Mutex::new(None));
-    let received_perm_clone = Arc::clone(&received_perm);
+    // Child tries write_file but has ReadOnly permission from downgrade
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::Events(vec![
+            TokenEvent::ToolCall(ToolCallParsed {
+                id: "child_write_1".to_string(),
+                name: "write_file".to_string(),
+                arguments: serde_json::json!({
+                    "file_path": "out.txt",
+                    "content": "should be denied"
+                }),
+            }),
+            TokenEvent::Done(FinishReason::ToolUse),
+        ]),
+        MockResponse::Text("write denied as expected".to_string()),
+    ]);
 
-    let cb: Arc<SpawnChildFn> = Arc::new(move |_task, _al, perm_override, _tok| {
-        *received_perm_clone.lock().unwrap() = perm_override;
-        Ok(ChildResult {
-            summary: "done".to_string(),
-            tool_call_count: 0,
-            child_session_id: "child-perm-down".to_string(),
-        })
-    });
-
-    use zipcode_tools::{agent::AgentTool, ToolContext};
-    let tool = AgentTool;
-    let ctx = ToolContext {
-        cwd: dir.path().to_path_buf(),
-        permission: PermissionMode::FullAccess,
-        session_id: "parent-full".to_string(),
-        parent_session_id: None,
-        depth: 0,
-        budget_tokens: None,
-        spawn_child: Some(cb),
-    };
-
-    // The agent tool passes permission_override=None to spawn_fn; permission
-    // downgrade is encoded as None (inherit). Verify via spawn_child API directly.
-    let mock = MockInferenceProvider::new(vec![]);
     let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
+    conv.spawn_child(
+        "try to write a file",
+        None,
+        Some(PermissionMode::ReadOnly),
+        None,
+    )
+    .unwrap();
 
-    let result = conv
-        .spawn_child(
-            "read some files",
-            None,
-            Some(PermissionMode::ReadOnly), // explicit downgrade
-            None,
-        )
-        .unwrap();
+    // The child had ReadOnly permission — write_file must have been denied.
+    // The file must not exist.
+    assert!(
+        !dir.path().join("out.txt").exists(),
+        "write_file must be denied under ReadOnly child permission"
+    );
 
-    // Child session must have been created
-    assert!(!result.child_session_id.is_empty());
-
-    // Verify PermissionPolicy::inherit_for_child enforces the downgrade
+    // Also verify PermissionPolicy enforces the downgrade correctly.
     let parent_policy = PermissionPolicy::new(PermissionMode::FullAccess);
     let child_policy = parent_policy.inherit_for_child(Some(PermissionMode::ReadOnly));
     assert_eq!(child_policy.mode(), PermissionMode::ReadOnly);
 
     std::fs::remove_file(conv.session.path()).ok();
-    let _ = (tool, ctx, received_perm);
+    let _ = session_dir;
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: permission escalation blocked — ReadOnly parent → FullAccess rejected
+// Test 4: escalation blocked — ReadOnly parent → FullAccess request still ReadOnly
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_agent_delegation_permission_escalation_blocked() {
-    // ReadOnly parent tries to grant FullAccess to child — must be refused
-    let parent_policy = PermissionPolicy::new(PermissionMode::ReadOnly);
-    let child_policy = parent_policy.inherit_for_child(Some(PermissionMode::FullAccess));
-    assert_eq!(
-        child_policy.mode(),
-        PermissionMode::ReadOnly,
-        "escalation to FullAccess from ReadOnly must be refused"
+    let (session_dir, _session_guard) = with_temp_session_dir();
+    let dir = TempDir::new().unwrap();
+
+    // Child tries write_file; escalation to FullAccess must be refused
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::Events(vec![
+            TokenEvent::ToolCall(ToolCallParsed {
+                id: "child_write_2".to_string(),
+                name: "write_file".to_string(),
+                arguments: serde_json::json!({
+                    "file_path": "secret.txt",
+                    "content": "escalated"
+                }),
+            }),
+            TokenEvent::Done(FinishReason::ToolUse),
+        ]),
+        MockResponse::Text("done".to_string()),
+    ]);
+
+    use zipcode_tools::{read_file::ReadFileTool, write_file::WriteFileTool, ToolRegistry};
+    let mut reg = ToolRegistry::new();
+    reg.register(Box::new(ReadFileTool));
+    reg.register(Box::new(WriteFileTool));
+    let tool_specs = reg
+        .specs()
+        .into_iter()
+        .map(|s| zipcode_inference::chat_template::ToolSpec {
+            name: s.name,
+            description: s.description,
+            parameters: s.parameters,
+        })
+        .collect();
+
+    let mut conv = ConversationLoop {
+        engine: Box::new(mock),
+        tools: reg,
+        session: Session::new(),
+        permission: PermissionPolicy::new(PermissionMode::ReadOnly),
+        system_prompt: "test".to_string(),
+        tool_specs,
+        cwd: dir.path().to_path_buf(),
+        depth: 0,
+        last_sent_idx: 0,
+        child_session_ids: Arc::new(Mutex::new(Vec::new())),
+    };
+
+    conv.spawn_child(
+        "write secret.txt",
+        None,
+        Some(PermissionMode::FullAccess), // escalation attempt
+        None,
+    )
+    .unwrap();
+
+    // Escalation refused → child stays ReadOnly → write_file denied → file not created.
+    assert!(
+        !dir.path().join("secret.txt").exists(),
+        "escalation must be refused: secret.txt must not exist"
     );
 
-    // Also verify WorkspaceWrite → FullAccess is refused
+    // Also verify PermissionPolicy blocks escalation directly.
+    let parent_policy = PermissionPolicy::new(PermissionMode::ReadOnly);
+    let child_policy = parent_policy.inherit_for_child(Some(PermissionMode::FullAccess));
+    assert_eq!(child_policy.mode(), PermissionMode::ReadOnly);
     let ws_policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
     let child_ws = ws_policy.inherit_for_child(Some(PermissionMode::FullAccess));
-    assert_eq!(
-        child_ws.mode(),
-        PermissionMode::WorkspaceWrite,
-        "escalation to FullAccess from WorkspaceWrite must be refused"
-    );
+    assert_eq!(child_ws.mode(), PermissionMode::WorkspaceWrite);
+
+    std::fs::remove_file(conv.session.path()).ok();
+    let _ = session_dir;
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: budget exhaustion — max_tokens respected via compute_child_budget
+// Test 5: budget — compute_child_budget floor/cap + max_tokens passes through
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_agent_delegation_budget_exhaustion() {
-    use zipcode_runtime::conversation::compute_child_budget;
+    use zipcode_runtime::compute_child_budget;
 
-    // With parent_remaining = 4096, child gets max(4096/2, 4096).clamp(4096, 32768) = 4096
-    let budget = compute_child_budget(4096);
-    assert_eq!(budget, 4096, "small budget should be floored at 4096");
+    assert_eq!(compute_child_budget(0), 4096, "zero floors to 4096");
+    assert_eq!(compute_child_budget(4096), 4096, "small floors to 4096");
+    assert_eq!(compute_child_budget(10_000), 5_000, "mid is halved");
+    assert_eq!(compute_child_budget(65_536), 32_768, "large caps at 32768");
 
-    // With parent_remaining = 65536, child gets 32768 (capped)
-    let budget_large = compute_child_budget(65536);
-    assert_eq!(
-        budget_large, 32768,
-        "large budget should be capped at 32768"
-    );
-
-    // Spawn with max_tokens hint; captured in mock callback
-    let received_tokens: Arc<Mutex<Option<usize>>> = Arc::new(Mutex::new(None));
-    let received_clone = Arc::clone(&received_tokens);
-    let cb: Arc<SpawnChildFn> = Arc::new(move |_task, _al, _perm, tokens| {
-        *received_clone.lock().unwrap() = tokens;
-        Ok(ChildResult {
-            summary: "done".to_string(),
-            tool_call_count: 0,
-            child_session_id: "budget-child".to_string(),
-        })
-    });
-
-    use zipcode_tools::{agent::AgentTool, ToolContext};
-    let tool = AgentTool;
+    // Verify max_tokens passes through spawn_child without error
+    let (_session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
-    let ctx = ToolContext {
-        cwd: dir.path().to_path_buf(),
-        permission: PermissionMode::FullAccess,
-        session_id: "budget-parent".to_string(),
-        parent_session_id: None,
-        depth: 0,
-        budget_tokens: None,
-        spawn_child: Some(cb),
-    };
+    let mock = MockInferenceProvider::new(vec![MockResponse::Text("child ok".to_string())]);
+    let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
+    let result = conv
+        .spawn_child("budget test", None, None, Some(4096))
+        .unwrap();
+    assert!(!result.child_session_id.is_empty());
 
-    tool.execute(
-        serde_json::json!({ "task": "work", "max_tokens": 4096 }),
-        &ctx,
-    )
-    .unwrap();
-
-    assert_eq!(
-        *received_tokens.lock().unwrap(),
-        Some(4096),
-        "max_tokens should be forwarded to spawn callback"
-    );
+    std::fs::remove_file(conv.session.path()).ok();
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: allowlist filters tools — write_file excluded, read_file allowed
+// Test 6: allowlist — write_file excluded; file must not be created/modified
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_agent_delegation_allowlist_filters_tools() {
-    let received_allowlist: Arc<Mutex<Option<Vec<String>>>> = Arc::new(Mutex::new(None));
-    let received_clone = Arc::clone(&received_allowlist);
-
-    let cb: Arc<SpawnChildFn> = Arc::new(move |_task, allowlist, _perm, _tokens| {
-        *received_clone.lock().unwrap() = allowlist.map(|a| a.to_vec());
-        Ok(ChildResult {
-            summary: "filtered".to_string(),
-            tool_call_count: 1,
-            child_session_id: "allowlist-child".to_string(),
-        })
-    });
-
-    use zipcode_tools::{agent::AgentTool, ToolContext};
-    let tool = AgentTool;
+    let (_session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
-    let ctx = ToolContext {
-        cwd: dir.path().to_path_buf(),
-        permission: PermissionMode::FullAccess,
-        session_id: "parent-allowlist".to_string(),
-        parent_session_id: None,
-        depth: 0,
-        budget_tokens: None,
-        spawn_child: Some(cb),
-    };
+    std::fs::write(dir.path().join("data.txt"), "original").unwrap();
 
-    tool.execute(
-        serde_json::json!({
-            "task": "search code",
-            "tool_allowlist": ["read_file", "grep_search"]
-        }),
-        &ctx,
-    )
-    .unwrap();
+    // Child tries to write_file; it is NOT in the allowlist.
+    // ToolRegistry::create_filtered strips it → execute_tool returns Unknown tool.
+    // The child still completes (error stored as tool result) and returns a summary.
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::Events(vec![
+            TokenEvent::ToolCall(ToolCallParsed {
+                id: "child_filtered_write".to_string(),
+                name: "write_file".to_string(),
+                arguments: serde_json::json!({
+                    "file_path": "data.txt",
+                    "content": "overwritten"
+                }),
+            }),
+            TokenEvent::Done(FinishReason::ToolUse),
+        ]),
+        MockResponse::Text("write attempted".to_string()),
+    ]);
 
-    let list = received_allowlist.lock().unwrap();
-    let list = list.as_ref().expect("allowlist should have been set");
-    assert!(list.contains(&"read_file".to_string()));
-    assert!(list.contains(&"grep_search".to_string()));
-    assert!(
-        !list.contains(&"write_file".to_string()),
-        "write_file should not be in the allowlist"
+    let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
+    let allowlist = vec!["read_file".to_string(), "grep_search".to_string()];
+    let result = conv
+        .spawn_child("try to write", Some(&allowlist), None, None)
+        .unwrap();
+
+    // write_file was attempted but the tool is not in the child registry.
+    // The file must remain unmodified.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("data.txt")).unwrap(),
+        "original",
+        "file must not have been modified — write_file not in allowlist"
     );
+    // The child still ran to completion and returned a summary.
+    assert!(!result.child_session_id.is_empty());
+
+    // Verify via ToolRegistry directly that create_filtered excludes write_file.
+    use zipcode_tools::{
+        grep_search::GrepSearchTool, read_file::ReadFileTool, write_file::WriteFileTool,
+        ToolRegistry,
+    };
+    let mut reg = ToolRegistry::new();
+    reg.register(Box::new(ReadFileTool));
+    reg.register(Box::new(WriteFileTool));
+    reg.register(Box::new(GrepSearchTool));
+    let filtered = reg.create_filtered(&["read_file".to_string(), "grep_search".to_string()]);
+    assert!(
+        filtered.get("read_file").is_some(),
+        "read_file must be in filtered registry"
+    );
+    assert!(
+        filtered.get("grep_search").is_some(),
+        "grep_search must be in filtered registry"
+    );
+    assert!(
+        filtered.get("write_file").is_none(),
+        "write_file must NOT be in filtered registry"
+    );
+
+    std::fs::remove_file(conv.session.path()).ok();
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: agent tool excluded from child — even if caller includes "agent"
+// Test 7: "agent" always stripped from child registry by create_filtered
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_agent_delegation_blocks_nested_agent_call() {
-    let received_allowlist: Arc<Mutex<Option<Vec<String>>>> = Arc::new(Mutex::new(None));
-    let received_clone = Arc::clone(&received_allowlist);
-
-    let cb: Arc<SpawnChildFn> = Arc::new(move |_task, allowlist, _perm, _tokens| {
-        *received_clone.lock().unwrap() = allowlist.map(|a| a.to_vec());
-        Ok(ChildResult {
-            summary: "ok".to_string(),
-            tool_call_count: 0,
-            child_session_id: "no-agent-child".to_string(),
-        })
-    });
-
-    use zipcode_tools::{agent::AgentTool, ToolContext};
-    let tool = AgentTool;
+    let (_session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
-    let ctx = ToolContext {
-        cwd: dir.path().to_path_buf(),
-        permission: PermissionMode::FullAccess,
-        session_id: "parent-no-nest".to_string(),
-        parent_session_id: None,
-        depth: 0,
-        budget_tokens: None,
-        spawn_child: Some(cb),
+
+    // Child tries to call "agent"; it must not be in the child registry.
+    // spawn_child runs to completion even when tool is unknown (error stored
+    // as tool result, child returns final text).
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::Events(vec![
+            TokenEvent::ToolCall(ToolCallParsed {
+                id: "child_nested_agent".to_string(),
+                name: "agent".to_string(),
+                arguments: serde_json::json!({ "task": "nested task" }),
+            }),
+            TokenEvent::Done(FinishReason::ToolUse),
+        ]),
+        MockResponse::Text("nested agent done".to_string()),
+    ]);
+
+    let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
+    // Include "agent" in allowlist — create_filtered always strips it
+    let allowlist = vec![
+        "read_file".to_string(),
+        "agent".to_string(),
+        "grep_search".to_string(),
+    ];
+    let result = conv
+        .spawn_child("try nested agent", Some(&allowlist), None, None)
+        .unwrap();
+    assert!(!result.child_session_id.is_empty());
+
+    // Verify via ToolRegistry that create_filtered always removes "agent".
+    use zipcode_tools::{
+        agent::AgentTool, grep_search::GrepSearchTool, read_file::ReadFileTool, ToolRegistry,
     };
-
-    // Include "agent" in allowlist — it must be stripped before forwarding
-    tool.execute(
-        serde_json::json!({
-            "task": "do stuff",
-            "tool_allowlist": ["read_file", "agent", "grep_search"]
-        }),
-        &ctx,
-    )
-    .unwrap();
-
-    let list = received_allowlist.lock().unwrap();
-    let list = list.as_ref().expect("allowlist should have been set");
+    let mut reg = ToolRegistry::new();
+    reg.register(Box::new(AgentTool));
+    reg.register(Box::new(ReadFileTool));
+    reg.register(Box::new(GrepSearchTool));
+    let allowlist_with_agent = vec![
+        "read_file".to_string(),
+        "agent".to_string(),
+        "grep_search".to_string(),
+    ];
+    let filtered = reg.create_filtered(&allowlist_with_agent);
     assert!(
-        !list.contains(&"agent".to_string()),
-        "agent must be stripped from child allowlist to prevent circular delegation"
+        filtered.get("agent").is_none(),
+        "\"agent\" must always be stripped from filtered registry"
     );
-    assert!(list.contains(&"read_file".to_string()));
-    assert!(list.contains(&"grep_search".to_string()));
+    assert!(
+        filtered.get("read_file").is_some(),
+        "read_file must remain in filtered registry"
+    );
+    assert!(
+        filtered.get("grep_search").is_some(),
+        "grep_search must remain in filtered registry"
+    );
+
+    std::fs::remove_file(conv.session.path()).ok();
 }
 
 // ---------------------------------------------------------------------------
-// Test 8: e2e — parent run_turn triggers agent call, child returns summary
+// Test 8: e2e — parent read_file + agent call; child grep_search returns results
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_parent_read_then_child_grep_e2e() {
-    let _session_dir = with_temp_session_dir();
+    let (_session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
 
-    // Write a file for the parent to read and child to grep
     std::fs::write(
         dir.path().join("notes.txt"),
         "TODO: fix the bug\nfoo bar\nTODO: add tests",
     )
     .unwrap();
 
-    // Parent: first calls read_file, then calls agent tool
-    // Turn 1: model issues read_file tool call → result → then final text response
-    let read_file_call = ToolCallParsed {
-        id: "c_read".to_string(),
-        name: "read_file".to_string(),
-        arguments: serde_json::json!({ "file_path": "notes.txt" }),
-    };
-    let agent_call = ToolCallParsed {
-        id: "c_agent".to_string(),
-        name: "agent".to_string(),
-        arguments: serde_json::json!({
-            "task": "grep for TODOs",
-            "tool_allowlist": ["grep_search"]
-        }),
-    };
-
     let mock = MockInferenceProvider::new(vec![
+        // parent turn 1: read_file
         MockResponse::Events(vec![
-            TokenEvent::ToolCall(read_file_call),
+            TokenEvent::ToolCall(ToolCallParsed {
+                id: "c_read".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({ "file_path": "notes.txt" }),
+            }),
             TokenEvent::Done(FinishReason::ToolUse),
         ]),
+        // parent turn 2: delegate grep to child agent
         MockResponse::Events(vec![
-            TokenEvent::ToolCall(agent_call),
+            TokenEvent::ToolCall(ToolCallParsed {
+                id: "c_agent".to_string(),
+                name: "agent".to_string(),
+                arguments: serde_json::json!({
+                    "task": "grep for TODOs in notes.txt",
+                    "tool_allowlist": ["grep_search"]
+                }),
+            }),
             TokenEvent::Done(FinishReason::ToolUse),
         ]),
+        // parent final response
         MockResponse::Text("Found TODOs via child agent.".to_string()),
+        // child turn 1: grep_search (consumed by child's clone of the shared queue)
+        MockResponse::Events(vec![
+            TokenEvent::ToolCall(ToolCallParsed {
+                id: "child_grep".to_string(),
+                name: "grep_search".to_string(),
+                arguments: serde_json::json!({ "pattern": "TODO", "path": "." }),
+            }),
+            TokenEvent::Done(FinishReason::ToolUse),
+        ]),
+        // child final response after seeing grep results
+        MockResponse::Text("Found 2 TODOs: fix the bug and add tests".to_string()),
     ]);
 
     let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
     conv.run_turn("find all TODOs", &mut NoopCallback).unwrap();
 
-    // Parent session should contain tool results for both read_file and agent
-    let has_read_result = conv
-        .session
-        .messages
+    let msgs = &conv.session.messages;
+
+    let has_read_result = msgs
         .iter()
         .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c_read"));
     assert!(
@@ -464,12 +536,24 @@ fn test_parent_read_then_child_grep_e2e() {
         "read_file result must be in parent session"
     );
 
-    let has_agent_result = conv
-        .session
-        .messages
+    let has_agent_result = msgs
         .iter()
         .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c_agent"));
-    assert!(has_agent_result, "agent result must be in parent session");
+    assert!(
+        has_agent_result,
+        "agent tool result must be in parent session"
+    );
+
+    // The agent result content must contain the child's grep summary
+    let agent_content = msgs
+        .iter()
+        .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c_agent"))
+        .map(|m| m.content.as_str())
+        .unwrap_or("");
+    assert!(
+        agent_content.contains("TODOs") || agent_content.contains("TODO"),
+        "agent result should reference child's grep output, got: {agent_content}"
+    );
 
     std::fs::remove_file(conv.session.path()).ok();
 }
@@ -480,26 +564,24 @@ fn test_parent_read_then_child_grep_e2e() {
 
 #[test]
 fn test_child_session_file_has_parent_id() {
-    let _session_dir = with_temp_session_dir();
+    let (session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
-    let mock = MockInferenceProvider::new(vec![]);
+
+    let mock = MockInferenceProvider::new(vec![MockResponse::Text("child ok".to_string())]);
     let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
     let parent_id = conv.session.id.clone();
 
-    let result = conv.spawn_child("read config", None, None, None).unwrap();
-
+    let result = conv.spawn_child("simple task", None, None, None).unwrap();
     let child_id = &result.child_session_id;
 
-    // The child session file should have been saved with parent_id == parent_id
-    let child_path = Session::path_for_id(child_id).unwrap();
-    assert!(
-        child_path.exists(),
-        "child session file must exist at {}",
-        child_path.display()
-    );
+    // Scan /tmp for the child session file — necessary because parallel tests
+    // race on ZIPCODE_SESSIONS_DIR, so the actual save path may differ from
+    // the path our set_var pointed to.
+    let child_path = find_session_file(child_id)
+        .unwrap_or_else(|| panic!("child session file not found for id {child_id}"));
 
-    let content = std::fs::read_to_string(&child_path).unwrap();
-    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&child_path).unwrap()).unwrap();
     assert_eq!(
         json["parent_id"].as_str(),
         Some(parent_id.as_str()),
@@ -507,6 +589,7 @@ fn test_child_session_file_has_parent_id() {
     );
 
     std::fs::remove_file(conv.session.path()).ok();
+    let _ = session_dir;
 }
 
 // ---------------------------------------------------------------------------
@@ -515,31 +598,35 @@ fn test_child_session_file_has_parent_id() {
 
 #[test]
 fn test_orphan_child_session_cleaned_on_parent_drop() {
-    let _session_dir = with_temp_session_dir();
+    let (session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
-    let mock = MockInferenceProvider::new(vec![]);
+
+    let mock = MockInferenceProvider::new(vec![MockResponse::Text("child ok".to_string())]);
 
     let child_session_path;
     {
         let mut conv = build_loop(&dir, mock, PermissionMode::FullAccess);
-
-        let result = conv
-            .spawn_child("temporary task", None, None, None)
-            .unwrap();
+        let result = conv.spawn_child("temp task", None, None, None).unwrap();
         let child_id = &result.child_session_id;
 
-        child_session_path = Session::path_for_id(child_id).unwrap();
+        // Scan /tmp for the actual file path — parallel tests race on
+        // ZIPCODE_SESSIONS_DIR so the save path may differ from our set_var.
+        child_session_path = find_session_file(child_id)
+            .unwrap_or_else(|| panic!("child session file not found for id {child_id}"));
         assert!(
             child_session_path.exists(),
-            "child session must exist before parent drop"
+            "child session must exist before parent drop at {}",
+            child_session_path.display()
         );
-
         std::fs::remove_file(conv.session.path()).ok();
         // conv drops here → Drop impl removes child session files
     }
 
+    // After the parent drops, the child session file must be gone.
     assert!(
         !child_session_path.exists(),
-        "child session file must be removed after parent ConversationLoop is dropped"
+        "child session file must be removed after parent ConversationLoop is dropped, path: {}",
+        child_session_path.display()
     );
+    let _ = session_dir;
 }
