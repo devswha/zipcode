@@ -229,4 +229,261 @@ mod tests {
         );
         assert_eq!(entry.unwrap().tool_format, "chatml");
     }
+
+    // ── Edge-case tests: resolve_for_model ─────────────────────────────
+
+    #[test]
+    fn test_resolve_exact_match_takes_precedence_over_glob() {
+        // Insert an exact key that also matches a glob pattern.
+        // Exact match should win because resolve_for_model checks HashMap first.
+        let mut registry = default_registry();
+        registry.entries.insert(
+            "gemma-4-e2b-q4.gguf".to_string(),
+            ModelEntry {
+                tool_format: "chatml".to_string(),
+                native_tool_calling: true,
+            },
+        );
+
+        let entry = registry.resolve_for_model("gemma-4-e2b-q4.gguf");
+        assert!(entry.is_some());
+        // Exact match returns "chatml", not the glob "gemma-4-*" → "gemma_native"
+        assert_eq!(entry.unwrap().tool_format, "chatml");
+    }
+
+    #[test]
+    fn test_resolve_empty_string_model_name_returns_none() {
+        let registry = default_registry();
+        let entry = registry.resolve_for_model("");
+        assert!(entry.is_none(), "empty string should not match any pattern");
+    }
+
+    #[test]
+    fn test_resolve_special_characters_in_model_name() {
+        let registry = default_registry();
+
+        // Dots and dashes are common — verify they don't confuse glob matching
+        let entry = registry.resolve_for_model("gemma-4-e2b.q4_k_m.gguf");
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().tool_format, "gemma_native");
+
+        // Spaces should NOT match the glob patterns
+        let entry = registry.resolve_for_model("gemma 4 something");
+        assert!(entry.is_none(), "spaces should not match gemma-4-* glob");
+    }
+
+    #[test]
+    fn test_resolve_suffix_glob_matches_correctly() {
+        let registry = default_registry();
+
+        // "*-emulator" is a suffix glob
+        let entry = registry.resolve_for_model("test-emulator");
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().tool_format, "emulator");
+        assert!(!entry.unwrap().native_tool_calling);
+
+        // Partial suffix should not match
+        let entry = registry.resolve_for_model("emulator");
+        assert!(
+            entry.is_none(),
+            "'emulator' alone should not match '*-emulator'"
+        );
+
+        // Prefix "emulator-" should not match "*-emulator"
+        let entry = registry.resolve_for_model("emulator-test");
+        assert!(entry.is_none(), "prefix should not match suffix glob");
+    }
+
+    #[test]
+    fn test_resolve_gemma3_matches_glob() {
+        let registry = default_registry();
+        let entry = registry.resolve_for_model("gemma-3-4b-it.gguf");
+        assert!(entry.is_some(), "gemma-3-* should match");
+        assert_eq!(entry.unwrap().tool_format, "gemma_native");
+        assert!(entry.unwrap().native_tool_calling);
+    }
+
+    #[test]
+    fn test_resolve_qwen2_without_dot5_matches() {
+        let registry = default_registry();
+        // "qwen2-*" pattern (without .5)
+        let entry = registry.resolve_for_model("qwen2-72b-instruct.gguf");
+        assert!(entry.is_some(), "qwen2-* should match");
+        assert_eq!(entry.unwrap().tool_format, "chatml");
+    }
+
+    // ── Edge-case tests: load_from ────────────────────────────────────
+
+    #[test]
+    fn test_load_from_empty_json_object() {
+        // Empty JSON object should parse but add zero custom entries.
+        // Defaults should survive.
+        let path = std::env::temp_dir().join("zipcode_test_registry_empty_obj.json");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"{}").unwrap();
+        }
+
+        let registry = TemplateRegistry::load_from(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let entry = registry.resolve_for_model("gemma-4-e2b.gguf");
+        assert!(entry.is_some(), "defaults should survive empty JSON");
+        assert_eq!(entry.unwrap().tool_format, "gemma_native");
+    }
+
+    #[test]
+    fn test_load_from_valid_json_partial_deserialization() {
+        // JSON with an entry missing the optional `native_tool_calling` field.
+        // serde(default) should set it to false.
+        let json = r#"{"my-model": {"tool_format": "chatml"}}"#;
+        let path = std::env::temp_dir().join("zipcode_test_registry_partial.json");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(json.as_bytes()).unwrap();
+        }
+
+        let registry = TemplateRegistry::load_from(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let entry = registry.resolve_for_model("my-model");
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().tool_format, "chatml");
+        assert!(
+            !entry.unwrap().native_tool_calling,
+            "missing native_tool_calling should default to false"
+        );
+    }
+
+    #[test]
+    fn test_load_from_overlapping_keys_override_defaults() {
+        // A custom file that specifies a key overlapping with a default key
+        // should override the default value.
+        let json = r#"{"gemma-4-*": {"tool_format": "chatml", "native_tool_calling": false}}"#;
+        let path = std::env::temp_dir().join("zipcode_test_registry_overlap.json");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(json.as_bytes()).unwrap();
+        }
+
+        let registry = TemplateRegistry::load_from(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let entry = registry.resolve_for_model("gemma-4-e2b.gguf");
+        assert!(entry.is_some());
+        assert_eq!(
+            entry.unwrap().tool_format,
+            "chatml",
+            "custom entry should override default gemma-4-*"
+        );
+        assert!(
+            !entry.unwrap().native_tool_calling,
+            "override should set native_tool_calling to false"
+        );
+    }
+
+    #[test]
+    fn test_load_from_unreadable_file_returns_error() {
+        // A path that exists but is a directory (not a file) should error.
+        let dir = std::env::temp_dir().join("zipcode_test_registry_dir_not_file");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let result = TemplateRegistry::load_from(&dir);
+        assert!(
+            result.is_err(),
+            "reading a directory should return an error"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_from_multiple_custom_entries() {
+        // Multiple entries in one file should all be loaded.
+        let json = r#"{
+            "model-a": {"tool_format": "chatml", "native_tool_calling": true},
+            "model-b": {"tool_format": "emulator", "native_tool_calling": false}
+        }"#;
+        let path = std::env::temp_dir().join("zipcode_test_registry_multi.json");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(json.as_bytes()).unwrap();
+        }
+
+        let registry = TemplateRegistry::load_from(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let entry_a = registry.resolve_for_model("model-a");
+        assert!(entry_a.is_some());
+        assert_eq!(entry_a.unwrap().tool_format, "chatml");
+
+        let entry_b = registry.resolve_for_model("model-b");
+        assert!(entry_b.is_some());
+        assert_eq!(entry_b.unwrap().tool_format, "emulator");
+        assert!(!entry_b.unwrap().native_tool_calling);
+
+        // Defaults should still exist
+        let entry_default = registry.resolve_for_model("qwen2.5-test.gguf");
+        assert!(
+            entry_default.is_some(),
+            "defaults should survive multi-entry load"
+        );
+    }
+
+    // ── Edge-case tests: template_for_model ───────────────────────────
+
+    #[test]
+    fn test_template_for_model_returns_chatml_for_qwen() {
+        let registry = default_registry();
+        let template = registry.template_for_model("qwen2.5-7b.gguf");
+        assert_eq!(template.name(), "chatml");
+        assert!(template.native_tool_calling());
+    }
+
+    #[test]
+    fn test_template_for_model_returns_llama31_for_llama() {
+        let registry = default_registry();
+        let template = registry.template_for_model("llama-3.1-70b.gguf");
+        assert_eq!(template.name(), "llama31_json");
+        assert!(template.native_tool_calling());
+    }
+
+    #[test]
+    fn test_template_for_model_returns_emulator_for_suffix_match() {
+        let registry = default_registry();
+        let template = registry.template_for_model("anything-emulator");
+        assert_eq!(template.name(), "emulator");
+        assert!(!template.native_tool_calling());
+    }
+
+    // ── Edge-case tests: default_registry ─────────────────────────────
+
+    #[test]
+    fn test_default_registry_contains_six_entries() {
+        let registry = default_registry();
+        assert_eq!(
+            registry.entries.len(),
+            6,
+            "default registry should have exactly 6 entries"
+        );
+    }
+
+    #[test]
+    fn test_default_registry_all_native_calling_except_emulator() {
+        let registry = default_registry();
+
+        for (pattern, entry) in &registry.entries {
+            if pattern == "*-emulator" {
+                assert!(
+                    !entry.native_tool_calling,
+                    "emulator entry should have native_tool_calling=false"
+                );
+            } else {
+                assert!(
+                    entry.native_tool_calling,
+                    "non-emulator entry '{pattern}' should have native_tool_calling=true"
+                );
+            }
+        }
+    }
 }
