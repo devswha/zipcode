@@ -443,7 +443,7 @@ pub trait Tool: Send + Sync {
 
 /// Registry holding all available tools
 pub struct ToolRegistry {
-    tools: HashMap<String, Box<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
@@ -455,7 +455,7 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+        self.tools.insert(tool.name().to_string(), Arc::from(tool));
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
@@ -476,6 +476,20 @@ impl ToolRegistry {
 
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(String::as_str).collect()
+    }
+
+    /// Return a new registry containing only tools whose names appear in `allowlist`.
+    /// "agent" is always excluded to prevent circular delegation.
+    #[must_use]
+    pub fn create_filtered(&self, allowlist: &[String]) -> Self {
+        let allowed: HashSet<&str> = allowlist.iter().map(String::as_str).collect();
+        let mut filtered = Self::new();
+        for (name, tool) in &self.tools {
+            if name != "agent" && allowed.contains(name.as_str()) {
+                filtered.tools.insert(name.clone(), Arc::clone(tool));
+            }
+        }
+        filtered
     }
 }
 

@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use zipcode_tools::PermissionMode;
 
+#[derive(Clone)]
 pub struct PermissionPolicy {
     mode: PermissionMode,
 }

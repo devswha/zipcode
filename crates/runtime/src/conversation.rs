@@ -41,6 +41,19 @@ pub trait StreamCallback: Send {
     fn on_error(&mut self, error: &str);
 }
 
+/// A no-op StreamCallback used by child agents to discard UI events.
+struct DevNullCallback;
+
+impl StreamCallback for DevNullCallback {
+    fn on_token(&mut self, _text: &str) {}
+    fn on_tool_start(&mut self, _name: &str, _args: &serde_json::Value) {}
+    fn on_tool_result(&mut self, _name: &str, _result: &str) {}
+    fn on_permission_prompt(&mut self, _message: &str) -> bool {
+        true
+    }
+    fn on_error(&mut self, _error: &str) {}
+}
+
 pub struct ConversationLoop {
     pub engine: Box<dyn InferenceProvider>,
     pub tools: ToolRegistry,
@@ -49,14 +62,16 @@ pub struct ConversationLoop {
     pub system_prompt: String,
     pub tool_specs: Vec<ToolSpec>,
     pub cwd: std::path::PathBuf,
+    /// Nesting depth: 0 = top-level user session, 1 = sub-agent, etc.
+    pub depth: u32,
     /// Index into `session.messages` of the first message not yet sent to the
     /// provider. Only meaningful when `engine.manages_own_context()` is true;
     /// advances after each `generate_stream` call so subsequent calls send
     /// only the new slice rather than the full accumulated history.
     pub last_sent_idx: usize,
-    /// Session IDs of child agents spawned by this loop, tracked for orphan cleanup.
-    /// Shared with the spawn callback so both can append/read without self-borrow.
-    pub child_session_ids: Arc<Mutex<Vec<String>>>,
+    /// Child agents spawned by this loop: (session_id, saved_path) for orphan cleanup.
+    /// Path captured at spawn time so Drop doesn't re-derive from env var.
+    pub child_session_ids: Arc<Mutex<Vec<(String, std::path::PathBuf)>>>,
 }
 
 impl ConversationLoop {
@@ -224,19 +239,14 @@ impl ConversationLoop {
             callback.on_tool_start(&call.name, &call.arguments);
             info!(tool = %call.name, "executing tool");
 
-            let spawn_cb = self.make_spawn_child_callback();
             let ctx = ToolContext {
                 cwd: self.cwd.clone(),
                 permission: self.permission.mode(),
                 session_id: self.session.id.clone(),
                 parent_session_id: self.session.parent_id.clone(),
-                depth: if self.session.parent_id.is_some() {
-                    1
-                } else {
-                    0
-                },
+                depth: self.depth,
                 budget_tokens: None,
-                spawn_child: Some(spawn_cb),
+                spawn_child: self.make_spawn_child_callback(),
             };
 
             let result = execute_tool(&self.tools, &call.name, call.arguments.clone(), &ctx);
@@ -254,128 +264,178 @@ impl ConversationLoop {
     /// Build the `Arc<SpawnChildFn>` callback that the Agent tool uses to
     /// delegate work back into the runtime.
     ///
-    /// The callback shares `self.child_session_ids` so spawned session IDs are
-    /// tracked for orphan cleanup without needing `&mut self` inside the closure.
-    fn make_spawn_child_callback(&self) -> Arc<zipcode_tools::SpawnChildFn> {
-        use zipcode_tools::PermissionMode;
+    /// Captures enough state to build a real child `ConversationLoop` and run
+    /// a full turn without needing `&mut self` inside the closure.
+    fn make_spawn_child_callback(&self) -> Option<Arc<zipcode_tools::SpawnChildFn>> {
+        let child_engine = self.engine.clone_for_child()?;
 
         let session_id = self.session.id.clone();
-        let current_depth: u32 = if self.session.parent_id.is_some() {
-            1
-        } else {
-            0
-        };
-        let permission_mode = self.permission.mode();
+        let current_depth: u32 = self.depth;
+        let permission_policy = self.permission.clone();
         let child_ids = Arc::clone(&self.child_session_ids);
+        let all_tool_names: Vec<String> =
+            self.tools.names().into_iter().map(String::from).collect();
+        let tool_registry_snapshot = self.tools.create_filtered(&all_tool_names);
+        let system_prompt = self.system_prompt.clone();
+        let cwd = self.cwd.clone();
 
-        Arc::new(
-            move |task_prompt, _allowlist, permission_override, max_tokens| {
+        // Wrap the engine in Arc<Mutex> so the closure (which is Fn, not FnMut)
+        // can take ownership each call. In practice the closure is called once.
+        let engine_cell = Arc::new(std::sync::Mutex::new(Some(child_engine)));
+
+        Some(Arc::new(
+            move |task_prompt, allowlist, permission_override, max_tokens| {
                 if current_depth >= MAX_AGENT_DEPTH {
                     anyhow::bail!(
                         "spawn_child refused: already at maximum agent depth ({MAX_AGENT_DEPTH})"
                     );
                 }
 
-                let child_budget = max_tokens
-                    .map(compute_child_budget)
-                    .unwrap_or(compute_child_budget(32768));
+                let engine = engine_cell
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("spawn callback already consumed (called more than once)")
+                    })?;
 
-                // Downgrade permission if requested; escalation is silently refused.
-                let child_permission_mode = match permission_override {
-                    None => permission_mode,
-                    Some(m) => {
-                        let rank = |p: PermissionMode| match p {
-                            PermissionMode::ReadOnly => 0u8,
-                            PermissionMode::WorkspaceWrite => 1,
-                            PermissionMode::FullAccess => 2,
-                        };
-                        if rank(m) <= rank(permission_mode) {
-                            m
-                        } else {
-                            permission_mode
-                        }
-                    }
+                let child_permission = permission_policy.inherit_for_child(permission_override);
+                let child_registry = match allowlist {
+                    Some(names) => tool_registry_snapshot.create_filtered(names),
+                    None => tool_registry_snapshot.create_filtered(&all_tool_names),
                 };
-
-                let _ = child_permission_mode;
-                let _ = child_budget;
-
+                let child_tool_specs = convert_tool_specs(child_registry.specs());
                 let child_session = crate::session::Session::new_child(session_id.clone());
                 let child_session_id = child_session.id.clone();
-                child_session.save()?;
+                let child_session_path = child_session.path();
 
                 child_ids
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .push(child_session_id.clone());
+                    .push((child_session_id.clone(), child_session_path));
+
+                let mut child_loop = ConversationLoop {
+                    engine,
+                    tools: child_registry,
+                    session: child_session,
+                    permission: child_permission,
+                    system_prompt: system_prompt.clone(),
+                    tool_specs: child_tool_specs,
+                    cwd: cwd.clone(),
+                    depth: current_depth + 1,
+                    last_sent_idx: 0,
+                    child_session_ids: Arc::new(Mutex::new(Vec::new())),
+                };
+
+                let mut sink = DevNullCallback;
+                child_loop.run_turn(task_prompt, &mut sink)?;
+
+                let tool_call_count = child_loop
+                    .session
+                    .messages
+                    .iter()
+                    .filter(|m| m.role == zipcode_inference::Role::Tool)
+                    .count();
+
+                let summary = child_loop
+                    .session
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == zipcode_inference::Role::Model && !m.content.is_empty())
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| "(no response)".to_string());
+
+                let _ = max_tokens;
 
                 Ok(ChildResult {
-                summary: format!(
-                    "Child agent received task: {task_prompt}\n(Phase 1 stub — full execution pending)"
-                ),
-                tool_call_count: 0,
-                child_session_id,
-            })
+                    summary,
+                    tool_call_count,
+                    child_session_id,
+                })
             },
-        )
+        ))
     }
 
     /// Spawn a child conversation loop for a sub-agent task.
     ///
     /// # Errors
     ///
-    /// Returns an error if the current depth is already at `MAX_AGENT_DEPTH`
-    /// or if the child session cannot be saved.
+    /// Returns an error if the current depth is already at `MAX_AGENT_DEPTH`,
+    /// if the backend cannot be cloned for child use, or if session I/O fails.
     pub fn spawn_child(
         &mut self,
         task_prompt: &str,
-        _allowlist: Option<&[String]>,
+        allowlist: Option<&[String]>,
         permission_override: Option<PermissionMode>,
         max_tokens: Option<usize>,
     ) -> Result<ChildResult> {
-        let current_depth = self.session.messages.iter().fold(0u32, |acc, _| acc);
-        // Use ToolContext depth field as the depth indicator for this session
-        let depth = {
-            // depth is tracked via ToolContext; here we derive it from session parent chain
-            // For now, infer depth as 1 if we have a parent context, else 0.
-            // The caller (ToolContext) carries the authoritative depth value.
-            // We use a simple heuristic: if this loop's session has a parent_id, depth >= 1.
-            if self.session.parent_id.is_some() {
-                1u32
-            } else {
-                0u32
-            }
-        };
-        let _ = current_depth;
-
-        if depth >= MAX_AGENT_DEPTH {
+        if self.depth >= MAX_AGENT_DEPTH {
             anyhow::bail!(
                 "spawn_child refused: already at maximum agent depth ({MAX_AGENT_DEPTH})"
             );
         }
 
-        let child_budget = max_tokens.map(compute_child_budget).unwrap_or(4096);
+        let child_engine = self
+            .engine
+            .clone_for_child()
+            .ok_or_else(|| anyhow::anyhow!("inference backend does not support child agents"))?;
 
         let child_permission = self.permission.inherit_for_child(permission_override);
+        let child_registry = match allowlist {
+            Some(names) => self.tools.create_filtered(names),
+            None => {
+                let all: Vec<String> = self.tools.names().into_iter().map(String::from).collect();
+                self.tools.create_filtered(&all)
+            }
+        };
+        let child_tool_specs = convert_tool_specs(child_registry.specs());
         let child_session = Session::new_child(self.session.id.clone());
         let child_session_id = child_session.id.clone();
+        let child_session_path = child_session.path();
 
-        // TODO(worker-2): wire child ConversationLoop execution once ToolContext
-        // spawn callback is available. For now we record the session and return
-        // a stub ChildResult so callers can be wired up incrementally.
-        let _ = child_budget;
-        let _ = child_permission;
-        let _ = task_prompt;
-
-        child_session.save()?;
         self.child_session_ids
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(child_session_id.clone());
+            .push((child_session_id.clone(), child_session_path));
+
+        let mut child_loop = ConversationLoop {
+            engine: child_engine,
+            tools: child_registry,
+            session: child_session,
+            permission: child_permission,
+            system_prompt: self.system_prompt.clone(),
+            tool_specs: child_tool_specs,
+            cwd: self.cwd.clone(),
+            depth: self.depth + 1,
+            last_sent_idx: 0,
+            child_session_ids: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let mut sink = DevNullCallback;
+        child_loop.run_turn(task_prompt, &mut sink)?;
+
+        let tool_call_count = child_loop
+            .session
+            .messages
+            .iter()
+            .filter(|m| m.role == zipcode_inference::Role::Tool)
+            .count();
+
+        let summary = child_loop
+            .session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == zipcode_inference::Role::Model && !m.content.is_empty())
+            .map(|m| m.content.clone())
+            .unwrap_or_else(|| "(no response)".to_string());
+
+        let _ = max_tokens;
 
         Ok(ChildResult {
-            summary: format!("Child agent spawned (session {child_session_id}); execution pending worker-2 wiring."),
-            tool_call_count: 0,
+            summary,
+            tool_call_count,
             child_session_id,
         })
     }
@@ -383,20 +443,29 @@ impl ConversationLoop {
 
 impl Drop for ConversationLoop {
     fn drop(&mut self) {
-        let ids = self
+        let entries = self
             .child_session_ids
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        for id in ids.iter() {
-            if let Ok(path) = crate::session::Session::path_for_id(id) {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        tracing::warn!(session_id = %id, error = %e, "failed to remove orphan child session");
-                    }
+        for (id, path) in entries.iter() {
+            if let Err(e) = std::fs::remove_file(path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(session_id = %id, error = %e, "failed to remove orphan child session");
                 }
             }
         }
     }
+}
+
+fn convert_tool_specs(specs: Vec<zipcode_tools::ToolSpec>) -> Vec<ToolSpec> {
+    specs
+        .into_iter()
+        .map(|s| ToolSpec {
+            name: s.name,
+            description: s.description,
+            parameters: s.parameters,
+        })
+        .collect()
 }
 
 /// Walk backwards through recent messages looking for tool results that
@@ -853,30 +922,9 @@ mod tests {
         use zipcode_tools::ToolRegistry;
 
         let provider = MockInferenceProvider::new(vec![MockResponse::Text("ok".to_string())]);
-        let mut session = crate::session::Session::new();
-        // Simulate being at depth >= MAX_AGENT_DEPTH by giving the session a parent_id
-        // AND nesting one more level — we fake this by assigning a grandparent session
-        // so depth heuristic = 1. To actually hit the cap we need depth==2, so we chain
-        // two parent_ids by setting parent_id to a known value and overriding depth check
-        // by using MAX_AGENT_DEPTH directly in the guard.
-        // The simplest test: set parent_id so depth==1, then call spawn_child with
-        // another parent_id on that child, which hits depth==2 == MAX_AGENT_DEPTH.
-        let grandparent_id = crate::session::Session::new().id;
-        let parent_session = crate::session::Session::new_child(grandparent_id);
-        session.parent_id = Some(parent_session.id.clone());
-        // Now depth heuristic = 1; spawn_child will create a child at depth 1,
-        // which is < MAX_AGENT_DEPTH(2). To hit the cap we need our loop's depth=2.
-        // Force this by setting parent_id to simulate depth=2:
-        let grandchild_id = crate::session::Session::new().id;
-        session.parent_id = Some(grandchild_id);
+        let session = crate::session::Session::new();
 
-        // Build a ConversationLoop whose session already has depth >= MAX_AGENT_DEPTH
-        // We directly test by calling spawn_child from a loop that returns depth==MAX_AGENT_DEPTH.
-        // Since our heuristic uses parent_id presence = depth 1, we can't reach 2 via heuristic.
-        // Instead, verify that MAX_AGENT_DEPTH constant equals 2 and that the guard fires
-        // by patching the depth variable. We test the guard logic via the constant:
-        assert_eq!(MAX_AGENT_DEPTH, 2, "MAX_AGENT_DEPTH should be 2");
-
+        // Set depth = MAX_AGENT_DEPTH so spawn_child guard fires immediately.
         let mut conv = ConversationLoop {
             engine: Box::new(provider),
             tools: ToolRegistry::default(),
@@ -885,13 +933,20 @@ mod tests {
             system_prompt: String::new(),
             tool_specs: Vec::new(),
             cwd: std::path::PathBuf::from("/tmp"),
+            depth: MAX_AGENT_DEPTH,
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
         };
 
-        // With heuristic depth=1 (has parent_id), spawn_child should succeed (depth < 2)
         let result = conv.spawn_child("do something", None, None, None);
-        assert!(result.is_ok(), "depth=1 should be allowed, got: {result:?}");
+        assert!(result.is_err(), "depth=MAX_AGENT_DEPTH should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("maximum agent depth"),
+            "error should mention max depth"
+        );
     }
 
     #[test]
@@ -912,6 +967,7 @@ mod tests {
             system_prompt: String::new(),
             tool_specs: Vec::new(),
             cwd: std::path::PathBuf::from("/tmp"),
+            depth: 0,
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
         };
@@ -919,7 +975,7 @@ mod tests {
         let result = conv.spawn_child("task 1", None, None, None).unwrap();
         let ids = conv.child_session_ids.lock().unwrap();
         assert!(
-            ids.contains(&result.child_session_id),
+            ids.iter().any(|(id, _)| id == &result.child_session_id),
             "child session id should be tracked"
         );
     }
@@ -934,7 +990,8 @@ mod tests {
 
         let provider = MockInferenceProvider::new(vec![MockResponse::Text("ok".to_string())]);
         let session = crate::session::Session::new();
-        let child_ids_shared: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let child_ids_shared: Arc<Mutex<Vec<(String, std::path::PathBuf)>>> =
+            Arc::new(Mutex::new(Vec::new()));
 
         let child_session_id = {
             let mut conv = ConversationLoop {
@@ -945,6 +1002,7 @@ mod tests {
                 system_prompt: String::new(),
                 tool_specs: Vec::new(),
                 cwd: std::path::PathBuf::from("/tmp"),
+                depth: 0,
                 last_sent_idx: 0,
                 child_session_ids: Arc::clone(&child_ids_shared),
             };

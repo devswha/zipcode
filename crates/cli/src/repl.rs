@@ -829,6 +829,7 @@ pub fn prepare_loop(
             system_prompt,
             tool_specs,
             cwd,
+            depth: 0,
             last_sent_idx: 0,
             child_session_ids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         },

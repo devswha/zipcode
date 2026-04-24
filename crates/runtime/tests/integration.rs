@@ -132,6 +132,7 @@ fn build_test_loop_with_engine(
         system_prompt: "You are a test assistant.".to_string(),
         tool_specs,
         cwd: dir.path().to_path_buf(),
+        depth: 0,
         last_sent_idx: 0,
         child_session_ids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
