@@ -587,7 +587,11 @@ fn contains_error_word(line_lower: &str) -> bool {
     let pattern = b"error";
     let pat_len = pattern.len();
 
-    for i in 0..=bytes.len().saturating_sub(pat_len) {
+    if bytes.len() < pat_len {
+        return false;
+    }
+
+    for i in 0..=bytes.len() - pat_len {
         if &bytes[i..i + pat_len] == pattern {
             // Check preceding character
             let prev_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
@@ -616,7 +620,11 @@ fn contains_fix_word(line_lower: &str) -> bool {
     let pattern = b"fix";
     let pat_len = pattern.len();
 
-    for i in 0..=bytes.len().saturating_sub(pat_len) {
+    if bytes.len() < pat_len {
+        return false;
+    }
+
+    for i in 0..=bytes.len() - pat_len {
         if &bytes[i..i + pat_len] == pattern {
             let prev_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
             let after_end = i + pat_len;
@@ -1458,5 +1466,208 @@ mod tests {
             invisible, 0,
             "tier-2 must not fire when provider returns None for prompt_eval_count"
         );
+    }
+
+    // ── Direct unit tests for error-detection helpers ─────────────
+    //
+    // These pure functions are tested indirectly through
+    // `recent_tool_results_contain_errors` above, but direct unit tests
+    // provide faster failure localisation and regression isolation.
+
+    // ── contains_error_word ──────────────────────────────────────
+
+    #[test]
+    fn error_word_matches_at_start_of_string() {
+        assert!(contains_error_word("error in module"));
+    }
+
+    #[test]
+    fn error_word_matches_at_end_of_string() {
+        assert!(contains_error_word("found an error"));
+    }
+
+    #[test]
+    fn error_word_matches_in_middle() {
+        assert!(contains_error_word("the error was found"));
+    }
+
+    #[test]
+    fn error_word_matches_plural_errors() {
+        assert!(contains_error_word("2 errors detected"));
+    }
+
+    #[test]
+    fn error_word_does_not_match_inside_terror() {
+        assert!(!contains_error_word("terror"));
+    }
+
+    #[test]
+    fn error_word_does_not_match_inside_errorless() {
+        assert!(!contains_error_word("errorless execution"));
+    }
+
+    #[test]
+    fn error_word_does_not_match_inside_mirrored() {
+        assert!(!contains_error_word("mirrored"));
+    }
+
+    #[test]
+    fn error_word_matches_after_punctuation() {
+        assert!(contains_error_word("build: error in main.rs"));
+    }
+
+    #[test]
+    fn error_word_matches_before_punctuation() {
+        assert!(contains_error_word("error: missing semicolon"));
+    }
+
+    #[test]
+    fn error_word_empty_string_is_false() {
+        assert!(!contains_error_word(""));
+    }
+
+    // ── contains_fix_word ────────────────────────────────────────
+
+    #[test]
+    fn fix_word_matches_standalone_fix() {
+        assert!(contains_fix_word("fix the bug"));
+    }
+
+    #[test]
+    fn fix_word_matches_fix_at_start() {
+        assert!(contains_fix_word("fix the error"));
+    }
+
+    #[test]
+    fn fix_word_matches_fix_at_end() {
+        assert!(contains_fix_word("need to fix"));
+    }
+
+    #[test]
+    fn fix_word_does_not_match_prefix() {
+        assert!(!contains_fix_word("prefix"));
+    }
+
+    #[test]
+    fn fix_word_does_not_match_suffix() {
+        assert!(!contains_fix_word("suffix"));
+    }
+
+    #[test]
+    fn fix_word_does_not_match_affix() {
+        assert!(!contains_fix_word("affix"));
+    }
+
+    #[test]
+    fn fix_word_does_not_match_fixture() {
+        assert!(!contains_fix_word("fixture"));
+    }
+
+    #[test]
+    fn fix_word_does_not_match_prefixing() {
+        assert!(!contains_fix_word("prefixing"));
+    }
+
+    #[test]
+    fn fix_word_does_not_match_fixation() {
+        assert!(!contains_fix_word("fixation"));
+    }
+
+    #[test]
+    fn fix_word_empty_string_is_false() {
+        assert!(!contains_fix_word(""));
+    }
+
+    // ── is_benign_error_line ──────────────────────────────────────
+
+    #[test]
+    fn benign_no_errors() {
+        assert!(is_benign_error_line("no errors found"));
+    }
+
+    #[test]
+    fn benign_no_error_singular() {
+        assert!(is_benign_error_line("no error in output"));
+    }
+
+    #[test]
+    fn benign_zero_errors() {
+        assert!(is_benign_error_line("0 errors detected"));
+    }
+
+    #[test]
+    fn benign_zero_error_singular() {
+        assert!(is_benign_error_line("0 error in total"));
+    }
+
+    #[test]
+    fn benign_without_error() {
+        assert!(is_benign_error_line("completed without error"));
+    }
+
+    #[test]
+    fn benign_without_errors() {
+        assert!(is_benign_error_line("ran without errors"));
+    }
+
+    #[test]
+    fn benign_fixed_error() {
+        assert!(is_benign_error_line("fixed the error in main.rs"));
+    }
+
+    #[test]
+    fn benign_fix_error() {
+        assert!(is_benign_error_line("fix the error"));
+    }
+
+    #[test]
+    fn benign_error_handling() {
+        assert!(is_benign_error_line("improved error handling"));
+    }
+
+    #[test]
+    fn benign_error_recovery() {
+        assert!(is_benign_error_line("error recovery completed"));
+    }
+
+    #[test]
+    fn benign_resolved_error() {
+        assert!(is_benign_error_line("resolved the error"));
+    }
+
+    #[test]
+    fn benign_cleared_error() {
+        assert!(is_benign_error_line("cleared error state"));
+    }
+
+    #[test]
+    fn benign_successfully_error() {
+        assert!(is_benign_error_line("successfully fixed the error"));
+    }
+
+    #[test]
+    fn benign_mixed_case_no_errors() {
+        // is_benign_error_line expects lowered input (as called in production)
+        assert!(is_benign_error_line("no errors found"));
+    }
+
+    #[test]
+    fn benign_mixed_case_error_handling() {
+        assert!(is_benign_error_line("error handling improved"));
+    }
+
+    #[test]
+    fn not_benign_actual_error() {
+        assert!(!is_benign_error_line("compilation error in main.rs"));
+    }
+
+    #[test]
+    fn not_benign_error_colon_message() {
+        assert!(!is_benign_error_line("something else entirely"));
+    }
+
+    #[test]
+    fn not_benign_plain_string_without_error() {
+        assert!(!is_benign_error_line("all systems nominal"));
     }
 }
