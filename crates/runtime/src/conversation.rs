@@ -42,7 +42,7 @@ pub trait StreamCallback: Send {
     fn on_error(&mut self, error: &str);
 }
 
-/// A no-op StreamCallback used by child agents to discard UI events.
+/// A no-op `StreamCallback` used by child agents to discard UI events.
 struct DevNullCallback;
 
 impl StreamCallback for DevNullCallback {
@@ -70,7 +70,7 @@ pub struct ConversationLoop {
     /// advances after each `generate_stream` call so subsequent calls send
     /// only the new slice rather than the full accumulated history.
     pub last_sent_idx: usize,
-    /// Child agents spawned by this loop: (session_id, saved_path) for orphan cleanup.
+    /// Child agents spawned by this loop: (`session_id`, `saved_path`) for orphan cleanup.
     /// Path captured at spawn time so Drop doesn't re-derive from env var.
     pub child_session_ids: Arc<Mutex<Vec<(String, std::path::PathBuf)>>>,
     /// Optional skill registry for skill tool invocation.
@@ -89,6 +89,7 @@ impl ConversationLoop {
     /// Returns an error if the model exceeds the maximum tool iterations, an
     /// inference error occurs during generation, or the session cannot be
     /// persisted.
+    #[allow(clippy::too_many_lines)]
     pub fn run_turn(&mut self, user_input: &str, callback: &mut dyn StreamCallback) -> Result<()> {
         const MAX_TOOL_ITERATIONS: usize = 25;
         const MAX_EMPTY_RETRIES: usize = 2;
@@ -366,17 +367,15 @@ impl ConversationLoop {
 
                 let engine = engine_cell
                     .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take()
                     .ok_or_else(|| {
                         anyhow::anyhow!("spawn callback already consumed (called more than once)")
                     })?;
 
                 let child_permission = permission_policy.inherit_for_child(permission_override);
-                let child_registry = match allowlist {
-                    Some(names) => tool_registry_snapshot.create_filtered(names),
-                    None => tool_registry_snapshot.create_filtered(&all_tool_names),
-                };
+                let child_registry = tool_registry_snapshot
+                    .create_filtered(allowlist.map_or_else(|| &all_tool_names, AsRef::as_ref));
                 let child_tool_specs = convert_tool_specs(child_registry.specs());
                 let child_session = crate::session::Session::new_child(session_id.clone());
                 let child_session_id = child_session.id.clone();
@@ -384,10 +383,10 @@ impl ConversationLoop {
 
                 child_ids
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push((child_session_id.clone(), child_session_path));
 
-                let mut child_loop = ConversationLoop {
+                let mut child_loop = Self {
                     engine,
                     tools: child_registry,
                     session: child_session,
@@ -418,8 +417,7 @@ impl ConversationLoop {
                     .iter()
                     .rev()
                     .find(|m| m.role == zipcode_inference::Role::Model && !m.content.is_empty())
-                    .map(|m| m.content.clone())
-                    .unwrap_or_else(|| "(no response)".to_string());
+                    .map_or_else(|| "(no response)".to_string(), |m| m.content.clone());
 
                 let _ = max_tokens;
 
@@ -457,12 +455,11 @@ impl ConversationLoop {
             .ok_or_else(|| anyhow::anyhow!("inference backend does not support child agents"))?;
 
         let child_permission = self.permission.inherit_for_child(permission_override);
-        let child_registry = match allowlist {
-            Some(names) => self.tools.create_filtered(names),
-            None => {
-                let all: Vec<String> = self.tools.names().into_iter().map(String::from).collect();
-                self.tools.create_filtered(&all)
-            }
+        let child_registry = if let Some(names) = allowlist {
+            self.tools.create_filtered(names)
+        } else {
+            let all: Vec<String> = self.tools.names().into_iter().map(String::from).collect();
+            self.tools.create_filtered(&all)
         };
         let child_tool_specs = convert_tool_specs(child_registry.specs());
         let child_session = Session::new_child(self.session.id.clone());
@@ -471,10 +468,10 @@ impl ConversationLoop {
 
         self.child_session_ids
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((child_session_id.clone(), child_session_path));
 
-        let mut child_loop = ConversationLoop {
+        let mut child_loop = Self {
             engine: child_engine,
             tools: child_registry,
             session: child_session,
@@ -505,8 +502,7 @@ impl ConversationLoop {
             .iter()
             .rev()
             .find(|m| m.role == zipcode_inference::Role::Model && !m.content.is_empty())
-            .map(|m| m.content.clone())
-            .unwrap_or_else(|| "(no response)".to_string());
+            .map_or_else(|| "(no response)".to_string(), |m| m.content.clone());
 
         let _ = max_tokens;
 
@@ -523,7 +519,7 @@ impl Drop for ConversationLoop {
         let entries = self
             .child_session_ids
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (id, path) in entries.iter() {
             if let Err(e) = std::fs::remove_file(path) {
                 if e.kind() != std::io::ErrorKind::NotFound {

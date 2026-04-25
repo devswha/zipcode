@@ -9,6 +9,7 @@ pub enum Role {
     System,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !b
 }

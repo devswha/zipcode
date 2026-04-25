@@ -318,7 +318,7 @@ pub struct ChildResult {
 
 /// Callback type for spawning a child agent from within a tool.
 ///
-/// Parameters: task_prompt, tool_allowlist, permission_override, max_tokens
+/// Parameters: `task_prompt`, `tool_allowlist`, `permission_override`, `max_tokens`
 pub type SpawnChildFn = dyn Fn(
         &str,
         Option<&[String]>,
@@ -358,7 +358,7 @@ pub struct ToolContext {
     /// explicit cap (inherit from parent or use provider default).
     pub budget_tokens: Option<usize>,
     /// Callback injected by the runtime to spawn a child conversation loop.
-    /// None when the tool is executed outside a full ConversationLoop context
+    /// None when the tool is executed outside a full `ConversationLoop` context
     /// (e.g., unit tests, CLI one-shot mode).
     pub spawn_child: Option<Arc<SpawnChildFn>>,
 }

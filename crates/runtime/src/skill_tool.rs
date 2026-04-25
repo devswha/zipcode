@@ -43,28 +43,24 @@ impl Tool for SkillTool {
             None => return Ok(ToolResult::error("missing required field 'name'")),
         };
 
-        let skill: &Skill = match self.registry.get(&name) {
-            Some(s) => s,
-            None => {
-                let mut available = self.registry.names();
-                available.sort();
-                let list = available.join(", ");
-                return Ok(ToolResult::error(&format!(
-                    "skill not found: '{name}'. available: [{list}]"
-                )));
-            }
+        let skill: &Skill = if let Some(s) = self.registry.get(&name) {
+            s
+        } else {
+            let mut available = self.registry.names();
+            available.sort_unstable();
+            let list = available.join(", ");
+            return Ok(ToolResult::error(&format!(
+                "skill not found: '{name}'. available: [{list}]"
+            )));
         };
 
-        let params: HashMap<String, String> = match args.get("params") {
-            Some(p) => match p.as_object() {
-                Some(obj) => obj
-                    .iter()
+        let params: HashMap<String, String> = args.get("params").map_or_else(HashMap::new, |p| {
+            p.as_object().map_or_else(HashMap::new, |obj| {
+                obj.iter()
                     .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect(),
-                None => HashMap::new(),
-            },
-            None => HashMap::new(),
-        };
+                    .collect()
+            })
+        });
 
         // A parameter without a default is required: missing it would silently
         // render an empty string into the child's task prompt, which produces a
@@ -85,13 +81,10 @@ impl Tool for SkillTool {
 
         let rendered_task = skill.render(&params);
 
-        let spawn_fn = match ctx.spawn_child.as_ref() {
-            Some(f) => f,
-            None => {
-                return Ok(ToolResult::error(
-                    "spawn callback unavailable; skill invocation requires a full runtime context",
-                ));
-            }
+        let Some(spawn_fn) = ctx.spawn_child.as_ref() else {
+            return Ok(ToolResult::error(
+                "spawn callback unavailable; skill invocation requires a full runtime context",
+            ));
         };
 
         let allowlist: Option<&[String]> = if skill.tool_allowlist.is_empty() {

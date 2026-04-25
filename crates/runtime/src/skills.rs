@@ -30,6 +30,10 @@ pub struct Skill {
 }
 
 impl Skill {
+    /// # Errors
+    ///
+    /// Returns an error if the source does not start with valid frontmatter,
+    /// the YAML frontmatter is malformed, or required fields are missing.
     pub fn parse(src: &str) -> Result<Self> {
         // Line-based parser: file must start with `---`, frontmatter ends at the
         // next line that equals `---`. Body may freely contain `---` separators.
@@ -127,12 +131,17 @@ impl Default for SkillRegistry {
 }
 
 impl SkillRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             skills: HashMap::new(),
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be read or a skill file
+    /// contains invalid frontmatter or malformed YAML.
     pub fn load_from(dir: &Path) -> Result<Self> {
         if !dir.exists() {
             return Ok(Self::new());
@@ -188,6 +197,7 @@ impl SkillRegistry {
         Ok(registry)
     }
 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.get(name)
     }
@@ -196,6 +206,7 @@ impl SkillRegistry {
         self.skills.keys().map(String::as_str).collect()
     }
 
+    #[must_use]
     pub fn catalog_for_prompt(&self) -> String {
         const MAX_CHARS: usize = 2000;
 

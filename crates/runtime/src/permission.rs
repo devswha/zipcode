@@ -59,7 +59,7 @@ impl PermissionPolicy {
     /// - `Some(m)` where `m` ≤ parent → adopt `m` (downgrade allowed).
     /// - `Some(m)` where `m` > parent → keep the parent's mode (escalation refused).
     #[must_use]
-    pub fn inherit_for_child(&self, override_mode: Option<PermissionMode>) -> Self {
+    pub const fn inherit_for_child(&self, override_mode: Option<PermissionMode>) -> Self {
         let child_mode = match override_mode {
             None => self.mode,
             Some(m) => {

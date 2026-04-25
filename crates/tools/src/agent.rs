@@ -52,13 +52,10 @@ impl Tool for AgentTool {
             ));
         }
 
-        let spawn_fn = match ctx.spawn_child.as_ref() {
-            Some(f) => f,
-            None => {
-                return Ok(ToolResult::error(
-                    "spawn callback unavailable; agent delegation requires a full runtime context",
-                ));
-            }
+        let Some(spawn_fn) = ctx.spawn_child.as_ref() else {
+            return Ok(ToolResult::error(
+                "spawn callback unavailable; agent delegation requires a full runtime context",
+            ));
         };
 
         // Build allowlist, stripping "agent" to prevent circular delegation.
@@ -75,6 +72,8 @@ impl Tool for AgentTool {
 
         let allowlist_ref: Option<&[String]> = raw_allowlist.as_deref();
 
+        // False positive: token counts always fit in usize.
+        #[allow(clippy::cast_possible_truncation)]
         let max_tokens: Option<usize> = match args.get("max_tokens") {
             Some(v) => match v.as_u64() {
                 Some(n) => Some(n as usize),

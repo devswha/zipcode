@@ -80,6 +80,7 @@ impl MockInferenceProvider {
     }
 
     /// Return the chat template currently associated with this provider.
+    #[must_use]
     pub fn template(&self) -> &dyn ChatTemplate {
         self.template.as_ref()
     }

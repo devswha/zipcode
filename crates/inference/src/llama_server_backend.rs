@@ -281,6 +281,7 @@ impl LlamaServerProvider {
     }
 
     /// Return the name of the active chat template.
+    #[must_use]
     pub fn template_name(&self) -> &'static str {
         self.template.name()
     }
@@ -346,7 +347,7 @@ impl InferenceProvider for LlamaServerProvider {
     fn last_prompt_eval_count(&self) -> Option<usize> {
         self.last_eval_count
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .copied()
     }
@@ -795,10 +796,11 @@ fn open_sse_stream(host: &str, port: u16, request_body: &str) -> Result<BufReade
 }
 
 /// Try to extract the prompt-token count from a raw SSE data payload.
-/// Checks `usage.prompt_tokens` (OpenAI streaming format),
+/// Checks `usage.prompt_tokens` (`OpenAI` streaming format),
 /// `timings.prompt_n` (llama-server native), and `prompt_eval_count`
 /// (older llama-server field). Returns `None` silently on any parse
 /// failure so the caller never panics.
+#[allow(clippy::cast_possible_truncation)]
 fn try_extract_prompt_eval_count(data: &str) -> Option<usize> {
     let json: Value = serde_json::from_str(data.trim()).ok()?;
     json["usage"]["prompt_tokens"]
@@ -808,6 +810,7 @@ fn try_extract_prompt_eval_count(data: &str) -> Option<usize> {
         .map(|n| n as usize)
 }
 
+#[allow(clippy::too_many_lines)]
 fn stream_sse_events(
     host: &str,
     port: u16,

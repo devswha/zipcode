@@ -5,9 +5,9 @@
 //!
 //! | Backend | Template role |
 //! |---|---|
-//! | `llama_server_backend` (default, production) | **Metadata + raw-text fallback parser only.** llama-server is launched with `--jinja`, so the GGUF's embedded Jinja chat template renders prompts and the server returns OpenAI-shape `tool_calls` arrays that are parsed by [`super::llama_server_backend::parse_response_tool_calls`]. The `ChatTemplate` on the provider is selected via the registry but its `render_prompt` is not called; its `parse_tool_calls` only matters when the model emits raw tool-call text that bypasses the OpenAI tool-call JSON (rare for modern GGUFs but possible for e.g. the 26B Opus Distill's custom `<\|tool\|>` syntax). |
+//! | `llama_server_backend` (default, production) | **Metadata + raw-text fallback parser only.** llama-server is launched with `--jinja`, so the GGUF's embedded Jinja chat template renders prompts and the server returns OpenAI-shape `tool_calls` arrays that are parsed by [`super::llama_server_backend::parse_response_tool_calls`]. The `ChatTemplate` on the provider is selected via the registry but its `render_prompt` is not called; its `parse_tool_calls` only matters when the model emits raw tool-call text that bypasses the `OpenAI` tool-call JSON (rare for modern GGUFs but possible for e.g. the 26B Opus Distill's custom `<\|tool\|>` syntax). |
 //! | `candle`, `llama-cpp-rs` (feature-gated) | **Full owner.** These backends generate raw text themselves and call `template.render_prompt` / `template.parse_tool_calls` directly. Both backends are known broken for Gemma 4 today (see `CLAUDE.md` "Current Limitations"). |
-//! | `EmulatorTemplate` (any backend, `native_tool_calling() == false`) | **Full owner, always.** Used for models with no native tool-call training; the runtime switches away from llama-server's OpenAI tool-call JSON and parses the emulator's `<<<tool … >>>` text syntax instead. |
+//! | `EmulatorTemplate` (any backend, `native_tool_calling() == false`) | **Full owner, always.** Used for models with no native tool-call training; the runtime switches away from llama-server's `OpenAI` tool-call JSON and parses the emulator's `<<<tool … >>>` text syntax instead. |
 //!
 //! In short: on the production llama-server path the template is mostly a
 //! label. The trait layer exists because (a) the non-Jinja backends do rely
@@ -43,7 +43,7 @@ pub struct ToolSpec {
 
 /// Abstraction over chat-prompt formats and tool-call syntax.
 ///
-/// Implement this trait to add support for a new model family (e.g. ChatML,
+/// Implement this trait to add support for a new model family (e.g. `ChatML`,
 /// Llama 3.1, Gemma 4 native).  Callers receive a `Box<dyn ChatTemplate>` and
 /// are insulated from the concrete format.
 pub trait ChatTemplate: Send + Sync {
@@ -256,7 +256,7 @@ impl ChatTemplate for GemmaTemplate {
 
 // ===== ChatMLTemplate =====
 
-/// Qwen / OpenAI-compatible ChatML format.
+/// Qwen / OpenAI-compatible `ChatML` format.
 ///
 /// Turn format: `<|im_start|>role\ncontent<|im_end|>\n`.
 /// Tool specs are injected into the system turn as `## Available Tools\n<JSON array>`.
@@ -460,7 +460,7 @@ fn strip_llama31_tool_calls(output: &str) -> String {
                 pos = end;
             } else {
                 // Not a tool call — copy the `{` and move on
-                result.push_str(&output[pos..start + 1]);
+                result.push_str(&output[pos..=start]);
                 pos = start + 1;
             }
         } else {
@@ -520,7 +520,7 @@ const EMULATOR_INSTRUCTIONS: &str = "When you need to use a tool, emit exactly:\
 /// Conservative allowlist of tools exposed to emulator-mode models.  Models
 /// that need the emulator are by definition untrained on tool calling, so we
 /// restrict them to observation-oriented tools and omit anything with system
-/// side effects (bash, write_file, edit_file, etc.).
+/// side effects (bash, `write_file`, `edit_file`, etc.).
 const EMULATOR_SAFE_TOOLS: &[&str] = &["read_file", "grep_search", "glob_search"];
 
 /// Defang `<<<tool ...>>>` fragments in non-assistant content so a malicious
@@ -584,7 +584,7 @@ impl ChatTemplate for EmulatorTemplate {
             sys.push_str(EMULATOR_INSTRUCTIONS);
             sys.push_str("\n\nAvailable tools:\n");
             for spec in &filtered {
-                sys.push_str(&format!("- {}: {}\n", spec.name, spec.description));
+                let _ = writeln!(sys, "- {}: {}", spec.name, spec.description);
             }
         }
 
@@ -831,6 +831,7 @@ pub fn format_conversation(messages: &[ChatMessage], tools: &[ToolSpec]) -> Stri
 ///
 /// Thin wrapper around [`GemmaTemplate::parse_tool_calls`].
 /// Extracts all `<tool_call>...</tool_call>` blocks and parses their JSON.
+#[must_use]
 pub fn parse_tool_calls(output: &str) -> Vec<ToolCallParsed> {
     GemmaTemplate.parse_tool_calls(output)
 }

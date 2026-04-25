@@ -51,6 +51,11 @@ impl CompactPolicy {
     /// Unsafe callers would otherwise compute `threshold = 0` from NaN via
     /// `as usize`, evicting the entire session on every turn.
     #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub fn tier2_threshold_tokens(&self) -> usize {
         let pct = if self.tier2_usage_threshold.is_finite() {
             self.tier2_usage_threshold.clamp(0.0, 1.0)
@@ -80,7 +85,7 @@ pub struct Session {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub parent_id: Option<String>,
     /// Resolved save path, captured at construction so parallel tests that
-    /// mutate ZIPCODE_SESSIONS_DIR don't cause I/O to land in the wrong dir.
+    /// mutate `ZIPCODE_SESSIONS_DIR` don't cause I/O to land in the wrong dir.
     #[serde(skip)]
     resolved_path: PathBuf,
 }
@@ -358,7 +363,7 @@ fn validate_session_id(id: &str) -> Result<()> {
     }
 }
 
-/// Collect (assistant_index, tool_result_index) pairs from `messages`.
+/// Collect (`assistant_index`, `tool_result_index`) pairs from `messages`.
 ///
 /// A pair is defined as an agent-visible assistant message that carries at
 /// least one tool call immediately followed (no gap) by an agent-visible
@@ -401,8 +406,7 @@ fn build_tool_pair_summary(
             .tool_calls
             .as_ref()
             .and_then(|calls| calls.first())
-            .map(|c| c.name.as_str())
-            .unwrap_or("unknown");
+            .map_or("unknown", |c| c.name.as_str());
 
         let args_preview = asst
             .tool_calls
