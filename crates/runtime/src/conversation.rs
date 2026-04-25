@@ -530,7 +530,7 @@ impl Drop for ConversationLoop {
     }
 }
 
-fn convert_tool_specs(specs: Vec<zipcode_tools::ToolSpec>) -> Vec<ToolSpec> {
+pub fn convert_tool_specs(specs: Vec<zipcode_tools::ToolSpec>) -> Vec<ToolSpec> {
     specs
         .into_iter()
         .map(|s| ToolSpec {
@@ -701,6 +701,63 @@ fn recent_tool_results_contain_errors(messages: &[ChatMessage]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn convert_tool_specs_round_trips_name_description_parameters() {
+        let raw = vec![
+            zipcode_tools::ToolSpec {
+                name: "read_file".to_string(),
+                description: "read a file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            zipcode_tools::ToolSpec {
+                name: "bash".to_string(),
+                description: "run a command".to_string(),
+                parameters: serde_json::json!({"type": "object", "required": ["command"]}),
+            },
+        ];
+        let converted = convert_tool_specs(raw);
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[0].name, "read_file");
+        assert_eq!(converted[0].description, "read a file");
+        assert_eq!(converted[1].name, "bash");
+        assert_eq!(
+            converted[1].parameters["required"][0].as_str(),
+            Some("command")
+        );
+    }
+
+    #[test]
+    fn skill_allowlist_filter_pattern_keeps_only_allowed_tools() {
+        // Mirrors the runtime path used by `cli::run_skill_command`: filter
+        // the registry by the skill's tool_allowlist and rebuild the
+        // ConversationLoop's tool_specs from the filtered set. Regression
+        // guard for the fix that made `zipcode skill` honour the allowlist
+        // instead of exposing the full toolbox.
+        use zipcode_tools::{
+            agent::AgentTool, grep_search::GrepSearchTool, read_file::ReadFileTool,
+            write_file::WriteFileTool, ToolRegistry,
+        };
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(AgentTool));
+        registry.register(Box::new(ReadFileTool));
+        registry.register(Box::new(WriteFileTool));
+        registry.register(Box::new(GrepSearchTool));
+
+        let allowlist = vec!["read_file".to_string(), "grep_search".to_string()];
+        let filtered = registry.create_filtered(&allowlist);
+        let specs = convert_tool_specs(filtered.specs());
+
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"grep_search"));
+        assert!(
+            !names.contains(&"write_file"),
+            "write_file must be filtered out"
+        );
+        assert!(!names.contains(&"agent"), "agent must be filtered out");
+    }
 
     #[test]
     fn returns_true_when_recent_tool_result_contains_error() {

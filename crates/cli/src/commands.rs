@@ -228,6 +228,17 @@ pub fn run_skill_command(
         eprintln!("\x1b[33m[notice]\x1b[0m {notice}");
     }
     let mut conv = launch.conv;
+
+    // One-shot skill invocations honour the skill's `tool_allowlist` the same
+    // way `SkillTool::execute` does inside an agent loop. Without this filter
+    // the model sees every tool the runtime exposed via `prepare_loop`,
+    // which silently bypasses the allowlist and breaks the security
+    // boundary skill authors expect.
+    if !skill.tool_allowlist.is_empty() {
+        conv.tools = conv.tools.create_filtered(&skill.tool_allowlist);
+        conv.tool_specs = zipcode_runtime::convert_tool_specs(conv.tools.specs());
+    }
+
     let mut cb = CliCallback::new();
     cb.start_turn();
     conv.run_turn(&task_prompt, &mut cb)?;
