@@ -44,7 +44,7 @@ candle 0.8 has no `quantized_gemma`. `InferenceEngine` currently uses `quantized
 
 ## #3 — Tool output silently truncated at 8 KB
 
-**Location:** `crates/tools/src/lib.rs:502` + `:352-379`
+**Location:** `crates/tools/src/lib.rs:502` + `:391-418`
 
 `MAX_TOOL_OUTPUT_BYTES = 8192`. If a tool returns more, `ToolResult::truncate()` finds a safe UTF-8 boundary, trims, and appends `[truncated: showing first X bytes of Y]`. The model sees the note but has no way to request "show me the rest".
 

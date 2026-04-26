@@ -46,7 +46,7 @@ pub struct Session {
 
 1. CLI creates `Session::new()` at REPL startup.
 2. [`ConversationLoop`](conversation-loop.md) holds it by value (`pub session: Session`).
-3. On the first turn, the system prompt is pushed via `push_message()` (`conversation.rs:35-37`).
+3. On the first turn, the system prompt is pushed via `push_message()` (`conversation.rs:100`).
 4. Every subsequent user / model / tool message goes through `push_message()` inside `run_turn()`.
 5. `session.save()` is called at the end of each turn.
 

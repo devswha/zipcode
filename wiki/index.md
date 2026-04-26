@@ -52,7 +52,7 @@ cli ──▶ runtime ──▶ inference
 The highest-degree concepts — almost every code path touches one of these. Read these pages first.
 
 1. **[`InferenceProvider`](pages/inference.md#inferenceprovider-trait)** — abstracts all inference backends. `crates/inference/src/lib.rs:31`. 4 implementors: `LlamaCppProvider`, `LlamaServerProvider`, `InferenceEngine` (candle), `MockInferenceProvider`.
-2. **[`Tool` + `ToolRegistry`](pages/tools.md#tool-trait)** — abstracts every tool invocation. `crates/tools/src/lib.rs:431` (trait) + `:406` (registry). 10 implementors.
+2. **[`Tool` + `ToolRegistry`](pages/tools.md#tool-trait)** — abstracts every tool invocation. `crates/tools/src/lib.rs:431` (trait) + `:445` (registry). 10 implementors.
 3. **[`ConversationLoop`](pages/conversation-loop.md)** — drives the agentic loop. Holds both god nodes above plus `PermissionPolicy` and `Session`. `crates/runtime/src/conversation.rs:58`.
 4. **[`ChatMessage`](pages/inference.md#core-types)** — the wire format that crosses every crate. `crates/inference/src/types.rs:18`.
 5. **[`PermissionMode`](pages/permissions.md)** — gates every tool invocation. `crates/tools/src/lib.rs:305` (enum) + `crates/runtime/src/permission.rs:5` (policy).

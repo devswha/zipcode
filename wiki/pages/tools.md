@@ -42,7 +42,7 @@ pub trait Tool: Send + Sync {
 
 ### `ToolRegistry`
 
-**EXTRACTED** `lib.rs:406-445`
+**EXTRACTED** `lib.rs:445-497`
 
 ```rust
 pub struct ToolRegistry {
@@ -56,7 +56,7 @@ The registry is populated once by the CLI at REPL startup ([`crates/cli/src/repl
 
 ### `execute_tool()` — the single entry point
 
-**EXTRACTED** `lib.rs:456-466`
+**EXTRACTED** `lib.rs:509-519`
 
 ```rust
 pub fn execute_tool(
@@ -73,7 +73,7 @@ Looks up the tool, calls `tool.execute()`, and **auto-truncates** the result to 
 
 ## `ToolContext`
 
-**EXTRACTED** `lib.rs:314-327`
+**EXTRACTED** `lib.rs:347-366`
 
 ```rust
 pub struct ToolContext {
@@ -89,7 +89,7 @@ Passed to every `execute()`. Tools that touch the filesystem rebase paths onto `
 
 ## `ToolResult`
 
-**EXTRACTED** `lib.rs:329-379`
+**EXTRACTED** `lib.rs:368-420`
 
 ```rust
 pub struct ToolResult {
@@ -98,7 +98,7 @@ pub struct ToolResult {
 }
 ```
 
-Method `truncate(max_bytes)` (`lib.rs:352-379`) finds a safe UTF-8 char boundary, trims, and appends `[truncated: showing first X bytes of Y]`. **GOTCHA:** the model is told how many bytes were kept but NOT what was cut, so `ls -la` on a huge directory becomes an information black hole.
+Method `truncate(max_bytes)` (`lib.rs:391-418`) finds a safe UTF-8 char boundary, trims, and appends `[truncated: showing first X bytes of Y]`. **GOTCHA:** the model is told how many bytes were kept but NOT what was cut, so `ls -la` on a huge directory becomes an information black hole.
 
 ---
 
@@ -143,7 +143,7 @@ Algorithm:
 
 ## Output truncation
 
-**EXTRACTED** `lib.rs:449` → `MAX_TOOL_OUTPUT_BYTES = 8192` — applied in `execute_tool()` at `:456-466`.
+**EXTRACTED** `lib.rs:502` → `MAX_TOOL_OUTPUT_BYTES = 8192` — applied in `execute_tool()` at `:509-519`.
 
 **Why 8 KB?** Fits comfortably into Gemma's 8192-token default context without crowding the conversation. Overridable would require a config field (not present today).
 

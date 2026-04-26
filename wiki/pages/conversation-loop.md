@@ -7,7 +7,7 @@
 
 ## `ConversationLoop` struct
 
-**EXTRACTED** `conversation.rs:29-36`
+**EXTRACTED** `conversation.rs:58-80`
 
 ```rust
 pub struct ConversationLoop {
@@ -27,13 +27,13 @@ Generic over inference backend via the trait object. Owns everything needed to d
 
 ## `run_turn()` flow
 
-**EXTRACTED** `conversation.rs:32-147`
+**EXTRACTED** `conversation.rs:93-200`
 
 ```
 ┌─ first turn only: push system prompt to session (prompt.rs:build)
 ├─ push user message to session
 │
-├─ loop up to MAX_TOOL_ITERATIONS (= 25, conversation.rs:54)
+├─ loop up to MAX_TOOL_ITERATIONS (= 25, conversation.rs:94)
 │     │
 │     ├─ engine.generate_stream(messages, tool_specs)
 │     │     ↓ (receiver of TokenEvent)
@@ -66,7 +66,7 @@ The loop alternates: model turn → tool calls → tool results → model turn. 
 
 ## `StreamCallback` trait
 
-**EXTRACTED** `conversation.rs:14-20`
+**EXTRACTED** `conversation.rs:30-46`
 
 ```rust
 pub trait StreamCallback {
@@ -86,8 +86,8 @@ Implemented by the CLI's REPL / TUI to pipe events to the terminal. `on_permissi
 
 | Bound | Constant | Location | What happens at the limit |
 |-------|----------|----------|--------------------------|
-| Max tool iterations per turn | `MAX_TOOL_ITERATIONS = 25` | `conversation.rs:54` | Returns `Err`; turn does not resume gracefully |
-| Max tool output per call | `MAX_TOOL_OUTPUT_BYTES = 8192` | `tools/lib.rs:416` | Output silently trimmed with `[truncated: ...]` note — see [tools](tools.md#output-truncation) |
+| Max tool iterations per turn | `MAX_TOOL_ITERATIONS = 25` | `conversation.rs:94` | Returns `Err`; turn does not resume gracefully |
+| Max tool output per call | `MAX_TOOL_OUTPUT_BYTES = 8192` | `tools/lib.rs:502` | Output silently trimmed with `[truncated: ...]` note — see [tools](tools.md#output-truncation) |
 | Session file size | none | `session.rs` | Grows unbounded per message |
 
 **GOTCHA:** hitting the 25-iteration cap throws an `Err` but the session is still saved, so the partial conversation is persisted. The next turn starts with a model that saw its own loop getting killed mid-thought, which can produce confused output.
