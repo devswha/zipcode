@@ -33,7 +33,7 @@ Dev-facing task recipes. Each recipe lists the files you'll touch and the invari
    ```
 2. **Export in `crates/tools/src/lib.rs`:** add `pub mod my_tool;` and `pub use my_tool::MyTool;`.
 3. **Register in CLI:** in `crates/cli/src/repl.rs`, wherever the `ToolRegistry` is built, add `registry.register(Box::new(MyTool))`.
-4. **Slot into permission matrix:** [`crates/runtime/src/permission.rs:31`](../../crates/runtime/src/permission.rs). Decide which tier allows it. **GOTCHA:** if you skip this and it touches the filesystem, read-only mode will silently deny it — which may or may not be what you want.
+4. **Slot into permission matrix:** [`crates/runtime/src/permission.rs:5`](../../crates/runtime/src/permission.rs). Decide which tier allows it. **GOTCHA:** if you skip this and it touches the filesystem, read-only mode will silently deny it — which may or may not be what you want.
 5. **Path safety:** if the tool reads/writes files, route every path through `resolve_and_validate_path()` (`tools/lib.rs:14`). See [tools › path safety](tools.md#path-safety-resolve_and_validate_path).
 6. **Write tests** next to `my_tool.rs` covering:
    - Happy path
@@ -75,7 +75,7 @@ Dev-facing task recipes. Each recipe lists the files you'll touch and the invari
        }
    }
    ```
-3. **Register in the `Backend` enum:** `crates/inference/src/lib.rs:49-57` — add `Mlx` variant.
+3. **Register in the `Backend` enum:** `crates/inference/src/lib.rs:82-89` — add `Mlx` variant.
 4. **Register in the factory:** `crates/inference/src/lib.rs:82-200` — add a dispatch arm, feature-gated with `#[cfg(feature = "mlx")]`.
 5. **Parse from CLI:** `Backend::parse()` (same file) — add the kebab-case name.
 6. **Contract test** using a tiny prompt and `cargo test --features mlx`. Ideally run the same tests against `MockInferenceProvider` as a baseline.
@@ -112,8 +112,8 @@ This one is an actual refactor, not a drop-in.
 
 **Goal:** let longer tool chains run, or let tools return more data.
 
-- **Tool iterations:** change `MAX_TOOL_ITERATIONS` in `crates/runtime/src/conversation.rs:57`. Tests in `crates/runtime/tests/integration.rs` assert the cap; update or parameterize.
-- **Tool output size:** change `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:449`. Tests in `crates/tools/src/lib.rs` assert truncation at 8 KB; update.
+- **Tool iterations:** change `MAX_TOOL_ITERATIONS` in `crates/runtime/src/conversation.rs:110`. Tests in `crates/runtime/tests/integration.rs` assert the cap; update or parameterize.
+- **Tool output size:** change `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:502`. Tests in `crates/tools/src/lib.rs` assert truncation at 8 KB; update.
 
 **Gotcha:** raising the output size directly inflates the model's working context. On 8192-token models this will cause context overflow sooner.
 
@@ -168,7 +168,7 @@ See [llama-server › GPU offload](llama-server.md#gpu-offload) and [config](con
    - Permission mode (line 34)
    - Working directory (line 35)
    - `.zipcode.md` content if present (lines 37-44)
-   - `.zipcode.md` content from the detected project root if present (`crates/runtime/src/prompt.rs:39-45`)
+   - `.zipcode.md` content from the detected project root if present (`crates/runtime/src/prompt.rs:40-46`)
 3. Update the matching test in `prompt.rs` — there are 3.
 
 ---

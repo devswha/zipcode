@@ -44,7 +44,7 @@ candle 0.8 has no `quantized_gemma`. `InferenceEngine` currently uses `quantized
 
 ## #3 — Tool output silently truncated at 8 KB
 
-**Location:** `crates/tools/src/lib.rs:449` + `:352-379`
+**Location:** `crates/tools/src/lib.rs:502` + `:352-379`
 
 `MAX_TOOL_OUTPUT_BYTES = 8192`. If a tool returns more, `ToolResult::truncate()` finds a safe UTF-8 boundary, trims, and appends `[truncated: showing first X bytes of Y]`. The model sees the note but has no way to request "show me the rest".
 
@@ -56,7 +56,7 @@ candle 0.8 has no `quantized_gemma`. `InferenceEngine` currently uses `quantized
 
 ## #4 — 25-iteration cap returns an error mid-turn
 
-**Location:** `crates/runtime/src/conversation.rs:57` (`MAX_TOOL_ITERATIONS`)
+**Location:** `crates/runtime/src/conversation.rs:110` (`MAX_TOOL_ITERATIONS`)
 
 When the model chains tools > 25 times in one turn, `run_turn()` returns `Err`. The session IS saved with all the partial messages, so the NEXT turn begins with a model that saw its own loop get killed — a confused-Claude effect.
 
@@ -68,7 +68,7 @@ When the model chains tools > 25 times in one turn, `run_turn()` returns `Err`. 
 
 ## #5 — Path traversal prevention depends on every tool calling it
 
-**Location:** `crates/tools/src/lib.rs:15-93` — `resolve_and_validate_path()`
+**Location:** `crates/tools/src/lib.rs:19-97` — `resolve_and_validate_path()`
 
 Single gate that every file-touching tool routes paths through. Works today because all 5 file tools (`read_file`, `write_file`, `edit_file`, `glob_search`, `grep_search`) remember to call it. Tests at `lib.rs:470+` verify the rejection path.
 
@@ -134,7 +134,7 @@ Returns "not yet implemented". Included in the registry, listed in `tool_search`
 
 ## #11 — Permission state split across two crates
 
-**Location:** `crates/tools/src/lib.rs:304` + `crates/runtime/src/permission.rs:31`
+**Location:** `crates/tools/src/lib.rs:305` + `crates/runtime/src/permission.rs:5`
 
 Adding a permission tier requires editing both crates. Adding a new tool requires remembering to slot it into the permission matrix at `permission.rs:31`. Missing that step means the tool is silently denied in read-only mode.
 

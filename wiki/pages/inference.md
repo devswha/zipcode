@@ -25,7 +25,7 @@ The `zipcode-inference` crate. Home of the `InferenceProvider` god node.
 
 ## `InferenceProvider` trait
 
-**EXTRACTED** `crates/inference/src/lib.rs:28-33`
+**EXTRACTED** `crates/inference/src/lib.rs:31-36`
 
 ```rust
 pub trait InferenceProvider: Send {
