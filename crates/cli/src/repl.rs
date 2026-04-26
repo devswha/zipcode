@@ -1759,4 +1759,235 @@ mod tests {
         assert_eq!(opts.gpu_layers, Some(42));
         assert!(opts.flash_attention);
     }
+
+    #[test]
+    fn server_options_env_flash_attention_all_variants() {
+        // Test all true-ish values
+        for val in &["1", "true", "True", "TRUE"] {
+            std::env::set_var("ZIPCODE_FLASH_ATTENTION", *val);
+            let opts = server_options_from_config(&ZipcodeConfig::default());
+            assert!(
+                opts.flash_attention,
+                "ZIPCODE_FLASH_ATTENTION={val} should set flash_attention=true"
+            );
+        }
+        // Test all false-ish values
+        for val in &["0", "false", "False"] {
+            std::env::set_var("ZIPCODE_FLASH_ATTENTION", *val);
+            let opts = server_options_from_config(&ZipcodeConfig::default());
+            assert!(
+                !opts.flash_attention,
+                "ZIPCODE_FLASH_ATTENTION={val} should set flash_attention=false"
+            );
+        }
+        std::env::remove_var("ZIPCODE_FLASH_ATTENTION");
+    }
+
+    #[test]
+    fn server_options_invalid_env_falls_back_to_config() {
+        std::env::set_var("ZIPCODE_GPU_LAYERS", "not_a_number");
+        let config = ZipcodeConfig {
+            gpu_layers: Some(7),
+            ..ZipcodeConfig::default()
+        };
+        let opts = server_options_from_config(&config);
+        std::env::remove_var("ZIPCODE_GPU_LAYERS");
+
+        assert_eq!(
+            opts.gpu_layers,
+            Some(7),
+            "invalid env should fall back to config"
+        );
+    }
+
+    // ── validate_backend_configuration ────────────────────────────
+
+    #[test]
+    fn validate_backend_gemma4_candle_returns_warning() {
+        let issue = validate_backend_configuration(
+            Some(Backend::Candle),
+            Backend::Candle,
+            Path::new("/models/gemma-4-e2b-it-q8_0.gguf"),
+            None,
+            &ServerOptions::default(),
+        );
+        assert!(issue.is_some(), "Gemma 4 + Candle should warn");
+        let msg = issue.unwrap();
+        assert!(
+            msg.contains("candle backend"),
+            "warning should mention candle: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_backend_gemma4_explicit_llama_cpp_returns_warning() {
+        let issue = validate_backend_configuration(
+            Some(Backend::LlamaCpp),
+            Backend::LlamaCpp,
+            Path::new("/models/gemma-4-e2b-it-q8_0.gguf"),
+            None,
+            &ServerOptions::default(),
+        );
+        assert!(issue.is_some(), "Gemma 4 + explicit LlamaCpp should warn");
+        let msg = issue.unwrap();
+        assert!(
+            msg.contains("llama-cpp"),
+            "warning should mention llama-cpp: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_backend_gemma4_auto_llama_server_no_warning() {
+        // Auto-selected llama-server (requested_backend=None) for Gemma 4 is fine
+        let issue = validate_backend_configuration(
+            None,
+            Backend::LlamaServer,
+            Path::new("/models/gemma-4-e2b-it-q8_0.gguf"),
+            None,
+            &ServerOptions::default(),
+        );
+        assert!(
+            issue.is_none(),
+            "Gemma 4 + auto llama-server should not warn"
+        );
+    }
+
+    #[test]
+    fn validate_backend_non_gemma4_no_warning() {
+        let issue = validate_backend_configuration(
+            Some(Backend::Candle),
+            Backend::Candle,
+            Path::new("/models/llama-3.gguf"),
+            None,
+            &ServerOptions::default(),
+        );
+        assert!(issue.is_none(), "non-Gemma 4 model should never warn");
+    }
+
+    #[test]
+    fn validate_backend_gemma4_explicit_llama_server_no_warning() {
+        let issue = validate_backend_configuration(
+            Some(Backend::LlamaServer),
+            Backend::LlamaServer,
+            Path::new("/models/gemma-4-e2b-it-q8_0.gguf"),
+            None,
+            &ServerOptions::default(),
+        );
+        assert!(
+            issue.is_none(),
+            "Gemma 4 + explicit llama-server should not warn"
+        );
+    }
+
+    #[test]
+    fn validate_backend_llama_server_no_helper_no_gpu_warning() {
+        // llama-server with gpu_layers > 0 but no helper — can't probe, so no warning
+        let opts = ServerOptions {
+            gpu_layers: Some(10),
+            ..ServerOptions::default()
+        };
+        let issue = validate_backend_configuration(
+            None,
+            Backend::LlamaServer,
+            Path::new("/models/test.gguf"),
+            None,
+            &opts,
+        );
+        assert!(
+            issue.is_none(),
+            "no helper path means no GPU probe, no warning"
+        );
+    }
+
+    #[test]
+    fn validate_backend_llama_server_zero_gpu_layers_no_warning() {
+        let opts = ServerOptions {
+            gpu_layers: Some(0),
+            ..ServerOptions::default()
+        };
+        let issue = validate_backend_configuration(
+            None,
+            Backend::LlamaServer,
+            Path::new("/models/test.gguf"),
+            None,
+            &opts,
+        );
+        assert!(
+            issue.is_none(),
+            "zero gpu_layers should not trigger any warning"
+        );
+    }
+
+    // ── build_startup_notices edge cases ──────────────────────────
+
+    #[test]
+    fn startup_notices_non_llama_server_empty() {
+        let notices = build_startup_notices(
+            None,
+            Backend::LlamaCpp,
+            Path::new("/models/test.gguf"),
+            &ServerOptions::default(),
+        );
+        assert!(
+            notices.is_empty(),
+            "non-llama-server backend should produce no startup notices"
+        );
+    }
+
+    #[test]
+    fn startup_notices_explicit_backend_no_auto_notice() {
+        let notices = build_startup_notices(
+            Some(Backend::LlamaServer),
+            Backend::LlamaServer,
+            Path::new("/models/gemma-4-e2b-it-q8_0.gguf"),
+            &ServerOptions::default(),
+        );
+        // The "Using llama-server directly" notice only fires when requested_backend is None
+        assert!(
+            !notices
+                .iter()
+                .any(|n| n.contains("avoid slow native fallback")),
+            "explicit backend should not show auto-selection notice"
+        );
+    }
+
+    #[test]
+    fn startup_notices_fast_settings_no_slow_warnings() {
+        let opts = ServerOptions {
+            gpu_layers: Some(40),
+            flash_attention: true,
+            ..ServerOptions::default()
+        };
+        let notices = build_startup_notices(
+            None,
+            Backend::LlamaServer,
+            Path::new("/models/test.gguf"),
+            &opts,
+        );
+        assert!(
+            !notices.iter().any(|n| n.contains("GPU layer offload")),
+            "configured gpu_layers should not warn"
+        );
+        assert!(
+            !notices.iter().any(|n| n.contains("flash attention")),
+            "flash_attention=true should not warn"
+        );
+    }
+
+    #[test]
+    fn startup_notices_auto_gemma4_non_llama_server_no_auto_notice() {
+        // Gemma 4 model but effective backend is not llama-server
+        let notices = build_startup_notices(
+            None,
+            Backend::LlamaCpp,
+            Path::new("/models/gemma-4-e2b-it-q8_0.gguf"),
+            &ServerOptions::default(),
+        );
+        assert!(
+            !notices
+                .iter()
+                .any(|n| n.contains("avoid slow native fallback")),
+            "non-llama-server should not show auto-selection notice even for Gemma 4"
+        );
+    }
 }
