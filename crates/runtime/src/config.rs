@@ -798,4 +798,46 @@ mod tests {
         let config = ZipcodeConfig::load(dir.path()).unwrap();
         assert_eq!(config.llama_server_bin, None);
     }
+
+    // ── expand_user_path direct tests ─────────────────────────────
+
+    #[test]
+    fn test_expand_user_path_tilde() {
+        let expanded = expand_user_path(Path::new("~"));
+        let expected = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        assert_eq!(expanded, expected);
+    }
+
+    #[test]
+    fn test_expand_user_path_tilde_prefix() {
+        let expanded = expand_user_path(Path::new("~/foo/bar"));
+        let expected = dirs::home_dir()
+            .map_or_else(|| PathBuf::from("~/foo/bar"), |home| home.join("foo/bar"));
+        assert_eq!(expanded, expected);
+    }
+
+    #[test]
+    fn test_expand_user_path_absolute_and_relative() {
+        // Absolute path stays absolute
+        let abs = expand_user_path(Path::new("/absolute/path"));
+        assert_eq!(abs, PathBuf::from("/absolute/path"));
+
+        // Relative path stays relative
+        let rel = expand_user_path(Path::new("relative/path"));
+        assert_eq!(rel, PathBuf::from("relative/path"));
+    }
+
+    // ── resolve_project_path direct tests ─────────────────────────
+
+    #[test]
+    fn test_resolve_project_path_absolute() {
+        let result = resolve_project_path(Path::new("/abs/models"), Path::new("/project"));
+        assert_eq!(result, PathBuf::from("/abs/models"));
+    }
+
+    #[test]
+    fn test_resolve_project_path_relative() {
+        let result = resolve_project_path(Path::new("models"), Path::new("/project"));
+        assert_eq!(result, PathBuf::from("/project/models"));
+    }
 }

@@ -1459,4 +1459,203 @@ mod tests {
         let session = Session::new();
         assert!(session.parent_id.is_none());
     }
+
+    // ── tier2_threshold_tokens direct tests ──────────────────────
+
+    #[test]
+    fn test_tier2_threshold_default() {
+        let policy = CompactPolicy::default();
+        // 32768 * 0.8 = 26214.4 → floor = 26214
+        assert_eq!(policy.tier2_threshold_tokens(), 26_214);
+    }
+
+    #[test]
+    fn test_tier2_threshold_nan_falls_back() {
+        let policy = CompactPolicy {
+            tier2_usage_threshold: f64::NAN,
+            ..CompactPolicy::default()
+        };
+        // NaN is not finite → falls back to DEFAULT_TIER2_USAGE_THRESHOLD (0.8)
+        assert_eq!(policy.tier2_threshold_tokens(), 26_214);
+    }
+
+    #[test]
+    fn test_tier2_threshold_infinity_clamped() {
+        let policy = CompactPolicy {
+            tier2_usage_threshold: f64::INFINITY,
+            ..CompactPolicy::default()
+        };
+        // Infinity is not finite → falls back to 0.8
+        assert_eq!(policy.tier2_threshold_tokens(), 26_214);
+    }
+
+    #[test]
+    fn test_tier2_threshold_negative_clamped() {
+        let policy = CompactPolicy {
+            tier2_usage_threshold: -1.0,
+            ..CompactPolicy::default()
+        };
+        // Negative clamped to 0 → 32768 * 0 = 0
+        assert_eq!(policy.tier2_threshold_tokens(), 0);
+    }
+
+    #[test]
+    fn test_tier2_threshold_above_one_clamped() {
+        let policy = CompactPolicy {
+            tier2_usage_threshold: 5.0,
+            ..CompactPolicy::default()
+        };
+        // 5.0 clamped to 1.0 → 32768 * 1.0 = 32768
+        assert_eq!(policy.tier2_threshold_tokens(), 32_768);
+    }
+
+    // ── collect_tool_pairs direct tests ──────────────────────────
+
+    #[test]
+    fn test_collect_tool_pairs_basic() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("thinking", vec![call]),
+            ChatMessage::tool_result("c1", "output"),
+        ];
+        let pairs = collect_tool_pairs(&messages);
+        assert_eq!(pairs, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn test_collect_tool_pairs_non_adjacent() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        // Gap: user message between assistant+tool_calls and tool result
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("thinking", vec![call]),
+            ChatMessage::user("interrupt"),
+            ChatMessage::tool_result("c1", "output"),
+        ];
+        let pairs = collect_tool_pairs(&messages);
+        assert!(pairs.is_empty(), "non-adjacent pair should not match");
+    }
+
+    #[test]
+    fn test_collect_tool_pairs_agent_invisible_asst() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let mut asst = ChatMessage::assistant_with_tool_calls("thinking", vec![call]);
+        asst.agent_invisible = true;
+        let tool = ChatMessage::tool_result("c1", "output");
+        let messages = vec![asst, tool];
+        let pairs = collect_tool_pairs(&messages);
+        assert!(pairs.is_empty(), "invisible assistant should be skipped");
+    }
+
+    #[test]
+    fn test_collect_tool_pairs_agent_invisible_tool() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let asst = ChatMessage::assistant_with_tool_calls("thinking", vec![call]);
+        let mut tool = ChatMessage::tool_result("c1", "output");
+        tool.agent_invisible = true;
+        let messages = vec![asst, tool];
+        let pairs = collect_tool_pairs(&messages);
+        assert!(pairs.is_empty(), "invisible tool result should be skipped");
+    }
+
+    #[test]
+    fn test_collect_tool_pairs_empty() {
+        let messages: Vec<ChatMessage> = vec![];
+        let pairs = collect_tool_pairs(&messages);
+        assert!(pairs.is_empty());
+    }
+
+    // ── build_tool_pair_summary direct tests ─────────────────────
+
+    #[test]
+    fn test_build_tool_pair_summary_basic() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("", vec![call]),
+            ChatMessage::tool_result("c1", "file1.rs\nfile2.rs"),
+        ];
+        let summary = build_tool_pair_summary(&[(0, 1)], &messages, 120);
+        assert!(summary.starts_with(TOOL_PAIR_SUMMARY_MARKER));
+        assert!(summary.contains("bash("));
+        assert!(summary.contains("file1.rs"));
+    }
+
+    #[test]
+    fn test_build_tool_pair_summary_truncation() {
+        let call = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let long_result = "x".repeat(500);
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("", vec![call]),
+            ChatMessage::tool_result("c1", &long_result),
+        ];
+        let max_chars = 80;
+        let summary = build_tool_pair_summary(&[(0, 1)], &messages, max_chars);
+        // The summary line should be truncated to max_chars + 1 (for ellipsis)
+        for line in summary.lines().skip(1) {
+            assert!(
+                line.chars().count() <= max_chars + 1,
+                "line should be truncated: got {} chars",
+                line.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_tool_pair_summary_unknown_tool() {
+        // Assistant with tool_calls = None → tool name should be "unknown"
+        let mut asst = ChatMessage::assistant("thinking");
+        asst.tool_calls = None;
+        let tool = ChatMessage::tool_result("c1", "some result");
+        // Force role to be Model for the assistant to match collect criteria
+        // Actually build_tool_pair_summary doesn't check roles, just reads tool_calls
+        let messages = vec![asst, tool];
+        let summary = build_tool_pair_summary(&[(0, 1)], &messages, 120);
+        assert!(
+            summary.contains("unknown("),
+            "no tool_calls should yield 'unknown'"
+        );
+    }
+
+    // ── session_path direct tests ────────────────────────────────
+    // NOTE: We cannot test ZIPCODE_SESSIONS_DIR env var in a unit test
+    // because it causes race conditions with parallel tests that use
+    // session_path() (e.g., test_session_roundtrip). Instead, verify
+    // the default path construction only.
+
+    #[test]
+    fn test_session_path_default_format() {
+        // Ensure env var is NOT set for this test
+        std::env::remove_var("ZIPCODE_SESSIONS_DIR");
+        let path = session_path("my-session-id");
+        // Default path should end with .zipcode/sessions/my-session-id.json
+        assert!(
+            path.to_string_lossy()
+                .contains(".zipcode/sessions/my-session-id.json"),
+            "default session path should contain .zipcode/sessions/{{id}}.json, got: {}",
+            path.display()
+        );
+    }
 }
