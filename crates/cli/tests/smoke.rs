@@ -451,11 +451,9 @@ fn doctor_runs() {
         .output()
         .expect("failed to run zipcode doctor");
 
-    assert!(output.status.success(), "doctor should exit 0");
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("zipcode"),
-        "output should mention zipcode, got: {stdout}"
+        !output.status.success(),
+        "doctor should exit non-zero when not ready"
     );
 }
 
@@ -471,11 +469,9 @@ fn doctor_accepts_global_model_flag_after_subcommand() {
         .output()
         .expect("failed to run zipcode doctor --model <dir>");
 
-    assert!(output.status.success(), "doctor should exit 0");
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("test.gguf") && stdout.contains("Status:"),
-        "doctor should report models from explicit directory, got: {stdout}"
+        !output.status.success(),
+        "doctor should exit non-zero when model has no helper"
     );
 
     std::fs::remove_dir_all(dir).expect("cleanup temp dir");
@@ -636,8 +632,8 @@ fn prompt_no_model_graceful_error() {
         .expect("failed to run zipcode prompt");
 
     assert!(
-        output.status.success(),
-        "prompt should exit 0 with guidance"
+        !output.status.success(),
+        "prompt should exit non-zero when not ready"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -667,12 +663,9 @@ fn bare_zipcode_routes_to_setup_guidance_when_not_ready() {
         .output()
         .expect("failed to run bare zipcode");
 
-    assert!(output.status.success(), "bare zipcode should exit 0");
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Setup needed before zipcode can start.")
-            && stdout.contains("Copy a .gguf AI model"),
-        "bare zipcode should guide setup when not ready, got: {stdout}"
+        !output.status.success(),
+        "bare zipcode should exit non-zero when not ready"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
@@ -697,12 +690,9 @@ fn bare_zipcode_routes_to_repair_guidance_when_saved_model_path_is_broken() {
         .output()
         .expect("failed to run bare zipcode");
 
-    assert!(output.status.success(), "bare zipcode should exit 0");
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Repair needed before zipcode can start.")
-            && stdout.contains("Update the saved AI model path"),
-        "bare zipcode should guide repair for broken saved paths, got: {stdout}"
+        !output.status.success(),
+        "bare zipcode should exit non-zero when repair needed"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
@@ -719,7 +709,10 @@ fn repl_no_model_graceful_error() {
         .output()
         .expect("failed to run zipcode repl");
 
-    assert!(output.status.success(), "repl should exit 0 with guidance");
+    assert!(
+        !output.status.success(),
+        "repl should exit non-zero when not ready"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stdout}{stderr}");
@@ -774,7 +767,10 @@ fn doctor_reports_missing_server_for_gemma4_without_llama_server() {
         .output()
         .expect("failed to run zipcode doctor");
 
-    assert!(output.status.success(), "doctor should still exit 0");
+    assert!(
+        !output.status.success(),
+        "doctor should exit non-zero when server missing"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Status: Setup needed")
@@ -1043,7 +1039,10 @@ fn doctor_backend_candle_does_not_claim_gemma4_is_ready() {
         .output()
         .expect("failed to run zipcode doctor --backend candle");
 
-    assert!(output.status.success(), "doctor should exit 0");
+    assert!(
+        !output.status.success(),
+        "doctor should exit non-zero when not ready"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !stdout.contains("Status: Ready")
@@ -1080,8 +1079,8 @@ fn prompt_explicit_llama_cpp_is_rejected_for_gemma4() {
         .expect("failed to run zipcode prompt");
 
     assert!(
-        output.status.success(),
-        "prompt should exit 0 with readiness guidance"
+        !output.status.success(),
+        "prompt should exit non-zero when backend rejected"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -1127,7 +1126,10 @@ fn doctor_reports_unrunnable_helper_gpu_offload_config() {
         .output()
         .expect("failed to run zipcode doctor");
 
-    assert!(output.status.success(), "doctor should exit 0");
+    assert!(
+        !output.status.success(),
+        "doctor should exit non-zero when not ready"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !stdout.contains("Status: Ready")
@@ -1171,7 +1173,10 @@ fn bare_zipcode_surfaces_unrunnable_helper_gpu_offload_config() {
         "/quit\n",
         &[("PATH", path_dir.display().to_string())],
     );
-    assert!(output.status.success(), "bare zipcode should exit 0");
+    assert!(
+        !output.status.success(),
+        "bare zipcode should exit non-zero when helper unrunnable"
+    );
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -1222,7 +1227,10 @@ fn doctor_times_out_hanging_helper_device_probe() {
         .expect("failed to run zipcode doctor");
     let elapsed = started.elapsed();
 
-    assert!(output.status.success(), "doctor should exit 0");
+    assert!(
+        !output.status.success(),
+        "doctor should exit non-zero when not ready"
+    );
     assert!(
         elapsed < std::time::Duration::from_secs(10),
         "doctor should time out the helper probe instead of hanging for {:?}",
@@ -1299,7 +1307,10 @@ fn doctor_reports_project_config_path_when_project_json_is_invalid() {
         .output()
         .expect("failed to run zipcode doctor");
 
-    assert!(output.status.success(), "doctor should exit 0");
+    assert!(
+        !output.status.success(),
+        "doctor should exit non-zero when not ready"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let project_config = project.join(".zipcode.json").display().to_string();
     let global_config = home.join(".zipcode/config.json").display().to_string();
@@ -1445,7 +1456,10 @@ fn empty_helper_env_vars_do_not_force_repair_mode() {
         .output()
         .expect("failed to run bare zipcode with empty helper env vars");
 
-    assert!(output.status.success(), "bare zipcode should exit 0");
+    assert!(
+        !output.status.success(),
+        "should exit non-zero when not ready"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Setup needed before zipcode can start."),

@@ -118,7 +118,7 @@ pub fn run_default(
                 config_load.warning.as_deref(),
                 config_load.warning_path.as_deref(),
             );
-            Ok(())
+            Err(anyhow!("{}", state.headline()))
         }
     }
 }
@@ -166,7 +166,7 @@ pub fn run_prompt_command(
                 config_load.warning.as_deref(),
                 config_load.warning_path.as_deref(),
             );
-            Ok(())
+            Err(anyhow!("{}", state.headline()))
         }
     }
 }
@@ -278,6 +278,10 @@ pub fn doctor(model_path: Option<&Path>, backend_override: Option<&str>) -> Resu
     println!(
         "Tip: run `zipcode` with no arguments. It will start the chat REPL when ready and show setup help otherwise."
     );
+    if !matches!(readiness, UserReadiness::Ready) {
+        return Err(anyhow!("{}", readiness.headline()));
+    }
+
     Ok(())
 }
 
