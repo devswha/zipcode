@@ -2050,4 +2050,287 @@ mod tests {
             Some(TokenEvent::Done(FinishReason::ToolUse))
         ));
     }
+
+    // ── try_extract_prompt_eval_count edge cases ─────────────────────
+
+    #[test]
+    fn extract_prompt_eval_count_from_usage_prompt_tokens() {
+        let data = r#"{"usage":{"prompt_tokens":42}}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), Some(42));
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_from_timings_prompt_n() {
+        let data = r#"{"timings":{"prompt_n":128}}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), Some(128));
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_from_prompt_eval_count() {
+        let data = r#"{"prompt_eval_count":256}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), Some(256));
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_prefers_usage_over_timings() {
+        let data =
+            r#"{"usage":{"prompt_tokens":10},"timings":{"prompt_n":20},"prompt_eval_count":30}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), Some(10));
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_prefers_timings_over_prompt_eval() {
+        let data = r#"{"timings":{"prompt_n":20},"prompt_eval_count":30}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), Some(20));
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_empty_string_returns_none() {
+        assert_eq!(try_extract_prompt_eval_count(""), None);
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_malformed_json_returns_none() {
+        assert_eq!(try_extract_prompt_eval_count("not json"), None);
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_missing_all_fields_returns_none() {
+        let data = r#"{"other":123}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), None);
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_null_values_returns_none() {
+        let data = r#"{"usage":{"prompt_tokens":null}}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), None);
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_zero_is_valid() {
+        let data = r#"{"usage":{"prompt_tokens":0}}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), Some(0));
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_large_number() {
+        let data = r#"{"usage":{"prompt_tokens":999999}}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), Some(999_999));
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_string_value_returns_none() {
+        let data = r#"{"usage":{"prompt_tokens":"42"}}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), None);
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_whitespace_around_json() {
+        let data = r#"  {"usage":{"prompt_tokens":7}}  "#;
+        assert_eq!(try_extract_prompt_eval_count(data), Some(7));
+    }
+
+    #[test]
+    fn extract_prompt_eval_count_negative_in_usage_fails() {
+        // as_u64() returns None for negative numbers
+        let data = r#"{"usage":{"prompt_tokens":-5}}"#;
+        assert_eq!(try_extract_prompt_eval_count(data), None);
+    }
+
+    // ── extract_message_content edge cases ──────────────────────────
+
+    #[test]
+    fn extract_message_content_simple_string() {
+        let msg = json!({"content": "hello world"});
+        assert_eq!(extract_message_content(&msg), "hello world");
+    }
+
+    #[test]
+    fn extract_message_content_empty_string() {
+        let msg = json!({"content": ""});
+        assert_eq!(extract_message_content(&msg), "");
+    }
+
+    #[test]
+    fn extract_message_content_array_of_text_parts() {
+        let msg = json!({"content": [{"text": "hello "}, {"text": "world"}]});
+        assert_eq!(extract_message_content(&msg), "hello world");
+    }
+
+    #[test]
+    fn extract_message_content_array_with_non_text_parts_filtered() {
+        let msg = json!({"content": [{"text": "visible"}, {"type": "image"}]});
+        assert_eq!(extract_message_content(&msg), "visible");
+    }
+
+    #[test]
+    fn extract_message_content_null_content_returns_empty() {
+        let msg = json!({"content": null});
+        assert_eq!(extract_message_content(&msg), "");
+    }
+
+    #[test]
+    fn extract_message_content_missing_content_returns_empty() {
+        let msg = json!({"role": "user"});
+        assert_eq!(extract_message_content(&msg), "");
+    }
+
+    #[test]
+    fn extract_message_content_empty_array_returns_empty() {
+        let msg = json!({"content": []});
+        assert_eq!(extract_message_content(&msg), "");
+    }
+
+    // ── parse_response_tool_calls edge cases ─────────────────────────
+
+    #[test]
+    fn parse_response_tool_calls_single_tool() {
+        let msg = json!({
+            "tool_calls": [{
+                "id": "call_abc",
+                "function": {
+                    "name": "bash",
+                    "arguments": "{\"cmd\":\"ls\"}"
+                }
+            }]
+        });
+        let calls = parse_response_tool_calls(&msg);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_abc");
+        assert_eq!(calls[0].name, "bash");
+    }
+
+    #[test]
+    fn parse_response_tool_calls_missing_tool_calls_returns_empty() {
+        let msg = json!({"content": "no tools"});
+        let calls = parse_response_tool_calls(&msg);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn parse_response_tool_calls_null_tool_calls_returns_empty() {
+        let msg = json!({"tool_calls": null});
+        let calls = parse_response_tool_calls(&msg);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn parse_response_tool_calls_empty_array_returns_empty() {
+        let msg = json!({"tool_calls": []});
+        let calls = parse_response_tool_calls(&msg);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn parse_response_tool_calls_missing_id_defaults_to_call_0() {
+        let msg = json!({
+            "tool_calls": [{
+                "function": {
+                    "name": "read_file",
+                    "arguments": "{}"
+                }
+            }]
+        });
+        let calls = parse_response_tool_calls(&msg);
+        assert_eq!(calls[0].id, "call_0");
+    }
+
+    #[test]
+    fn parse_response_tool_calls_missing_name_defaults_to_empty() {
+        let msg = json!({
+            "tool_calls": [{
+                "id": "call_1",
+                "function": {
+                    "arguments": "{}"
+                }
+            }]
+        });
+        let calls = parse_response_tool_calls(&msg);
+        assert_eq!(calls[0].name, "");
+    }
+
+    #[test]
+    fn parse_response_tool_calls_malformed_arguments_gets_empty_object() {
+        let msg = json!({
+            "tool_calls": [{
+                "id": "call_2",
+                "function": {
+                    "name": "bash",
+                    "arguments": "not valid json"
+                }
+            }]
+        });
+        let calls = parse_response_tool_calls(&msg);
+        assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn parse_response_tool_calls_missing_arguments_gets_empty_object() {
+        let msg = json!({
+            "tool_calls": [{
+                "id": "call_3",
+                "function": {
+                    "name": "bash"
+                }
+            }]
+        });
+        let calls = parse_response_tool_calls(&msg);
+        assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn parse_response_tool_calls_multiple_tools() {
+        let msg = json!({
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "bash", "arguments": "{\"cmd\":\"ls\"}"}},
+                {"id": "c2", "function": {"name": "read_file", "arguments": "{\"path\":\"/tmp/x\"}"}}
+            ]
+        });
+        let calls = parse_response_tool_calls(&msg);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[1].name, "read_file");
+    }
+
+    #[test]
+    fn parse_response_tool_calls_non_string_arguments_gets_empty_object() {
+        let msg = json!({
+            "tool_calls": [{
+                "id": "call_4",
+                "function": {
+                    "name": "bash",
+                    "arguments": 42
+                }
+            }]
+        });
+        let calls = parse_response_tool_calls(&msg);
+        assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    // ── flash_attention_mode_from_help additional edge cases ─────────
+
+    #[test]
+    fn flash_attention_mode_from_help_set_usage_phrase_only() {
+        assert_eq!(
+            flash_attention_mode_from_help("  set Flash Attention use for inference  "),
+            FlashAttentionMode::ExplicitOnValue
+        );
+    }
+
+    #[test]
+    fn flash_attention_mode_from_help_bracket_phrase_only() {
+        assert_eq!(
+            flash_attention_mode_from_help("Options:\n  -fa [on|off|auto]\n"),
+            FlashAttentionMode::ExplicitOnValue
+        );
+    }
+
+    #[test]
+    fn flash_attention_mode_from_help_case_sensitive_brackets() {
+        // "[ON|OFF|AUTO]" should NOT match the lowercase pattern
+        assert_eq!(
+            flash_attention_mode_from_help("-fa [ON|OFF|AUTO]"),
+            FlashAttentionMode::LegacyFlagOnly
+        );
+    }
 }
