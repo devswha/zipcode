@@ -345,4 +345,210 @@ mod tests {
         assert!(!is_verbose());
         set_verbose(prior);
     }
+
+    // ── Edge-case tests for summarize_tool_args ────────────────────
+
+    #[test]
+    fn summarize_write_file_missing_path_key_shows_question_mark() {
+        let args = serde_json::json!({"content": "hello"});
+        let summary = summarize_tool_args("write_file", &args, 120);
+        assert!(
+            summary.contains("path=?"),
+            "missing 'path' key should fallback to '?', got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_write_file_null_path_shows_question_mark() {
+        let args = serde_json::json!({"path": null, "content": "hello"});
+        let summary = summarize_tool_args("write_file", &args, 120);
+        assert!(
+            summary.contains("path=?"),
+            "null 'path' should fallback to '?', got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_write_file_empty_content_shows_1_line() {
+        let args = serde_json::json!({"path": "f.txt", "content": ""});
+        let summary = summarize_tool_args("write_file", &args, 120);
+        assert!(summary.contains("path=f.txt"));
+        assert!(
+            summary.contains("1 lines"),
+            "empty content should count as 1 line, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_write_file_non_string_path_uses_unwrap_or() {
+        let args = serde_json::json!({"path": 42, "content": "x"});
+        let summary = summarize_tool_args("write_file", &args, 120);
+        // as_str() returns None for number, so fallback is "?"
+        assert!(
+            summary.contains("path=?"),
+            "non-string path should fallback to '?', got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_edit_file_missing_path_shows_question_mark() {
+        let args = serde_json::json!({"old_string": "a", "new_string": "b"});
+        let summary = summarize_tool_args("edit_file", &args, 120);
+        assert!(
+            summary.contains("path=?"),
+            "missing 'path' should fallback to '?', got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_edit_file_null_strings_count_as_zero_lines() {
+        let args = serde_json::json!({"path": "a.rs", "old_string": null, "new_string": null});
+        let summary = summarize_tool_args("edit_file", &args, 120);
+        assert!(summary.contains("path=a.rs"));
+        assert!(
+            summary.contains("-0/+0 lines"),
+            "null strings should count as 0 lines, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_bash_empty_command_shows_empty() {
+        let args = serde_json::json!({"command": ""});
+        let summary = summarize_tool_args("bash", &args, 120);
+        assert_eq!(summary, "");
+    }
+
+    #[test]
+    fn summarize_bash_null_command_shows_empty() {
+        let args = serde_json::json!({"command": null});
+        let summary = summarize_tool_args("bash", &args, 120);
+        assert_eq!(summary, "");
+    }
+
+    #[test]
+    fn summarize_bash_missing_command_key_shows_empty() {
+        let args = serde_json::json!({});
+        let summary = summarize_tool_args("bash", &args, 120);
+        assert_eq!(summary, "");
+    }
+
+    #[test]
+    fn summarize_repl_single_line_code_no_line_count() {
+        let args = serde_json::json!({"code": "print(42)"});
+        let summary = summarize_tool_args("repl", &args, 120);
+        assert!(
+            summary.contains("print(42)"),
+            "single-line code should show preview, got: {summary}"
+        );
+        assert!(
+            !summary.contains("lines"),
+            "single-line code should NOT show line count, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarize_repl_empty_code_shows_empty() {
+        let args = serde_json::json!({"code": ""});
+        let summary = summarize_tool_args("repl", &args, 120);
+        assert_eq!(summary, "");
+    }
+
+    #[test]
+    fn summarize_repl_null_code_shows_empty() {
+        let args = serde_json::json!({"code": null});
+        let summary = summarize_tool_args("repl", &args, 120);
+        assert_eq!(summary, "");
+    }
+
+    // ── Edge-case tests for format_tool_args ───────────────────────
+
+    #[test]
+    fn format_args_with_null_value() {
+        let args = serde_json::json!({"key": null});
+        let formatted = format_tool_args(&args, 120);
+        assert!(
+            formatted.contains("key=null"),
+            "null value should render as 'null', got: {formatted}"
+        );
+    }
+
+    #[test]
+    fn format_args_with_boolean_values() {
+        let args = serde_json::json!({"flag": true, "other": false});
+        let formatted = format_tool_args(&args, 120);
+        assert!(formatted.contains("flag=true"));
+        assert!(formatted.contains("other=false"));
+    }
+
+    #[test]
+    fn format_args_with_number_values() {
+        let args = serde_json::json!({"count": 42, "ratio": 2.71});
+        let formatted = format_tool_args(&args, 120);
+        assert!(formatted.contains("count=42"));
+        assert!(formatted.contains("ratio=2.71"));
+    }
+
+    #[test]
+    fn format_args_with_nested_object() {
+        let args = serde_json::json!({"config": {"nested": "value"}});
+        let formatted = format_tool_args(&args, 120);
+        assert!(
+            formatted.contains("config="),
+            "nested object should be rendered, got: {formatted}"
+        );
+    }
+
+    #[test]
+    fn format_args_with_array_value() {
+        let args = serde_json::json!({"items": [1, 2, 3]});
+        let formatted = format_tool_args(&args, 120);
+        assert!(
+            formatted.contains("items=[1"),
+            "array should render as JSON, got: {formatted}"
+        );
+    }
+
+    #[test]
+    fn format_args_with_empty_object() {
+        let args = serde_json::json!({});
+        let formatted = format_tool_args(&args, 120);
+        assert_eq!(formatted, "");
+    }
+
+    #[test]
+    fn format_args_with_non_object_json_returns_string_repr() {
+        let args = serde_json::json!("just a string");
+        let formatted = format_tool_args(&args, 120);
+        assert_eq!(formatted, "\"just a string\"");
+    }
+
+    #[test]
+    fn format_args_with_json_array_falls_back() {
+        let args = serde_json::json!([1, 2, 3]);
+        let formatted = format_tool_args(&args, 120);
+        // serde_json compact serialization has no spaces
+        assert!(
+            formatted.starts_with('[') && formatted.contains('1'),
+            "array should serialize, got: {formatted}"
+        );
+    }
+
+    #[test]
+    fn summarize_unknown_tool_with_empty_args_object() {
+        let args = serde_json::json!({});
+        let summary = summarize_tool_args("custom_tool", &args, 120);
+        assert_eq!(summary, "");
+    }
+
+    #[test]
+    fn summarize_write_file_truncates_long_summary_to_max_width() {
+        let long_path = "a".repeat(200);
+        let args = serde_json::json!({"path": long_path, "content": "x"});
+        let summary = summarize_tool_args("write_file", &args, 40);
+        assert!(
+            summary.len() <= 43, // allow for multi-byte ellipsis
+            "summary should be truncated to max_width, got {} chars: {summary}",
+            summary.len()
+        );
+    }
 }
