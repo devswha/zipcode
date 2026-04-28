@@ -72,10 +72,11 @@ cli → runtime → inference
 
 ## Current Limitations (known issues to address)
 
-1. **Gemma 4 on native bindings is still blocked** — `llama-cpp-rs` 0.1.141 still lacks `gemma4` architecture support, so zipcode now falls back to a recent external `llama-server` binary when `ZIPCODE_LLAMA_SERVER_BIN` is set or `llama-server` is on PATH.
+1. **Gemma 4 on native bindings is still blocked** — `llama-cpp-rs` 0.1.141 still lacks `gemma4` architecture support, so zipcode falls back to a recent external `llama-server` binary when `ZIPCODE_LLAMA_SERVER_BIN` is set or `llama-server` is on PATH.
 2. **candle backend has no quantized Gemma** — candle 0.8 has no `quantized_gemma` module. Uses `quantized_llama` as stand-in. Only compiles, does not actually load Gemma GGUF.
-3. **Chat template is Gemma-only** — Other models (Qwen, Llama) use different tool-calling formats. Models that don't understand `<tool_call>` tags won't trigger tool execution.
-4. **Agent tool is a stub** — Returns "not yet implemented".
+3. **Native-format templates are metadata on llama-server** — `ChatMLTemplate`, `Llama31Template`, and `GemmaTemplate.render_prompt` are all bypassed when llama-server runs with `--jinja` (production default). The GGUF's embedded Jinja template renders prompts and OpenAI-shape `tool_calls` are parsed by `parse_response_tool_calls`. The trait still drives the candle/llama-cpp-rs paths and the entire `EmulatorTemplate` path. See module docstring on `crates/inference/src/chat_template.rs` for the table.
+4. **Small instruction-tuned models can't drive sub-agent or 12-call compaction flows end-to-end** — the harness logic is verified by mock-based integration tests (`tests/agent_delegation.rs`, `tests/compaction.rs`); a real `zipcode prompt` exercising spawn_child or tier-1 compaction needs a model with strong tool-stopping training. Gemma 4 E2B reliably runs single tool calls + skill `tool_allowlist`. The `supergemma4-26b-uncensored` variant from Phase 5 testing under-stops on multi-tool tasks (hits `MAX_TOOL_ITERATIONS=25` guard), but that is a model issue, not a harness one — the guard fires correctly.
+5. **`zipcode skill` was previously bypassing `tool_allowlist`** — fixed in commit `121bc87`. CLI one-shot now applies the same `ToolRegistry::create_filtered` step the in-loop `SkillTool::execute` uses, so authors can rely on the allowlist as a real security boundary.
 
 ## File Conventions
 
