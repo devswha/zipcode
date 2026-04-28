@@ -566,7 +566,13 @@ fn terminate_child_tree(child: &mut Child) {
 }
 
 fn probe_helper_devices(helper_path: &Path) -> HelperDeviceProbe {
-    const HELPER_DEVICE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+    // 2s was too tight: cold-cache `--list-devices` runs trip CUDA init,
+    // which can spend 3-4s loading nvidia kernels before the binary even
+    // prints anything. The probe was producing false-positive timeouts on
+    // first invocations after a system idle period. 6s gives a comfortable
+    // margin without making the steady-state startup feel slow (warm-cache
+    // probes still complete in well under a second).
+    const HELPER_DEVICE_PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 
     let Ok(mut child) = Command::new(helper_path)
         .arg("--list-devices")
@@ -713,6 +719,7 @@ fn build_startup_notices(
 }
 
 /// Build and return a `ConversationLoop` plus launch metadata.
+#[allow(clippy::too_many_lines)]
 pub fn prepare_loop(
     model_path: Option<&Path>,
     permission_mode: Option<&str>,
@@ -813,16 +820,13 @@ pub fn prepare_loop(
 
     // Load skills from .zipcode/skills/ if present (silent on missing dir)
     let skills_dir = project_root.join(".zipcode/skills");
-    let skill_registry = match SkillRegistry::load_from(&skills_dir) {
-        Ok(r) => {
-            if r.names().is_empty() {
-                None
-            } else {
-                Some(std::sync::Arc::new(r))
-            }
+    let skill_registry = SkillRegistry::load_from(&skills_dir).map_or(None, |r| {
+        if r.names().is_empty() {
+            None
+        } else {
+            Some(std::sync::Arc::new(r))
         }
-        Err(_) => None,
-    };
+    });
 
     // Build tools and system prompt
     let mut registry = build_registry();

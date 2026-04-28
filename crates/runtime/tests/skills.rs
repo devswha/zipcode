@@ -27,14 +27,14 @@ impl StreamCallback for NoopCallback {
     fn on_error(&mut self, _error: &str) {}
 }
 
-/// Serializes all tests that mutate ZIPCODE_SESSIONS_DIR so they don't race.
+/// Serializes all tests that mutate `ZIPCODE_SESSIONS_DIR` so they don't race.
 static SESSION_DIR_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn with_temp_session_dir() -> (TempDir, std::sync::MutexGuard<'static, ()>) {
     let guard = SESSION_DIR_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = TempDir::new().unwrap();
     std::env::set_var("ZIPCODE_SESSIONS_DIR", dir.path());
     (dir, guard)
@@ -64,7 +64,7 @@ fn skill_md(name: &str, description: &str, allowlist: &[&str], body: &str) -> St
 fn build_loop_with_skill_tool(
     dir: &TempDir,
     mock: MockInferenceProvider,
-    skill_registry: Arc<SkillRegistry>,
+    skill_registry: &Arc<SkillRegistry>,
     permission: PermissionMode,
 ) -> ConversationLoop {
     use zipcode_tools::{
@@ -78,7 +78,7 @@ fn build_loop_with_skill_tool(
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(GrepSearchTool));
     registry.register(Box::new(SkillTool {
-        registry: Arc::clone(&skill_registry),
+        registry: Arc::clone(skill_registry),
     }));
 
     let tool_specs: Vec<zipcode_inference::chat_template::ToolSpec> = registry
@@ -102,7 +102,7 @@ fn build_loop_with_skill_tool(
         depth: 0,
         last_sent_idx: 0,
         child_session_ids: Arc::new(Mutex::new(Vec::new())),
-        skill_registry: Some(Arc::clone(&skill_registry)),
+        skill_registry: Some(Arc::clone(skill_registry)),
         compact_policy: CompactPolicy::default(),
     }
 }
@@ -135,7 +135,7 @@ fn test_skill_registry_loads_three_skills() {
 
     let registry = SkillRegistry::load_from(dir.path()).unwrap();
     let mut names = registry.names();
-    names.sort();
+    names.sort_unstable();
 
     assert_eq!(names.len(), 3, "should load exactly 3 skills");
     assert_eq!(names, vec!["review", "search", "test"]);
@@ -195,7 +195,7 @@ fn test_skill_tool_invokes_child_agent() {
 
     std::fs::write(dir.path().join("hello.txt"), "hello file content").unwrap();
 
-    let mut conv = build_loop_with_skill_tool(&dir, mock, registry, PermissionMode::FullAccess);
+    let mut conv = build_loop_with_skill_tool(&dir, mock, &registry, PermissionMode::FullAccess);
     conv.run_turn("invoke greet skill", &mut NoopCallback)
         .unwrap();
 
@@ -216,8 +216,7 @@ fn test_skill_tool_invokes_child_agent() {
         .messages
         .iter()
         .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("skill_call_1"))
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
+        .map_or("", |m| m.content.as_str());
     assert!(
         skill_result_content.contains("child completed greeting"),
         "skill tool result must contain child summary, got: {skill_result_content}"
@@ -329,12 +328,7 @@ fn test_skill_render_substitutes_params_e2e() {
         MockResponse::Text("review done".to_string()),
     ]);
 
-    let mut conv = build_loop_with_skill_tool(
-        &dir,
-        mock,
-        Arc::clone(&registry),
-        PermissionMode::FullAccess,
-    );
+    let mut conv = build_loop_with_skill_tool(&dir, mock, &registry, PermissionMode::FullAccess);
 
     conv.run_turn("run the review skill", &mut NoopCallback)
         .unwrap();
@@ -356,8 +350,7 @@ fn test_skill_render_substitutes_params_e2e() {
         .messages
         .iter()
         .find(|m| m.role == Role::User)
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
+        .map_or("", |m| m.content.as_str());
 
     assert!(
         child_user_msg.contains("main..feature-branch"),
@@ -378,8 +371,7 @@ fn test_skill_render_substitutes_params_e2e() {
         .messages
         .iter()
         .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("skill_call_review"))
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
+        .map_or("", |m| m.content.as_str());
     assert!(
         skill_result.contains("child review complete"),
         "skill tool result must surface child summary, got: {skill_result}"
@@ -441,7 +433,7 @@ fn test_skill_tool_allowlist_scopes_child_registry() {
         MockResponse::Text("skill done".to_string()),
     ]);
 
-    let mut conv = build_loop_with_skill_tool(&dir, mock, registry, PermissionMode::FullAccess);
+    let mut conv = build_loop_with_skill_tool(&dir, mock, &registry, PermissionMode::FullAccess);
     conv.run_turn("run readonly skill", &mut NoopCallback)
         .unwrap();
 
@@ -490,7 +482,7 @@ fn test_skill_tool_unknown_skill_errors_lists_available() {
         MockResponse::Text("handled error".to_string()),
     ]);
 
-    let mut conv = build_loop_with_skill_tool(&dir, mock, registry, PermissionMode::FullAccess);
+    let mut conv = build_loop_with_skill_tool(&dir, mock, &registry, PermissionMode::FullAccess);
     conv.run_turn("invoke nonexistent skill", &mut NoopCallback)
         .unwrap();
 
@@ -500,8 +492,7 @@ fn test_skill_tool_unknown_skill_errors_lists_available() {
         .messages
         .iter()
         .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("skill_unknown"))
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
+        .map_or("", |m| m.content.as_str());
 
     assert!(
         skill_result.contains("nonexistent-skill"),
@@ -550,7 +541,7 @@ fn test_skill_cli_building_blocks() {
 
     // Verify 2 skills loaded
     let mut names = registry.names();
-    names.sort();
+    names.sort_unstable();
     assert_eq!(names, vec!["deploy", "review"]);
 
     // Verify render with params
@@ -579,7 +570,7 @@ fn test_skill_cli_building_blocks() {
         "nonexistent skill must return None"
     );
     let mut available = registry.names();
-    available.sort();
+    available.sort_unstable();
     assert!(
         available.contains(&"deploy"),
         "available list must include 'deploy'"

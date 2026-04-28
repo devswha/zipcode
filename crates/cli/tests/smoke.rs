@@ -50,17 +50,17 @@ fn write_file(path: &std::path::Path, body: &str) {
 }
 
 fn prepend_path(dir: &std::path::Path) -> String {
-    match std::env::var_os("PATH") {
-        Some(existing) => {
+    std::env::var_os("PATH").map_or_else(
+        || dir.display().to_string(),
+        |existing| {
             let mut paths = vec![dir.to_path_buf()];
             paths.extend(std::env::split_paths(&existing));
             std::env::join_paths(paths)
                 .expect("join PATH")
                 .to_string_lossy()
                 .into_owned()
-        }
-        None => dir.display().to_string(),
-    }
+        },
+    )
 }
 
 fn write_fake_git(path: &std::path::Path) {
@@ -279,16 +279,17 @@ fn run_zipcode_in_pty(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let env_lines = extra_env
+    let env_lines: String = extra_env
         .iter()
-        .map(|(key, value)| format!("env[{key:?}] = {value:?}\n"))
-        .collect::<String>();
-    let automation_script = automation_script
-        .map(|script| format!("{script:?}"))
-        .unwrap_or_else(|| "None".to_string());
-    let input_script = input_script
-        .map(|script| format!("{script:?}"))
-        .unwrap_or_else(|| "None".to_string());
+        .fold(String::new(), |mut acc, (key, value)| {
+            use std::fmt::Write;
+            let _ = writeln!(acc, "env[{key:?}] = {value:?}");
+            acc
+        });
+    let automation_script =
+        automation_script.map_or_else(|| "None".to_string(), |script| format!("{script:?}"));
+    let input_script =
+        input_script.map_or_else(|| "None".to_string(), |script| format!("{script:?}"));
     let has_automation_script = if automation_script == "None" {
         "False"
     } else {
@@ -1233,8 +1234,7 @@ fn doctor_times_out_hanging_helper_device_probe() {
     );
     assert!(
         elapsed < std::time::Duration::from_secs(10),
-        "doctor should time out the helper probe instead of hanging for {:?}",
-        elapsed
+        "doctor should time out the helper probe instead of hanging for {elapsed:?}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -1773,6 +1773,7 @@ fn root_install_script_interviews_users_with_links_then_paths() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn root_install_script_can_download_in_terminal_then_finish_setup() {
     let home = make_temp_dir("root-install-terminal-download");
     let asset_dir = make_temp_dir("root-install-terminal-download-assets");
@@ -1954,6 +1955,7 @@ echo "fake helper builder installed llama-server into $install_dir/bin/llama-ser
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn root_install_script_handles_multiple_existing_models_and_still_reaches_ready_setup() {
     let home = make_temp_dir("root-install-multi-existing");
     let model_dir = home.join(".zipcode/models");
@@ -2073,6 +2075,7 @@ echo "fake helper builder installed llama-server into $install_dir/bin/llama-ser
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn fullscreen_repl_e2e_accepts_status_and_quit() {
     let python = if Command::new("python3").arg("--version").output().is_ok() {
         "python3"
@@ -2408,6 +2411,7 @@ fn fullscreen_compact_noop_is_reported_as_skipped() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, clippy::literal_string_with_formatting_args)]
 fn build_llama_server_retries_cpu_only_after_cuda_failure() {
     let temp = make_temp_dir("build-llama-server-cpu-fallback");
     let fake_bin = temp.join("bin");
@@ -2535,6 +2539,7 @@ exit 0
 }
 
 #[test]
+#[allow(clippy::too_many_lines, clippy::literal_string_with_formatting_args)]
 fn build_llama_server_uses_gcc10_host_compiler_when_available() {
     let temp = make_temp_dir("build-llama-server-gcc10");
     let fake_bin = temp.join("bin");
