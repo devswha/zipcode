@@ -147,6 +147,14 @@ fn main() -> Result<()> {
     let backend = cli.backend.as_deref();
     let session_id = cli.session.as_deref();
 
+    // Fail fast on a typo'd `--session` regardless of subcommand. Without
+    // this, `zipcode --session does-not-exist doctor` (and any other
+    // subcommand that doesn't actually consume `session_id`) silently
+    // ignored the flag and exited 0, hiding shell-script bugs.
+    if let Some(id) = session_id {
+        commands::validate_session_id_or_exit(id)?;
+    }
+
     match cli.command {
         Some(Commands::Repl) => {
             commands::run_repl_command(model_path, permission_mode, backend, session_id, cli.ui)?;

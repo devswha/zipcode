@@ -90,6 +90,31 @@ struct UpdateStatus {
     dirty: bool,
 }
 
+/// Validate that a `--session ID` value is non-empty, well-formed, and
+/// points at an existing session file. Used at process entry so any
+/// subcommand — including ones that don't consume the flag (`doctor`,
+/// `setup`, `update`, `skill`) — fails fast on a typo instead of silently
+/// ignoring the request and exiting 0.
+///
+/// # Errors
+/// Returns an error if the id is empty, malformed (rejected by
+/// `Session::path_for_id`), or no session file exists at the resolved path.
+pub fn validate_session_id_or_exit(id: &str) -> Result<()> {
+    if id.is_empty() {
+        anyhow::bail!("--session ID is empty; expected a session id like '8f2c…'");
+    }
+    let path = zipcode_runtime::Session::path_for_id(id)
+        .with_context(|| format!("--session '{id}' is not a valid session id"))?;
+    if !path.exists() {
+        anyhow::bail!(
+            "--session '{id}' not found at {}. Run `zipcode` to start a fresh session, \
+             or pass an existing id from `~/.zipcode/sessions/`.",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Default zipcode entrypoint: start the REPL when ready, otherwise guide setup/repair.
 pub fn run_default(
     model_path: Option<&Path>,
@@ -1902,6 +1927,29 @@ mod tests {
     fn classify_user_readiness_ready_when_no_issues() {
         let report = sample_report(ReadinessStatus::NativeOk);
         assert_eq!(classify_user_readiness(&report, None), UserReadiness::Ready);
+    }
+
+    #[test]
+    fn validate_session_id_or_exit_rejects_empty_id() {
+        let err = validate_session_id_or_exit("").unwrap_err().to_string();
+        assert!(err.contains("empty"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_session_id_or_exit_rejects_path_traversal() {
+        let err = validate_session_id_or_exit("../escape").unwrap_err();
+        assert!(err.to_string().contains("--session"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_session_id_or_exit_rejects_nonexistent_session() {
+        let id = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+        let err = validate_session_id_or_exit(id).unwrap_err().to_string();
+        assert!(err.contains("not found"), "got: {err}");
+        assert!(
+            err.contains(id),
+            "error must name the offending id, got: {err}"
+        );
     }
 
     // ── validate_gguf_file tests ──────────────────────────────────
