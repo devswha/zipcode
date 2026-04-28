@@ -562,6 +562,7 @@ mod tests {
 
     #[test]
     fn test_session_roundtrip() {
+        let (_dir, _guard) = crate::test_support::with_test_session_dir();
         let mut session = Session::new();
         session.push_message(ChatMessage::user("test"));
 
@@ -569,14 +570,11 @@ mod tests {
         session.save().unwrap();
         let loaded = Session::load(&session.id).unwrap();
         assert_eq!(loaded.messages.len(), 1);
-
-        // Cleanup
-        let path = session.path();
-        std::fs::remove_file(path).ok();
     }
 
     #[test]
     fn test_load_rejects_mismatched_session_id() {
+        let (_dir, _guard) = crate::test_support::with_test_session_dir();
         let session = Session::new();
         let path = session.path();
         session.save().unwrap();
@@ -588,8 +586,6 @@ mod tests {
 
         let error = Session::load(&session.id).unwrap_err().to_string();
         assert!(error.contains("Session id mismatch"));
-
-        std::fs::remove_file(path).ok();
     }
 
     #[test]
@@ -1645,14 +1641,14 @@ mod tests {
     }
 
     // ── session_path direct tests ────────────────────────────────
-    // NOTE: We cannot test ZIPCODE_SESSIONS_DIR env var in a unit test
-    // because it causes race conditions with parallel tests that use
-    // session_path() (e.g., test_session_roundtrip). Instead, verify
-    // the default path construction only.
-
     #[test]
     fn test_session_path_default_format() {
-        // Ensure env var is NOT set for this test
+        // Acquire the shared SESSION_DIR_LOCK so removing the env var here
+        // cannot race with sibling tests that set it.
+        let _guard = crate::test_support::SESSION_DIR_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::env::remove_var("ZIPCODE_SESSIONS_DIR");
         let path = session_path("my-session-id");
         // Default path should end with .zipcode/sessions/my-session-id.json

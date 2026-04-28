@@ -1175,24 +1175,7 @@ mod tests {
 
     // ── Compaction integration tests ──────────────────────────────
 
-    /// Shared mutex serialising `ZIPCODE_SESSIONS_DIR` mutation across every
-    /// unit test in this binary.  Without this, parallel tests race on the
-    /// global env var and `Session::path` resolution observes a foreign temp
-    /// dir mid-test.
-    static SESSION_DIR_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-
-    /// Redirect session writes to a temp dir.  Returns the `TempDir` (keeping
-    /// it alive for the caller's scope) and the held lock guard so the env
-    /// var mutation cannot collide with sibling tests.
-    fn with_test_session_dir() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
-        let guard = SESSION_DIR_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        std::env::set_var("ZIPCODE_SESSIONS_DIR", dir.path());
-        (dir, guard)
-    }
+    use crate::test_support::with_test_session_dir;
 
     /// Build a minimal `ConversationLoop` with a `MockInferenceProvider` and the
     /// given `CompactPolicy`.  Uses /tmp as cwd (no real tools needed).

@@ -6,6 +6,9 @@ pub mod session;
 pub mod skill_tool;
 pub mod skills;
 
+#[cfg(test)]
+mod test_support;
+
 pub use config::ZipcodeConfig;
 pub use conversation::{
     compute_child_budget, convert_tool_specs, ConversationLoop, StreamCallback, MAX_AGENT_DEPTH,
