@@ -320,12 +320,36 @@ pub fn setup(
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let config_load = load_config_with_warning(&cwd);
     let report = build_readiness_report(&cwd, &config_load.config, model_path, backend_override)?;
-    let readiness = classify_user_readiness(&report, None);
+    let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
 
+    // `setup --skip-smoke` is the documented first-run / repair path. When the
+    // host isn't actually ready, fall through to the same friendly guidance
+    // bare `zipcode` and `doctor` print instead of bailing with a terse
+    // missing-model error. This surfaces malformed `.zipcode.json` (issue #51)
+    // and missing-model state (issue #49) the same way doctor does.
+    if !matches!(readiness, UserReadiness::Ready) {
+        print_startup_guidance(
+            readiness,
+            &report,
+            config_load.warning.as_deref(),
+            config_load.warning_path.as_deref(),
+        );
+        println!();
+        if skip_smoke {
+            println!("Smoke: skipped until setup is complete");
+            return Ok(());
+        }
+        anyhow::bail!(
+            "setup incomplete: follow the steps above, then rerun `zipcode setup --skip-smoke`"
+        );
+    }
+
+    // `Ready` implies `classify_readiness` returned `NativeOk` or
+    // `FallbackRequired`, both of which require a discovered model.
     let model = report
         .model
         .clone()
-        .ok_or_else(|| anyhow!(missing_model_message(&report)))?;
+        .expect("Ready readiness implies a usable model path");
     let mut global_config = ZipcodeConfig::load_global().unwrap_or_default();
     global_config.model_dir = model
         .parent()
@@ -369,17 +393,6 @@ pub fn setup(
 
     for line in next_steps(readiness, &report, None, None) {
         println!("{line}");
-    }
-
-    if !matches!(readiness, UserReadiness::Ready) {
-        if skip_smoke {
-            println!("Smoke: skipped until setup is complete");
-            return Ok(());
-        }
-
-        anyhow::bail!(
-            "setup incomplete: add the missing files, then rerun `zipcode setup --skip-smoke`"
-        );
     }
 
     if skip_smoke {
@@ -1246,19 +1259,6 @@ fn model_location_hint(report: &ReadinessReport) -> String {
     )
 }
 
-fn missing_model_message(report: &ReadinessReport) -> String {
-    if report.model_issue_is_misconfigured {
-        if let Some(issue) = &report.model_issue {
-            return issue.clone();
-        }
-    }
-
-    format!(
-        "No .gguf AI model found. Looked in: {}",
-        format_search_paths(&report.model_search)
-    )
-}
-
 fn missing_server_hint() -> String {
     let install_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -1826,44 +1826,6 @@ mod tests {
         // User explicitly set FA=true in JSON but config has false? Should not upgrade
         // (config.flash_attention is already handled by the first check)
         assert!(!should_upgrade_flash_attention(&config, Some(&raw)));
-    }
-
-    #[test]
-    fn missing_model_message_shows_misconfigured_issue_when_flag_set() {
-        let mut report = sample_report(ReadinessStatus::MissingModel);
-        report.model = None;
-        report.model_issue = Some("configured model path does not exist".to_string());
-        report.model_issue_is_misconfigured = true;
-
-        let msg = missing_model_message(&report);
-        assert_eq!(msg, "configured model path does not exist");
-    }
-
-    #[test]
-    fn missing_model_message_falls_through_to_search_paths() {
-        let mut report = sample_report(ReadinessStatus::MissingModel);
-        report.model = None;
-        report.model_issue = None;
-        report.model_issue_is_misconfigured = false;
-        report.model_search = vec![
-            PathBuf::from("/home/user/.zipcode/models"),
-            PathBuf::from("/project/models"),
-        ];
-
-        let msg = missing_model_message(&report);
-        assert!(msg.starts_with("No .gguf AI model found."));
-        assert!(msg.contains("/home/user/.zipcode/models"));
-        assert!(msg.contains("/project/models"));
-    }
-
-    #[test]
-    fn missing_model_message_with_empty_search_paths() {
-        let mut report = sample_report(ReadinessStatus::MissingModel);
-        report.model = None;
-        report.model_search = vec![];
-
-        let msg = missing_model_message(&report);
-        assert!(msg.starts_with("No .gguf AI model found."));
     }
 
     #[test]

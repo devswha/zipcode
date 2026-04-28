@@ -1401,6 +1401,108 @@ fn setup_writes_config_and_wrapper_when_smoke_skipped() {
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
 }
 
+/// Regression for #49: `zipcode setup --skip-smoke` with no local model must
+/// surface the friendly first-run guidance (model location, next steps) and
+/// exit cleanly under `--skip-smoke`, instead of bailing with the terse
+/// `No .gguf AI model found` error.
+#[test]
+fn setup_skip_smoke_guides_first_run_when_model_missing() {
+    let home = make_temp_dir("setup-skip-smoke-no-model");
+    let isolated_path = home.join("empty-path");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+
+    let output = zipcode_bin()
+        .args(["setup", "--skip-smoke"])
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode setup --skip-smoke");
+
+    assert!(
+        output.status.success(),
+        "setup --skip-smoke should exit 0 in no-model first-run state, got: {output:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("Setup needed before zipcode can start."),
+        "setup should print friendly first-run guidance, got stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Copy a .gguf AI model into"),
+        "setup should explain where to put the model, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Smoke: skipped until setup is complete"),
+        "setup should report skipped smoke, got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("Error: No .gguf AI model found"),
+        "setup should NOT bail with the terse missing-model error, got stderr: {stderr}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+/// Regression for #51: `zipcode setup --skip-smoke` from a directory with a
+/// malformed project-local `.zipcode.json` must surface the parse failure
+/// (matching `doctor`'s behavior) instead of silently ignoring it and
+/// reporting only a generic missing-model error.
+#[test]
+fn setup_skip_smoke_surfaces_malformed_project_config() {
+    let home = make_temp_dir("setup-skip-smoke-bad-cfg");
+    let isolated_path = home.join("empty-path");
+    let project_dir = home.join("project");
+    std::fs::create_dir_all(&isolated_path).expect("create isolated path dir");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
+    std::fs::write(project_dir.join(".zipcode.json"), b"{ invalid json\n")
+        .expect("write malformed project config");
+
+    let output = zipcode_bin()
+        .args(["setup", "--skip-smoke"])
+        .current_dir(&project_dir)
+        .env("HOME", &home)
+        .env("PATH", &isolated_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode setup --skip-smoke");
+
+    assert!(
+        output.status.success(),
+        "setup --skip-smoke should exit 0 after surfacing the parse error, got: {output:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let bad_path = project_dir.join(".zipcode.json");
+    assert!(
+        stdout.contains("Repair needed before zipcode can start."),
+        "setup should escalate to repair guidance, got stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Saved settings could not be read"),
+        "setup should mention the parse failure in the findings, got: {stdout}"
+    );
+    assert!(
+        stdout.contains(&bad_path.display().to_string()),
+        "setup should reference the broken project config path, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Smoke: skipped until setup is complete"),
+        "setup should report skipped smoke, got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("Error: No .gguf AI model found"),
+        "setup should NOT hide the parse error behind a missing-model error, got stderr: {stderr}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
 #[test]
 fn doctor_stays_ready_after_setup_skip_smoke() {
     let home = make_temp_dir("setup-then-doctor");
