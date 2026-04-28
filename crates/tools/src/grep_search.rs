@@ -524,8 +524,7 @@ mod tests {
         let result = tool.execute(args, &ctx);
         assert!(
             result.is_err(),
-            "path traversal should be rejected, got: {:?}",
-            result
+            "path traversal should be rejected, got: {result:?}"
         );
     }
 

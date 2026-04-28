@@ -318,6 +318,7 @@ mod tests {
     // ── Backend enum derive verification ─────────────────────────────
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn backend_variants_clone_correctly() {
         let a = Backend::LlamaCpp;
         let b = a;

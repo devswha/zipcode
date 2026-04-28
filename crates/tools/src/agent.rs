@@ -172,7 +172,7 @@ mod tests {
         let received_clone = Arc::clone(&received_allowlist);
 
         let cb: Arc<SpawnChildFn> = Arc::new(move |_task, allowlist, _perm, _tokens| {
-            *received_clone.lock().unwrap() = allowlist.map(|a| a.to_vec());
+            *received_clone.lock().unwrap() = allowlist.map(<[std::string::String]>::to_vec);
             Ok(ChildResult {
                 summary: "ok".to_string(),
                 tool_call_count: 0,

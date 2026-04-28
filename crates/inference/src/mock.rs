@@ -181,6 +181,7 @@ mod tests {
     use crate::InferenceProvider;
 
     /// Helper: drain all events from a receiver into a Vec.
+    #[allow(clippy::needless_pass_by_value)]
     fn collect_events(rx: mpsc::Receiver<TokenEvent>) -> Vec<TokenEvent> {
         rx.iter().collect()
     }
@@ -212,7 +213,7 @@ mod tests {
                 assert_eq!(call.name, "bash");
                 assert_eq!(call.arguments, args);
             }
-            other => panic!("expected ToolCall, got {:?}", other),
+            other => panic!("expected ToolCall, got {other:?}"),
         }
         assert!(matches!(
             &events[1],
@@ -250,7 +251,7 @@ mod tests {
             TokenEvent::Error(InferenceError::TokenizerError(msg)) => {
                 assert_eq!(msg, "bad token");
             }
-            other => panic!("expected TokenError, got {:?}", other),
+            other => panic!("expected TokenError, got {other:?}"),
         }
     }
 
@@ -316,7 +317,7 @@ mod tests {
                 assert_eq!(call.id, "mock_call_2");
                 assert_eq!(call.name, "read_file");
             }
-            other => panic!("expected ToolCall, got {:?}", other),
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 
@@ -397,7 +398,7 @@ mod tests {
             TokenEvent::ToolCall(call) => {
                 assert_eq!(call.name, "bash");
             }
-            other => panic!("expected ToolCall, got {:?}", other),
+            other => panic!("expected ToolCall, got {other:?}"),
         }
 
         let rx2 = mock.generate_stream(&[], &[]);
@@ -406,7 +407,7 @@ mod tests {
             TokenEvent::ToolCall(call) => {
                 assert_eq!(call.name, "read_file");
             }
-            other => panic!("expected ToolCall, got {:?}", other),
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 }

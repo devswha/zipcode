@@ -67,17 +67,17 @@ fn build_loop(
     }
 }
 
-/// Serializes all tests that mutate ZIPCODE_SESSIONS_DIR so they don't race.
+/// Serializes all tests that mutate `ZIPCODE_SESSIONS_DIR` so they don't race.
 static SESSION_DIR_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Redirect session files to a tempdir so ~/.zipcode/sessions is never touched.
-/// Returns (TempDir, guard) — keep both alive for the test duration.
+/// Returns (`TempDir`, guard) — keep both alive for the test duration.
 /// The guard serializes against other tests that also call this function.
 fn with_temp_session_dir() -> (TempDir, std::sync::MutexGuard<'static, ()>) {
     let guard = SESSION_DIR_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = TempDir::new().unwrap();
     std::env::set_var("ZIPCODE_SESSIONS_DIR", dir.path());
     (dir, guard)
@@ -85,7 +85,7 @@ fn with_temp_session_dir() -> (TempDir, std::sync::MutexGuard<'static, ()>) {
 
 /// Find a session JSON file by ID across all temp dirs that may have been
 /// used during this test. Scans /tmp for .json files matching the child ID.
-/// This is necessary because parallel tests race on ZIPCODE_SESSIONS_DIR.
+/// This is necessary because parallel tests race on `ZIPCODE_SESSIONS_DIR`.
 fn find_session_file(child_id: &str) -> Option<std::path::PathBuf> {
     let filename = format!("{child_id}.json");
     // Walk /tmp one level deep looking for our file
@@ -241,6 +241,7 @@ fn test_agent_delegation_permission_downgrade() {
 
 #[test]
 fn test_agent_delegation_permission_escalation_blocked() {
+    use zipcode_tools::{read_file::ReadFileTool, write_file::WriteFileTool, ToolRegistry};
     let (session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
 
@@ -260,7 +261,6 @@ fn test_agent_delegation_permission_escalation_blocked() {
         MockResponse::Text("done".to_string()),
     ]);
 
-    use zipcode_tools::{read_file::ReadFileTool, write_file::WriteFileTool, ToolRegistry};
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(ReadFileTool));
     reg.register(Box::new(WriteFileTool));
@@ -347,6 +347,10 @@ fn test_agent_delegation_budget_exhaustion() {
 
 #[test]
 fn test_agent_delegation_allowlist_filters_tools() {
+    use zipcode_tools::{
+        grep_search::GrepSearchTool, read_file::ReadFileTool, write_file::WriteFileTool,
+        ToolRegistry,
+    };
     let (_session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("data.txt"), "original").unwrap();
@@ -385,11 +389,6 @@ fn test_agent_delegation_allowlist_filters_tools() {
     // The child still ran to completion and returned a summary.
     assert!(!result.child_session_id.is_empty());
 
-    // Verify via ToolRegistry directly that create_filtered excludes write_file.
-    use zipcode_tools::{
-        grep_search::GrepSearchTool, read_file::ReadFileTool, write_file::WriteFileTool,
-        ToolRegistry,
-    };
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(ReadFileTool));
     reg.register(Box::new(WriteFileTool));
@@ -417,6 +416,9 @@ fn test_agent_delegation_allowlist_filters_tools() {
 
 #[test]
 fn test_agent_delegation_blocks_nested_agent_call() {
+    use zipcode_tools::{
+        agent::AgentTool, grep_search::GrepSearchTool, read_file::ReadFileTool, ToolRegistry,
+    };
     let (_session_dir, _session_guard) = with_temp_session_dir();
     let dir = TempDir::new().unwrap();
 
@@ -448,9 +450,6 @@ fn test_agent_delegation_blocks_nested_agent_call() {
     assert!(!result.child_session_id.is_empty());
 
     // Verify via ToolRegistry that create_filtered always removes "agent".
-    use zipcode_tools::{
-        agent::AgentTool, grep_search::GrepSearchTool, read_file::ReadFileTool, ToolRegistry,
-    };
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(AgentTool));
     reg.register(Box::new(ReadFileTool));
@@ -554,8 +553,7 @@ fn test_parent_read_then_child_grep_e2e() {
     let agent_content = msgs
         .iter()
         .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c_agent"))
-        .map(|m| m.content.as_str())
-        .unwrap_or("");
+        .map_or("", |m| m.content.as_str());
     assert!(
         agent_content.contains("TODOs") || agent_content.contains("TODO"),
         "agent result should reference child's grep output, got: {agent_content}"

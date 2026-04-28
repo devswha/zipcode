@@ -1091,6 +1091,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::format_push_string)]
     fn test_extract_text_content_multiple_blocks() {
         let mut output = String::from("Start ");
         for i in 0..10u32 {

@@ -43,7 +43,7 @@ fn with_temp_session_dir() -> (TempDir, std::sync::MutexGuard<'static, ()>) {
     let guard = SESSION_DIR_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = TempDir::new().unwrap();
     std::env::set_var("ZIPCODE_SESSIONS_DIR", dir.path());
     (dir, guard)
@@ -507,13 +507,10 @@ fn test_compaction_does_not_affect_phase1_delegation() {
         .unwrap();
 
     // Child delegation must have occurred.
-    {
-        let child_ids = conv.child_session_ids.lock().unwrap();
-        assert!(
-            !child_ids.is_empty(),
-            "child agent must have been spawned via Phase-1 delegation"
-        );
-    }
+    assert!(
+        !conv.child_session_ids.lock().unwrap().is_empty(),
+        "child agent must have been spawned via Phase-1 delegation"
+    );
 
     // Agent tool result must still be visible in the parent session.
     let has_agent_result = conv.session.messages.iter().any(|m| {

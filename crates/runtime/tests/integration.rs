@@ -26,7 +26,7 @@ struct TestCallback {
 }
 
 impl TestCallback {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             tokens: Vec::new(),
             thinking: Vec::new(),
@@ -536,8 +536,7 @@ fn tool_call_turn_strips_raw_markup_from_saved_assistant_content() {
     assert_eq!(assistant.content, "Before  after");
     assert!(
         !assistant.content.contains("<tool_call>"),
-        "assistant history should not persist raw tool markup: {:?}",
-        assistant
+        "assistant history should not persist raw tool markup: {assistant:?}"
     );
     assert!(
         cb.all_tokens().contains("<tool_call>"),
@@ -919,7 +918,7 @@ fn mixed_permission_partial_flow() {
     let mock = MockInferenceProvider::new(vec![
         MockResponse::ToolCall {
             name: "read_file".to_string(),
-            args: serde_json::json!({ "path": abs_path.clone() }),
+            args: serde_json::json!({ "path": abs_path }),
         },
         MockResponse::ToolCall {
             name: "bash".to_string(),

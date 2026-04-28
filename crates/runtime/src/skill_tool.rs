@@ -259,7 +259,7 @@ mod tests {
         let received_clone = Arc::clone(&received_allowlist);
 
         let cb: Arc<SpawnChildFn> = Arc::new(move |_task, allowlist, _perm, _tok| {
-            *received_clone.lock().unwrap() = allowlist.map(|a| a.to_vec());
+            *received_clone.lock().unwrap() = allowlist.map(<[std::string::String]>::to_vec);
             Ok(ChildResult {
                 summary: "ok".to_string(),
                 tool_call_count: 0,
@@ -346,7 +346,7 @@ mod tests {
         let received_clone = Arc::clone(&received_allowlist);
 
         let cb: Arc<SpawnChildFn> = Arc::new(move |_task, allowlist, _perm, _tok| {
-            *received_clone.lock().unwrap() = allowlist.map(|a| a.to_vec());
+            *received_clone.lock().unwrap() = allowlist.map(<[std::string::String]>::to_vec);
             Ok(ChildResult {
                 summary: "ok".to_string(),
                 tool_call_count: 0,
@@ -377,7 +377,7 @@ mod tests {
         );
     }
 
-    /// Non-string name (integer) → as_str() returns None → "missing required field 'name'"
+    /// Non-string name (integer) → `as_str()` returns None → "missing required field 'name'"
     #[test]
     fn test_skill_tool_name_non_string_rejected() {
         let registry = Arc::new(SkillRegistry::new());
@@ -392,7 +392,7 @@ mod tests {
         );
     }
 
-    /// params as a string (not object) → as_object() returns None → empty HashMap (no crash)
+    /// params as a string (not object) → `as_object()` returns None → empty `HashMap` (no crash)
     #[test]
     fn test_skill_tool_params_non_object_no_crash() {
         let registry = make_registry_with_skill("greet", "Hello {{ who }}!", vec![]);
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(received_task.lock().unwrap().trim_end(), "Hello !");
     }
 
-    /// params with integer values → filter_map skips non-string values
+    /// params with integer values → `filter_map` skips non-string values
     #[test]
     fn test_skill_tool_params_values_not_strings() {
         let registry =
@@ -485,7 +485,7 @@ mod tests {
         );
     }
 
-    /// spawn_child callback returns Err — should propagate as anyhow::Error
+    /// `spawn_child` callback returns Err — should propagate as `anyhow::Error`
     #[test]
     fn test_skill_tool_spawn_child_error_propagated() {
         let registry = make_registry_with_skill("fail", "Fail task", vec![]);
@@ -503,7 +503,7 @@ mod tests {
         );
     }
 
-    /// Result message includes tool_call_count from ChildResult
+    /// Result message includes `tool_call_count` from `ChildResult`
     #[test]
     fn test_skill_tool_result_includes_tool_call_count() {
         let registry = make_registry_with_skill("work", "Do work", vec![]);
@@ -565,7 +565,7 @@ mod tests {
         );
     }
 
-    /// No params key at all — should work fine with empty HashMap
+    /// No params key at all — should work fine with empty `HashMap`
     #[test]
     fn test_skill_tool_no_params_key() {
         let registry = make_registry_with_skill("plain", "No placeholders here", vec![]);
@@ -594,7 +594,7 @@ mod tests {
         );
     }
 
-    /// params field is JSON null — treated as missing → empty HashMap
+    /// params field is JSON null — treated as missing → empty `HashMap`
     #[test]
     fn test_skill_tool_params_null_value() {
         let registry = make_registry_with_skill("greet", "Hello {{ who }}!", vec![]);

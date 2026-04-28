@@ -169,7 +169,7 @@ mod tests {
 
         let lines: Vec<&str> = result.content.lines().collect();
         let mut sorted = lines.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         assert_eq!(lines, sorted);
     }
 

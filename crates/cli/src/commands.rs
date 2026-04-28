@@ -203,22 +203,19 @@ pub fn run_skill_command(
 
     let registry = SkillRegistry::load_from(&skills_dir).unwrap_or_default();
 
-    let skill = match registry.get(skill_name) {
-        Some(s) => s,
-        None => {
-            let mut available = registry.names();
-            available.sort();
-            if available.is_empty() {
-                eprintln!("skill '{skill_name}' not found. No skills are available.");
-                eprintln!("Add skill files to .zipcode/skills/");
-            } else {
-                eprintln!(
-                    "skill '{skill_name}' not found. Available skills: {}",
-                    available.join(", ")
-                );
-            }
-            std::process::exit(1);
+    let Some(skill) = registry.get(skill_name) else {
+        let mut available = registry.names();
+        available.sort_unstable();
+        if available.is_empty() {
+            eprintln!("skill '{skill_name}' not found. No skills are available.");
+            eprintln!("Add skill files to .zipcode/skills/");
+        } else {
+            eprintln!(
+                "skill '{skill_name}' not found. Available skills: {}",
+                available.join(", ")
+            );
         }
+        std::process::exit(1);
     };
 
     let task_prompt = skill.render(&params);

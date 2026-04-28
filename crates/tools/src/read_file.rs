@@ -269,7 +269,7 @@ mod tests {
         std::fs::write(workspace.join("README.md"), "hello from readme").unwrap();
 
         let ctx = ToolContext {
-            cwd: workspace.clone(),
+            cwd: workspace,
             permission: PermissionMode::FullAccess,
             session_id: "test".to_string(),
             parent_session_id: None,

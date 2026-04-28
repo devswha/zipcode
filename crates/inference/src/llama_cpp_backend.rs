@@ -37,16 +37,16 @@ fn safe_ctx_size(n_prompt: usize, max_tokens: usize) -> u32 {
     const SLACK: usize = 64;
 
     let needed = n_prompt.saturating_add(max_tokens).saturating_add(SLACK);
-    match u32::try_from(needed) {
-        Ok(v) => v.max(MIN_CTX),
-        Err(_) => {
+    u32::try_from(needed).map_or_else(
+        |_| {
             warn!(
                 "Context size ({needed}) exceeds u32::MAX, clamping to u32::MAX. \
                  Consider reducing prompt length or max_tokens."
             );
             u32::MAX
-        }
-    }
+        },
+        |v| v.max(MIN_CTX),
+    )
 }
 
 pub struct LlamaCppProvider {
@@ -57,6 +57,7 @@ pub struct LlamaCppProvider {
 
 impl LlamaCppProvider {
     /// Load a GGUF model file using llama.cpp.
+    #[allow(clippy::missing_errors_doc)]
     pub fn load(model_path: &Path) -> Result<Self> {
         info!("Loading llama-cpp model from {}", model_path.display());
 
@@ -79,7 +80,7 @@ impl LlamaCppProvider {
         })
     }
 
-    pub fn set_config(&mut self, config: GenerationConfig) {
+    pub const fn set_config(&mut self, config: GenerationConfig) {
         self.config = config;
     }
 
@@ -124,6 +125,7 @@ impl LlamaCppProvider {
 
         // Build sampler chain: top_k -> top_p -> temp -> dist
         let top_k = i32::try_from(self.config.top_k).unwrap_or(40);
+        #[allow(clippy::cast_possible_truncation)]
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::top_k(top_k),
             LlamaSampler::top_p(self.config.top_p as f32, 1),
@@ -173,13 +175,13 @@ impl LlamaCppProvider {
                 // with a template field auto-selected from the model path,
                 // matching LlamaServerProvider.
                 let tool_calls = chat_template::GemmaTemplate.parse_tool_calls(&generated_text);
-                if !tool_calls.is_empty() {
+                if tool_calls.is_empty() {
+                    let _ = tx.send(TokenEvent::Done(FinishReason::Stop));
+                } else {
                     for call in tool_calls {
                         let _ = tx.send(TokenEvent::ToolCall(call));
                     }
                     let _ = tx.send(TokenEvent::Done(FinishReason::ToolUse));
-                } else {
-                    let _ = tx.send(TokenEvent::Done(FinishReason::Stop));
                 }
                 finished = true;
                 break;

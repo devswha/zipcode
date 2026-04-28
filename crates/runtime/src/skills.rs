@@ -333,7 +333,7 @@ mod tests {
 
         let registry = SkillRegistry::load_from(dir.path()).unwrap();
         let mut names = registry.names();
-        names.sort();
+        names.sort_unstable();
         assert_eq!(names, vec!["review", "search"]);
     }
 

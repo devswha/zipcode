@@ -1257,7 +1257,7 @@ mod tests {
     }
 
     /// End-to-end proof that a mixed stream — reasoning chunks followed by
-    /// tool_call chunks — surfaces both as distinct TokenEvent variants and
+    /// `tool_call` chunks — surfaces both as distinct `TokenEvent` variants and
     /// does not leak reasoning into the regular token lane.
     #[test]
     fn stream_sse_events_routes_reasoning_and_tool_calls_separately() {

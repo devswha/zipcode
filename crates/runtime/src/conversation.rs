@@ -530,6 +530,7 @@ impl Drop for ConversationLoop {
     }
 }
 
+#[must_use]
 pub fn convert_tool_specs(specs: Vec<zipcode_tools::ToolSpec>) -> Vec<ToolSpec> {
     specs
         .into_iter()
@@ -1174,27 +1175,27 @@ mod tests {
 
     // ── Compaction integration tests ──────────────────────────────
 
-    /// Shared mutex serialising ZIPCODE_SESSIONS_DIR mutation across every
+    /// Shared mutex serialising `ZIPCODE_SESSIONS_DIR` mutation across every
     /// unit test in this binary.  Without this, parallel tests race on the
-    /// global env var and Session::path resolution observes a foreign temp
+    /// global env var and `Session::path` resolution observes a foreign temp
     /// dir mid-test.
     static SESSION_DIR_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
-    /// Redirect session writes to a temp dir.  Returns the TempDir (keeping
+    /// Redirect session writes to a temp dir.  Returns the `TempDir` (keeping
     /// it alive for the caller's scope) and the held lock guard so the env
     /// var mutation cannot collide with sibling tests.
     fn with_test_session_dir() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
         let guard = SESSION_DIR_LOCK
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
-            .unwrap_or_else(|p| p.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::TempDir::new().expect("tempdir");
         std::env::set_var("ZIPCODE_SESSIONS_DIR", dir.path());
         (dir, guard)
     }
 
-    /// Build a minimal ConversationLoop with a MockInferenceProvider and the
-    /// given CompactPolicy.  Uses /tmp as cwd (no real tools needed).
+    /// Build a minimal `ConversationLoop` with a `MockInferenceProvider` and the
+    /// given `CompactPolicy`.  Uses /tmp as cwd (no real tools needed).
     fn make_conv(
         responses: Vec<zipcode_inference::mock::MockResponse>,
         policy: CompactPolicy,
@@ -1307,7 +1308,7 @@ mod tests {
         );
     }
 
-    /// Tier-2 fires when the mock reports prompt_eval_count above the threshold.
+    /// Tier-2 fires when the mock reports `prompt_eval_count` above the threshold.
     ///
     /// We use a tiny context window (10 tokens, 80% = 8 token threshold) and set the
     /// mock to report 9 tokens.  The session has ~15 estimated tokens, so
@@ -1413,7 +1414,7 @@ mod tests {
         assert_eq!(invisible, 0, "no eviction expected below threshold");
     }
 
-    /// A panic inside compact_tool_pairs does not propagate — run_turn returns Ok.
+    /// A panic inside `compact_tool_pairs` does not propagate — `run_turn` returns Ok.
     #[test]
     fn test_tier1_panic_does_not_propagate() {
         let (_dir, _guard) = with_test_session_dir();
@@ -1438,7 +1439,7 @@ mod tests {
         );
     }
 
-    /// When the provider returns None for prompt_eval_count, tier-2 is skipped entirely.
+    /// When the provider returns None for `prompt_eval_count`, tier-2 is skipped entirely.
     #[test]
     fn test_provider_without_prompt_eval_count_skips_tier2() {
         let (_dir, _guard) = with_test_session_dir();

@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn test_token_event_thinking_clone() {
         let event = TokenEvent::Thinking("reasoning step".to_string());
-        let cloned = event.clone();
+        let cloned = event;
         match cloned {
             TokenEvent::Thinking(text) => assert_eq!(text, "reasoning step"),
             _ => panic!("expected Thinking variant"),

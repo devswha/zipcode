@@ -313,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss)]
     fn extract_last_logits_3d_multi_seq() {
         // 3D: (1, 5, 2) — 5 positions, 2 vocab entries
         let device = Device::Cpu;
