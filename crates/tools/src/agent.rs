@@ -261,4 +261,180 @@ mod tests {
             result.content
         );
     }
+
+    // ── Edge-case tests for agent tool ────────────────────────────────
+
+    /// Agent at depth 0 should succeed (not hit max depth)
+    #[test]
+    fn test_depth_zero_succeeds() {
+        let tool = AgentTool;
+        let ctx = ctx_with_callback(0, ok_callback());
+        let result = tool
+            .execute(serde_json::json!({ "task": "work" }), &ctx)
+            .unwrap();
+        assert!(
+            result.content.contains("Child agent complete."),
+            "depth 0 should succeed, got: {}",
+            result.content
+        );
+    }
+
+    /// Agent at depth 1 should also succeed (MAX_AGENT_DEPTH is 2)
+    #[test]
+    fn test_depth_one_succeeds() {
+        let tool = AgentTool;
+        let ctx = ctx_with_callback(1, ok_callback());
+        let result = tool
+            .execute(serde_json::json!({ "task": "work" }), &ctx)
+            .unwrap();
+        assert!(
+            result.content.contains("Child agent complete."),
+            "depth 1 should succeed, got: {}",
+            result.content
+        );
+    }
+
+    /// Non-string task (integer) should return an error
+    #[test]
+    fn test_non_string_task_errors() {
+        let tool = AgentTool;
+        let ctx = ctx_with_callback(0, ok_callback());
+        let result = tool.execute(serde_json::json!({ "task": 42 }), &ctx);
+        assert!(
+            result.is_err() || result.unwrap().content.contains("missing"),
+            "non-string task should error"
+        );
+    }
+
+    /// Empty task string should still be accepted (not a validation error at this layer)
+    #[test]
+    fn test_empty_task_accepted() {
+        let received: Arc<std::sync::Mutex<String>> =
+            Arc::new(std::sync::Mutex::new(String::new()));
+        let received_clone = Arc::clone(&received);
+        let cb: Arc<SpawnChildFn> = Arc::new(move |task, _al, _perm, _tok| {
+            *received_clone.lock().unwrap() = task.to_string();
+            Ok(ChildResult {
+                summary: "ok".to_string(),
+                tool_call_count: 0,
+                child_session_id: "s".to_string(),
+            })
+        });
+
+        let tool = AgentTool;
+        let ctx = ctx_with_callback(0, cb);
+        let result = tool
+            .execute(serde_json::json!({ "task": "" }), &ctx)
+            .unwrap();
+        assert!(result.content.contains("Child agent complete."));
+        assert_eq!(*received.lock().unwrap(), "");
+    }
+
+    /// tool_allowlist with only "agent" → all stripped, passes None
+    #[test]
+    fn test_allowlist_only_agent_stripped_to_none() {
+        let received_allowlist: Arc<std::sync::Mutex<Option<Vec<String>>>> =
+            Arc::new(std::sync::Mutex::new(Some(vec!["sentinel".to_string()])));
+        let received_clone = Arc::clone(&received_allowlist);
+
+        let cb: Arc<SpawnChildFn> = Arc::new(move |_task, allowlist, _perm, _tokens| {
+            *received_clone.lock().unwrap() = allowlist.map(<[std::string::String]>::to_vec);
+            Ok(ChildResult {
+                summary: "ok".to_string(),
+                tool_call_count: 0,
+                child_session_id: "s".to_string(),
+            })
+        });
+
+        let tool = AgentTool;
+        let ctx = ctx_with_callback(0, cb);
+        tool.execute(
+            serde_json::json!({ "task": "test", "tool_allowlist": ["agent"] }),
+            &ctx,
+        )
+        .unwrap();
+
+        // After stripping "agent", the list is empty but still Some(empty_vec)
+        let list = received_allowlist.lock().unwrap();
+        let list = list.as_ref().unwrap();
+        assert!(
+            list.is_empty(),
+            "allowlist with only 'agent' should produce an empty list, got: {list:?}"
+        );
+    }
+
+    /// Valid max_tokens integer is forwarded to spawn callback
+    #[test]
+    fn test_valid_max_tokens_forwarded() {
+        let received_tokens: Arc<std::sync::Mutex<Option<usize>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let received_clone = Arc::clone(&received_tokens);
+
+        let cb: Arc<SpawnChildFn> = Arc::new(move |_task, _al, _perm, tokens| {
+            *received_clone.lock().unwrap() = tokens;
+            Ok(ChildResult {
+                summary: "ok".to_string(),
+                tool_call_count: 0,
+                child_session_id: "s".to_string(),
+            })
+        });
+
+        let tool = AgentTool;
+        let ctx = ctx_with_callback(0, cb);
+        tool.execute(
+            serde_json::json!({ "task": "work", "max_tokens": 4096 }),
+            &ctx,
+        )
+        .unwrap();
+
+        assert_eq!(
+            *received_tokens.lock().unwrap(),
+            Some(4096),
+            "max_tokens should be forwarded to callback"
+        );
+    }
+
+    /// No max_tokens field → None passed to callback
+    #[test]
+    fn test_no_max_tokens_passes_none() {
+        let received_tokens: Arc<std::sync::Mutex<Option<usize>>> =
+            Arc::new(std::sync::Mutex::new(Some(9999)));
+        let received_clone = Arc::clone(&received_tokens);
+
+        let cb: Arc<SpawnChildFn> = Arc::new(move |_task, _al, _perm, tokens| {
+            *received_clone.lock().unwrap() = tokens;
+            Ok(ChildResult {
+                summary: "ok".to_string(),
+                tool_call_count: 0,
+                child_session_id: "s".to_string(),
+            })
+        });
+
+        let tool = AgentTool;
+        let ctx = ctx_with_callback(0, cb);
+        tool.execute(serde_json::json!({ "task": "work" }), &ctx)
+            .unwrap();
+
+        assert!(
+            received_tokens.lock().unwrap().is_none(),
+            "no max_tokens should pass None to callback"
+        );
+    }
+
+    /// Schema should include tool_allowlist and skill properties
+    #[test]
+    fn test_schema_includes_optional_properties() {
+        let tool = AgentTool;
+        let schema = tool.parameters_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(
+            props.contains_key("tool_allowlist"),
+            "schema should have tool_allowlist"
+        );
+        assert!(props.contains_key("skill"), "schema should have skill");
+        assert!(
+            props.contains_key("max_tokens"),
+            "schema should have max_tokens"
+        );
+    }
 }

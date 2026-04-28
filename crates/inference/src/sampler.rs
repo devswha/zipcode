@@ -411,4 +411,140 @@ mod tests {
         let token = sampler.sample(&logits(&[1.0, 2.0, 3.0]), &[2u32]).unwrap();
         assert_eq!(token, 1);
     }
+
+    // ── Edge-case tests ──────────────────────────────────────────────
+
+    /// Token index out of vocab range should be skipped safely
+    #[test]
+    fn test_repeat_penalty_token_out_of_range_safe() {
+        let config = GenerationConfig {
+            temperature: 0.0,
+            repeat_penalty: 2.0,
+            repeat_last_n: 64,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // Token index 99 is beyond vocab size 3 — should be silently skipped
+        let token = sampler.sample(&logits(&[1.0, 2.0, 3.0]), &[99u32]).unwrap();
+        // Token 2 should win since 99 is out of range and not penalized
+        assert_eq!(token, 2);
+    }
+
+    /// Temperature exactly 1.0 should not scale logits (no-op path)
+    #[test]
+    fn test_temperature_exactly_one_no_scaling() {
+        let config = GenerationConfig {
+            temperature: 1.0,
+            top_p: 1.0,
+            top_k: 0,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // With temp=1.0 the sampling path runs but logits are unscaled.
+        // Very high logit at index 2 should almost certainly be picked.
+        let token = sampler.sample(&logits(&[0.0, 0.0, 100.0]), &[]).unwrap();
+        assert_eq!(token, 2, "temp=1.0 should pick the dominant logit");
+    }
+
+    /// top_k equal to vocab size: all tokens survive
+    #[test]
+    fn test_top_k_equals_vocab_size_no_filtering() {
+        let config = GenerationConfig {
+            temperature: 0.0,
+            top_k: 4,
+            top_p: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // top_k=4 with vocab of 4 → no filtering → greedy picks token 2
+        let token = sampler.sample(&logits(&[0.1, 0.2, 0.9, 0.3]), &[]).unwrap();
+        assert_eq!(token, 2);
+    }
+
+    /// top_k larger than vocab size: disabled path (no filtering)
+    #[test]
+    fn test_top_k_larger_than_vocab_disabled() {
+        let config = GenerationConfig {
+            temperature: 0.0,
+            top_k: 100,
+            top_p: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        let token = sampler.sample(&logits(&[0.1, 0.5, 0.2]), &[]).unwrap();
+        assert_eq!(token, 1, "top_k > vocab should not filter");
+    }
+
+    /// Softmax with very large logits should not overflow (numerical stability)
+    #[test]
+    fn test_softmax_numerical_stability_large_logits() {
+        let config = GenerationConfig {
+            temperature: 0.001, // near-greedy to make result deterministic
+            top_p: 1.0,
+            top_k: 0,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // Very large logits — the max subtraction should prevent overflow
+        let token = sampler
+            .sample(&logits(&[10000.0, 10001.0, -50000.0]), &[])
+            .unwrap();
+        assert_eq!(
+            token, 1,
+            "highest logit should be picked after stable softmax"
+        );
+    }
+
+    /// Multiple sequential samples with different past tokens produce valid results
+    #[test]
+    fn test_sequential_samples_with_different_history() {
+        let config = GenerationConfig {
+            temperature: 0.0,
+            repeat_penalty: 10.0,
+            repeat_last_n: 64,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+
+        // First sample: token 1 wins (highest logit at 5.0)
+        let t1 = sampler.sample(&logits(&[1.0, 5.0, 2.0]), &[]).unwrap();
+        assert_eq!(t1, 1);
+
+        // Second sample: token 1 in history, penalty=10.0 → 5.0/10.0=0.5
+        // token 0=1.0, token 2=2.0 → token 2 wins
+        let t2 = sampler.sample(&logits(&[1.0, 5.0, 2.0]), &[t1]).unwrap();
+        assert_eq!(
+            t2, 2,
+            "token 1 penalized (5.0/10=0.5), token 2 (2.0) should win"
+        );
+
+        // Third sample: tokens 1,2 in history → token 1=5.0/10=0.5, token 2=2.0/10=0.2
+        // token 0=3.0 → token 0 wins
+        let t3 = sampler
+            .sample(&logits(&[3.0, 5.0, 2.0]), &[t1, t2])
+            .unwrap();
+        assert_eq!(t3, 0, "only token 0 should survive penalty on 1 and 2");
+    }
+
+    /// All negative logits with temperature > 0 should still sample validly
+    #[test]
+    fn test_all_negative_logits_with_temperature() {
+        let config = GenerationConfig {
+            temperature: 0.5,
+            top_p: 1.0,
+            top_k: 0,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // All negative logits — the least negative should be sampled
+        let token = sampler
+            .sample(&logits(&[-10.0, -1.0, -100.0]), &[])
+            .unwrap();
+        assert!((token as usize) < 3, "token index must be within vocab");
+        // With softmax, -1.0 dominates; near-deterministic with low temperature
+        assert_eq!(token, 1, "least negative logit should win");
+    }
 }
