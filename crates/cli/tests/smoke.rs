@@ -1947,6 +1947,11 @@ args = sys.argv[1:]
 if "--list-devices" in args:
     print("Available devices:\n  CUDA0")
     sys.exit(0)
+if "--help" in args or "-h" in args:
+    # Match the modern llama-server help so flash_attention probing
+    # picks the [on|off|auto] flag form (production parity).
+    print("usage: llama-server [options]\n  -fa, --flash-attn [on|off|auto]   set Flash Attention use")
+    sys.exit(0)
 port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -2103,6 +2108,11 @@ import sys
 args = sys.argv[1:]
 if "--list-devices" in args:
     print("Available devices:\n  CUDA0")
+    sys.exit(0)
+if "--help" in args or "-h" in args:
+    # Match the modern llama-server help so flash_attention probing
+    # picks the [on|off|auto] flag form (production parity).
+    print("usage: llama-server [options]\n  -fa, --flash-attn [on|off|auto]   set Flash Attention use")
     sys.exit(0)
 port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
 
