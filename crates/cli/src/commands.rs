@@ -738,15 +738,26 @@ fn build_readiness_report(
 ) -> Result<ReadinessReport> {
     let project_root = find_project_root(cwd);
     let model_resolution = resolve_model_path(explicit_model_path, config, cwd, &project_root);
-    let (model, model_issue) = match model_resolution {
+    // A path that exists but fails GGUF validation (0-byte, wrong magic,
+    // truncated header) must be treated as "no usable model": we still
+    // surface the validation message via `model_issue`, but `model` is
+    // cleared so `classify_readiness` reports `MissingModel` instead of
+    // green-lighting the start-up. Previously the path was kept as Some
+    // and the status fell through to Ready ✅ for any auto-discovered
+    // invalid GGUF (only an explicit `--model` / `config.model_file`
+    // tripped `model_issue_is_misconfigured`).
+    let (model, model_issue, model_was_invalid) = match model_resolution {
         Ok(path) => match validate_gguf_file(&path) {
-            Ok(()) => (Some(path), None),
-            Err(validation_err) => (Some(path), Some(validation_err.to_string())),
+            Ok(()) => (Some(path), None, false),
+            Err(validation_err) => (None, Some(validation_err.to_string()), true),
         },
-        Err(error) => (None, Some(error.to_string())),
+        Err(error) => (None, Some(error.to_string()), false),
     };
     let model_search = model_search_locations(explicit_model_path, config, cwd, &project_root);
-    let model_issue_is_misconfigured = explicit_model_path.is_some() || config.model_file.is_some();
+    // Treat any GGUF validation failure as misconfiguration so the user
+    // gets the "Repair needed" funnel and the offending path is named.
+    let model_issue_is_misconfigured =
+        model_was_invalid || explicit_model_path.is_some() || config.model_file.is_some();
     let llama_server = discover_helper(config);
     let requested_backend = resolve_requested_backend(backend_override)?;
     let backend = model.as_deref().map_or_else(
@@ -1865,6 +1876,32 @@ mod tests {
             resolve_path_from_cwd(path, cwd),
             PathBuf::from("/working/dir/model.gguf")
         );
+    }
+
+    /// Regression: an auto-discovered GGUF whose validation fails (0-byte,
+    /// wrong magic, truncated) must report `NeedsRepair`. Before the fix,
+    /// `model` stayed `Some(path)` and `model_issue_is_misconfigured` was
+    /// only set when the user supplied an explicit `--model` flag, so an
+    /// invalid file picked up automatically from the configured model dir
+    /// was green-lit as `Ready` ✅.
+    #[test]
+    fn classify_user_readiness_treats_invalid_gguf_as_needs_repair() {
+        let mut report = sample_report(ReadinessStatus::MissingModel);
+        report.model = None;
+        report.model_issue = Some("Model file is empty (0 bytes): /x".to_string());
+        report.model_issue_is_misconfigured = true; // set by the fix path
+        assert_eq!(
+            classify_user_readiness(&report, None),
+            UserReadiness::NeedsRepair
+        );
+    }
+
+    /// Sanity check the inverse: when validation passes (no model_issue),
+    /// `Ready` is still returned.
+    #[test]
+    fn classify_user_readiness_ready_when_no_issues() {
+        let report = sample_report(ReadinessStatus::NativeOk);
+        assert_eq!(classify_user_readiness(&report, None), UserReadiness::Ready);
     }
 
     // ── validate_gguf_file tests ──────────────────────────────────
