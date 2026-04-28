@@ -118,7 +118,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 6. Call `create_engine(backend, model_path, tokenizer_path, config, server_options)` — returns `Box<dyn InferenceProvider>`.
 7. Build `ToolRegistry` with all 10 tools from `zipcode-tools`.
 8. Build system prompt via `prompt::build(...)` — see [conversation-loop › run_turn](conversation-loop.md#run_turn-flow) for how it's consumed.
-9. Create `Session::new()` and persist it immediately so `/session` can resume a fresh startup session without waiting for the first model turn.
+9. Create `Session::new()` — the session is NOT persisted to disk at startup. It is saved after the first model turn completes, or immediately when `/clear` is run (`crates/cli/src/repl.rs:1010-1014`).
 10. Construct [`ConversationLoop`](conversation-loop.md).
 11. Enter TUI (`tui.rs`) or plain REPL depending on `--ui`.
 
@@ -145,7 +145,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 
 ## Tests
 
-**EXTRACTED** — `crates/cli/tests/smoke.rs` currently exposes 40 smoke tests (`cargo test -p zipcode --test smoke -- --list` on 2026-04-14).
+**EXTRACTED** — `crates/cli/tests/smoke.rs` currently exposes 45 smoke tests (`cargo test -p zipcode --test smoke -- --list` on 2026-04-28).
 
 Notable newer regression guards added since the earlier snapshot include:
 

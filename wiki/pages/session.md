@@ -6,7 +6,7 @@
 
 ## Storage layout
 
-**EXTRACTED** `session.rs:38-42`
+**EXTRACTED** `session.rs:432` (`session_path()` helper)
 
 ```
 ~/.zipcode/sessions/{uuid}.json
@@ -33,10 +33,12 @@ pub struct Session {
 
 | Method | Behavior |
 |--------|----------|
-| `Session::new()` | New UUID + timestamps; empty messages vec |
-| `session.push_message(msg)` | Append to `messages`; refresh `updated_at` |
-| `session.save()` | Serialize to `~/.zipcode/sessions/{id}.json`, creating parent dirs if needed |
-| `Session::load(id)` | Read + deserialize |
+| `Session::new()` | New UUID + timestamps; empty messages vec (`session.rs:100`) |
+| `session.push_message(msg)` | Append to `messages`; refresh `updated_at` (`session.rs:234`) |
+| `session.save()` | Serialize to `~/.zipcode/sessions/{id}.json`, creating parent dirs if needed (`session.rs:128`) |
+| `Session::load(id)` | Read + deserialize (`session.rs:147`) |
+| `session.path()` | Returns the resolved `PathBuf` for this session's JSON file (`session.rs:168`) |
+| `session.compact(CompactPolicy) -> CompactResult` | Compacts message history in-place according to policy; preserves system prefix and a safe suffix of recent turns (`session.rs:182`) |
 
 ---
 
@@ -75,6 +77,7 @@ Current coverage includes:
 
 ## Related pages
 
-- [conversation-loop](conversation-loop.md) — only consumer
+- [conversation-loop](conversation-loop.md) — primary consumer (holds `Session` by value, calls `push_message` / `save` on every turn)
+- [cli](cli.md) — also a direct consumer: `Session::new()`, `Session::load()`, `.compact()`, and `.save()` are called from `crates/cli/src/repl.rs` for startup, `/session`, `/clear`, and `/compact` flows
 - [inference › ChatMessage](inference.md#chatmessage-lines-13-67) — the element type of `messages`
 - [gotchas](gotchas.md) — retention, concurrency

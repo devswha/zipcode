@@ -3,7 +3,7 @@
 Developer reference for the `crates/` workspace. Structured as a knowledge graph — navigate by **community** (a tightly-related module cluster) and jump between pages via **god node** links.
 
 **Scope:** `/home/devswha/workspace/zipcode/crates/` only.
-**Snapshot:** extracted from code on 2026-04-26 (provenance anchors refreshed).
+**Snapshot:** extracted from code on 2026-04-28 (provenance anchors refreshed).
 **Provenance rule:** every factual claim below carries a `file:line` reference.
 
 > Graphify-inspired layout. Start at [god nodes](#god-nodes) if you're new to the codebase — that's where everything else hangs off.
@@ -38,7 +38,7 @@ cli ──▶ runtime ──▶ inference
 | [conversation-loop](pages/conversation-loop.md) | `ConversationLoop`, 25-iteration cap, `StreamCallback`, agentic loop flow |
 | [permissions](pages/permissions.md) | `PermissionMode`, 3-tier matrix, approval-gated tools |
 | [config](pages/config.md) | `ZipcodeConfig`, global + project override, path expansion |
-| [session](pages/session.md) | `~/.zipcode/sessions/{uuid}.json`, `Session` struct, roundtrip save/load |
+| [session](pages/session.md) | `~/.zipcode/sessions/{uuid}.json`, `Session` struct, roundtrip save/load, compaction |
 | [cli](pages/cli.md) | clap parser, REPL, fullscreen TUI, `doctor`, `setup`, wrapper script |
 | [llama-server](pages/llama-server.md) | Subprocess lifecycle, `/health`, SSE streaming, GPU offload env vars |
 | [gotchas](pages/gotchas.md) | Non-obvious couplings, hardcoded invariants, silent failure modes |
@@ -67,7 +67,7 @@ The highest-degree concepts — almost every code path touches one of these. Rea
 | Add a new tool | [recipes › Add a new tool](pages/recipes.md#add-a-new-tool) → `crates/tools/src/lib.rs` |
 | Support a non-Gemma model | [chat-template](pages/chat-template.md) — currently single-model hardcoded |
 | Rewrite chat template to real Gemma 4 | [gemma4-format-spec](pages/gemma4-format-spec.md) — authoritative spec + implementation deltas |
-| Change the tool-loop iteration cap | `MAX_TOOL_ITERATIONS` in `crates/runtime/src/conversation.rs:110` |
+| Change the tool-loop iteration cap | `MAX_TOOL_ITERATIONS` in `crates/runtime/src/conversation.rs:94` |
 | Change the tool output size limit | `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:502` |
 | Add a config field | [config › Fields](pages/config.md#fields) → `crates/runtime/src/config.rs` |
 | Tune GPU offload | [llama-server › GPU offload](pages/llama-server.md#gpu-offload) — env vars or config |

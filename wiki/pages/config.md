@@ -18,7 +18,7 @@ defaults (hardcoded)
 
 ### Project root detection
 
-**EXTRACTED** `find_project_root()` at `config.rs:151-163`
+**EXTRACTED** `find_project_root()` at `config.rs:238`
 
 Walks ancestors from cwd looking for one of:
 1. `.zipcode.json`
@@ -40,8 +40,8 @@ First match wins. If none, project root falls back to cwd.
 | `model_dir` | `PathBuf` | `~/.zipcode/models` | Where GGUF files are discovered |
 | `model_file` | `Option<String>` | `None` | Specific GGUF filename; if absent, CLI scans `model_dir` |
 | `llama_server_bin` | `Option<PathBuf>` | `None` | Overridden by `ZIPCODE_LLAMA_SERVER_BIN` env |
-| `permission_mode` | `PermissionMode` | `WorkspaceWrite` | Parsed via kebab-case; see [permissions](permissions.md) |
-| `generation` | `GenerationConfig` override | defaults | temperature, top_p, top_k, max_tokens, repeat_penalty, repeat_last_n — see [inference › GenerationConfig](inference.md#generationconfig-lines-103-124) |
+| `permission_mode` | `String` | `"workspace-write"` | Stored as a raw string; parsed into `PermissionMode` via `parse_permission_mode()` at use sites (`config.rs:14`, `permission.rs:102`); see [permissions](permissions.md) |
+| `generation` | `GenerationOverrides` | defaults | Only `temperature`, `top_p`, `max_tokens` — see [inference › GenerationConfig](inference.md#generationconfig-lines-103-124) (`config.rs:23-28`) |
 | `gpu_layers` | `Option<i32>` | `None` | Overridden by `ZIPCODE_GPU_LAYERS` env; passed to llama-server as `-ngl` |
 | `flash_attention` | `bool` | `false` | Overridden by `ZIPCODE_FLASH_ATTENTION` env |
 
@@ -95,15 +95,27 @@ Example:
 
 ## Tests
 
-**EXTRACTED** `config.rs` — 13 inline tests:
-- `default_config`
-- `load_global_only`
-- `project_overrides_global` (merge semantics)
-- `relative_paths_resolved_against_project_root`
-- `tilde_expansion`
-- `gpu_layers_field`
-- `flash_attention_field`
-- Plus ~6 more covering edge cases.
+**EXTRACTED** `config.rs` — 20 inline tests:
+- `test_default_config`
+- `test_load_from_empty_dir`
+- `test_load_project_override` (merge semantics)
+- `test_load_project_override_model_dir`
+- `test_load_project_override_relative_model_dir`
+- `test_load_project_override_from_subdirectory`
+- `test_find_project_root_uses_ancestor_marker`
+- `test_load_project_override_gpu_settings`
+- `test_load_project_override_gpu_layers_overflow_rejected`
+- `test_load_project_override_relative_llama_server_bin`
+- `test_load_project_override_tilde_model_dir`
+- `test_load_project_override_tilde_llama_server_bin`
+- `test_load_global_tilde_llama_server_bin`
+- `test_load_project_rejects_invalid_permission_mode`
+- `test_load_global_rejects_invalid_permission_mode`
+- `test_load_rejects_negative_temperature`
+- `test_load_rejects_zero_top_p`
+- `test_load_rejects_top_p_above_one`
+- `test_load_rejects_zero_max_tokens`
+- `test_load_accepts_valid_full_access`
 
 ---
 

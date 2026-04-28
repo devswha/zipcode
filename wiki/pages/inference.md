@@ -154,7 +154,7 @@ Chain: `top_k → top_p → temperature → sample`. Used by `InferenceEngine`. 
 
 ## Tests
 
-**EXTRACTED** — current inline inventory from source + `cargo test --workspace` on 2026-04-15.
+**EXTRACTED** — current inline inventory from source + `cargo test -p zipcode-inference --release` on 2026-04-28.
 
 - `lib.rs` — 3 tests total:
   - `parse_accepts_known_backends`
@@ -162,8 +162,8 @@ Chain: `top_k → top_p → temperature → sample`. Used by `InferenceEngine`. 
   - `local_gemma4_model_loads_via_llama_server` (`#[ignore]`, requires local Gemma 4 GGUF + helper)
 - `types.rs` — 4 tests covering `ChatMessage` constructors and `GenerationConfig` defaults
 - `chat_template.rs` — 20 tests covering formatting plus malformed / nested / unclosed `<tool_call>` recovery paths — see [chat-template](chat-template.md)
-- `llama_server_backend.rs` — 14 tests covering SSE parsing, streaming behavior, request building, and flash-attention flag compatibility
-- `device.rs` / `sampler.rs` add the remaining baseline unit coverage visible in the crate total (`41` passing + `2` ignored)
+- `llama_server_backend.rs` — 14 tests covering SSE parsing, streaming behavior, request building, and flash-attention flag compatibility; newer tests add: thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options
+- `device.rs` / `sampler.rs` and additional modules account for the remaining coverage in the crate total (`251` passing + `1` ignored)
 
 ---
 

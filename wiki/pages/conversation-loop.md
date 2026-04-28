@@ -102,20 +102,32 @@ Drive `ConversationLoop` with a `MockInferenceProvider` (and one custom event-st
 
 Current named coverage includes:
 
-1. `text_only_response` — single natural-language turn exits after one iteration. `crates/runtime/tests/integration.rs:147`
-2. `single_tool_call` — tool call → tool execution → model follow-up → final answer. `crates/runtime/tests/integration.rs:175`
-3. `multi_tool_turn` — more than one tool call in the same turn. `crates/runtime/tests/integration.rs:210`
-4. `permission_denied` — `read_only` mode blocks `write_file`. `crates/runtime/tests/integration.rs:256`
-5. `workspace_write_permission_prompt_executes_bash_when_approved` — approval prompt is emitted and `bash` executes only after acceptance. `crates/runtime/tests/integration.rs:301`
-6. `workspace_write_permission_prompt_records_denial_when_rejected` — rejected approval leaves a denial tool-result message in session history without executing the tool. `crates/runtime/tests/integration.rs:327`
-7. `tool_call_loop_cap` — repeated tool requests hit the 25-iteration guard. `crates/runtime/tests/integration.rs:360`
-8. `path_traversal_blocked` — `read_file ../../etc/passwd` is rejected by tool path validation. `crates/runtime/tests/integration.rs:394`
-9. `failed_turn_is_saved_to_session_file` — inference errors still persist the attempted turn. `crates/runtime/tests/integration.rs:433`
-10. `tool_call_turn_strips_raw_markup_from_saved_assistant_content` — raw `<tool_call>` markup is stripped before assistant history is saved. `crates/runtime/tests/integration.rs:473`
-11. `resumed_session_does_not_duplicate_system_prompt` — resume path keeps the prompt boundary stable. `crates/runtime/tests/integration.rs:517`
-12. `compacted_session_roundtrip_can_continue_turns` — compacted sessions still resume correctly. `crates/runtime/tests/integration.rs:550`
+1. `text_only_response` — single natural-language turn exits after one iteration. `crates/runtime/tests/integration.rs:174`
+2. `single_tool_call` — tool call → tool execution → model follow-up → final answer. `crates/runtime/tests/integration.rs:202`
+3. `multi_tool_turn` — more than one tool call in the same turn. `crates/runtime/tests/integration.rs:237`
+4. `permission_denied` — `read_only` mode blocks `write_file`. `crates/runtime/tests/integration.rs:283`
+5. `workspace_write_permission_prompt_executes_bash_when_approved` — approval prompt is emitted and `bash` executes only after acceptance. `crates/runtime/tests/integration.rs:318`
+6. `workspace_write_permission_prompt_records_denial_when_rejected` — rejected approval leaves a denial tool-result message in session history without executing the tool. `crates/runtime/tests/integration.rs:351`
+7. `tool_call_loop_cap` — repeated tool requests hit the 25-iteration guard. `crates/runtime/tests/integration.rs:396`
+8. `path_traversal_blocked` — `read_file ../../etc/passwd` is rejected by tool path validation. `crates/runtime/tests/integration.rs:430`
+9. `failed_turn_is_saved_to_session_file` — inference errors still persist the attempted turn. `crates/runtime/tests/integration.rs:469`
+10. `tool_call_turn_strips_raw_markup_from_saved_assistant_content` — raw `<tool_call>` markup is stripped before assistant history is saved. `crates/runtime/tests/integration.rs:509`
+11. `thinking_channel_routes_to_callback_but_not_to_history` — thinking-mode tokens reach the `StreamCallback` but are not saved to session history. `crates/runtime/tests/integration.rs:553`
+12. `resumed_session_does_not_duplicate_system_prompt` — resume path keeps the prompt boundary stable. `crates/runtime/tests/integration.rs:609`
+13. `compacted_session_roundtrip_can_continue_turns` — compacted sessions still resume correctly. `crates/runtime/tests/integration.rs:642`
+14. `auto_retry_nudges_model_after_empty_turn_on_error` — empty assistant turn with tool errors triggers a retry nudge. `crates/runtime/tests/integration.rs:717`
+15. `auto_retry_skips_when_tool_result_has_no_errors` — no retry nudge when tool results are clean. `crates/runtime/tests/integration.rs:775`
+16. `inference_error_is_not_masked_by_session_save_failure` — inference errors propagate even if session save also fails. `crates/runtime/tests/integration.rs:815`
+17. `max_tokens_finish_appends_truncation_notice` — `FinishReason::MaxTokens` causes a truncation notice to be appended to the assistant message. `crates/runtime/tests/integration.rs:854`
+18. `mixed_permission_partial_flow` — mix of allowed and denied tools in one turn; allowed tools run, denied tools get denial messages. `crates/runtime/tests/integration.rs:911`
+19. `denied_tool_still_saves_session_and_continues` — a denied tool result is saved and the loop continues. `crates/runtime/tests/integration.rs:984`
+20. `tool_error_does_not_break_session_save` — a tool execution error produces an error result message and still saves the session. `crates/runtime/tests/integration.rs:1049`
+21. `empty_text_response_saves_correctly` — an empty string assistant response is saved without truncation. `crates/runtime/tests/integration.rs:1110`
+22. `consecutive_turns_accumulate_messages` — multiple user turns accumulate messages in session history in order. `crates/runtime/tests/integration.rs:1171`
+23. `conversation_loop_sends_full_history_when_provider_does_not_manage_context` — full message history is sent to the provider when it does not manage context itself. `crates/runtime/tests/integration.rs:1264`
+24. `conversation_loop_sends_only_new_segment_when_provider_manages_context` — only the new segment is sent to the provider when it manages its own context. `crates/runtime/tests/integration.rs:1325`
 
-12 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-04-15).
+24 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-04-28).
 
 ---
 

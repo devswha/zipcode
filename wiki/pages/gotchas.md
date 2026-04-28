@@ -56,7 +56,7 @@ candle 0.8 has no `quantized_gemma`. `InferenceEngine` currently uses `quantized
 
 ## #4 — 25-iteration cap returns an error mid-turn
 
-**Location:** `crates/runtime/src/conversation.rs:110` (`MAX_TOOL_ITERATIONS`)
+**Location:** `crates/runtime/src/conversation.rs:94` (`MAX_TOOL_ITERATIONS` declaration)
 
 When the model chains tools > 25 times in one turn, `run_turn()` returns `Err`. The session IS saved with all the partial messages, so the NEXT turn begins with a model that saw its own loop get killed — a confused-Claude effect.
 
@@ -94,7 +94,7 @@ Single gate that every file-touching tool routes paths through. Works today beca
 
 **Location:** `crates/tools/src/agent.rs`
 
-Returns "not yet implemented". Included in the registry, listed in `tool_search`, permission-gated like any other tool, but calling it is a no-op. **GOTCHA** — it's also not listed in [permissions](permissions.md) matrix with certainty.
+Returns "not yet implemented". Included in the registry, listed in `tool_search`, permission-gated like any other tool, but calling it is a no-op. Permission behavior IS defined: `Denied` in `read-only` and `workspace-write`, `Allowed` in `full-access` (falls through the `WorkspaceWrite` wildcard arm — `permission.rs:31-47`). Test: `test_workspace_write_denies_agent`.
 
 ---
 

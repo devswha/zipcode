@@ -56,9 +56,9 @@ pub enum PermissionCheck {
 | `todo_write` | Denied | Allowed | Allowed |
 | `bash` | Denied | **Approval** | Allowed |
 | `repl` | Denied | **Approval** | Allowed |
-| `agent` | Denied | Denied / Allowed (STUB) | Allowed |
+| `agent` | Denied | Denied | Allowed |
 
-**EXTRACTED** from `permission.rs:28-49` — read-only's allowlist is hardcoded; workspace-write's approval list is `{bash, repl}`.
+**EXTRACTED** from `permission.rs:28-54` — read-only's allowlist is hardcoded; workspace-write's approval list is `{bash, repl}`; `agent` falls through the `WorkspaceWrite` wildcard arm and is **Denied** (`permission.rs:31-47`).
 
 ### Approval flow
 
@@ -93,7 +93,7 @@ When `check()` returns `NeedsApproval(msg)`, [`ConversationLoop`](conversation-l
 ## GOTCHAs
 
 - **GOTCHA** — `read-only` mode's allowlist is a hardcoded set; any new read-safe tool you add is **implicitly denied** in read-only mode unless you remember to update `permission.rs:28`.
-- **GOTCHA** — the `AgentTool` stub has no entry in the policy matrix today; its behavior in each tier is undefined until the stub is implemented. Cross-reference [tools › the 10 tools](tools.md#the-10-tools).
+- **GOTCHA** — `AgentTool` is a stub that returns "not yet implemented", but its permission behavior IS defined: `Denied` in `read-only` and `workspace-write` (falls through the wildcard arm), `Allowed` in `full-access`. Test: `test_workspace_write_denies_agent` at `permission.rs:166`. Cross-reference [tools › the 10 tools](tools.md#the-10-tools).
 
 ---
 

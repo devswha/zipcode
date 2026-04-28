@@ -115,7 +115,7 @@ Method `truncate(max_bytes)` (`lib.rs:391-418`) finds a safe UTF-8 char boundary
 | 5 | `GlobSearchTool` | `glob_search.rs` | `glob::glob()` sorted, filters to files, rejects absolute / `..` escape patterns, and re-validates each match against workspace boundaries |
 | 6 | `GrepSearchTool` | `grep_search.rs` | `grep-regex` + `grep-searcher`, optional glob filter, rejects absolute / `..` traversal globs, re-validates matched files against the workspace, `file:line` output |
 | 7 | `ReplTool` | `repl.rs` | Spawns `python3 -c` or `node -e`; captures stdout/stderr concurrently so large output does not false-timeout; timeout cleanup kills descendant interpreters/processes too |
-| 8 | `TodoWriteTool` | `todo_write.rs` | Writes JSON to `.zipcode-todos.json` in cwd |
+| 8 | `TodoWriteTool` | `todo_write.rs` | Writes JSON to `.zipcode-todos.json` in cwd; validates each item before writing: rejects empty/whitespace `id` or `content`, enforces `status` enum (`pending`, `in_progress`, `completed`, `cancelled`); entire batch is rejected on first validation failure |
 | 9 | `ToolSearchTool` | `tool_search.rs` | Case-insensitive search over registered `ToolSpec`s |
 | 10 | `AgentTool` | `agent.rs` | **STUB** — returns "not yet implemented" |
 
@@ -151,7 +151,7 @@ Algorithm:
 
 ## Tests
 
-**EXTRACTED** — 63 unit tests total in `zipcode-tools` (`cargo test -p zipcode-tools -- --list` on 2026-04-14).
+**EXTRACTED** — 178 unit tests total in `zipcode-tools` (`cargo test -p zipcode-tools --release` on 2026-04-28).
 
 Recent regression coverage that materially changed the crate since the previous wiki snapshot includes:
 
