@@ -447,14 +447,29 @@ fn run_bash_script_with_input(
 
 #[test]
 fn doctor_runs() {
+    // Isolate from the developer's real ~/.zipcode/config.json so the
+    // assertion holds regardless of whether the dev box has a working
+    // local model. Without this, the test fails on dogfood machines
+    // because doctor correctly reports Ready and exits 0.
+    let home = make_temp_dir("doctor-runs-isolated-home");
     let output = zipcode_bin()
         .arg("doctor")
+        .env("HOME", &home)
+        .env(
+            "ZIPCODE_GLOBAL_CONFIG",
+            home.join(".zipcode/absent-config.json"),
+        )
+        .env_remove("ZIPCODE_LLAMA_SERVER_URL")
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
         .output()
         .expect("failed to run zipcode doctor");
 
     assert!(
         !output.status.success(),
-        "doctor should exit non-zero when not ready"
+        "doctor should exit non-zero when not ready, got status {:?} stdout {:?} stderr {:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
 }
 

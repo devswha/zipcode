@@ -106,9 +106,12 @@ pub fn validate_session_id_or_exit(id: &str) -> Result<()> {
     let path = zipcode_runtime::Session::path_for_id(id)
         .with_context(|| format!("--session '{id}' is not a valid session id"))?;
     if !path.exists() {
+        // Use the same `Failed to load session `<id>`` phrasing the runtime's
+        // Session::load surfaces so smoke tests and shell scripts grepping
+        // for the legacy message keep matching.
         anyhow::bail!(
-            "--session '{id}' not found at {}. Run `zipcode` to start a fresh session, \
-             or pass an existing id from `~/.zipcode/sessions/`.",
+            "Failed to load session `{id}`: not found at {}. Run `zipcode` to start a \
+             fresh session, or pass an existing id from `~/.zipcode/sessions/`.",
             path.display()
         );
     }
@@ -1945,11 +1948,12 @@ mod tests {
     fn validate_session_id_or_exit_rejects_nonexistent_session() {
         let id = "ffffffff-ffff-ffff-ffff-ffffffffffff";
         let err = validate_session_id_or_exit(id).unwrap_err().to_string();
-        assert!(err.contains("not found"), "got: {err}");
         assert!(
-            err.contains(id),
-            "error must name the offending id, got: {err}"
+            err.contains(&format!("Failed to load session `{id}`")),
+            "error must use the legacy `Failed to load session` phrasing so existing \
+             smoke tests / shell scripts keep matching, got: {err}"
         );
+        assert!(err.contains("not found"), "got: {err}");
     }
 
     // ── validate_gguf_file tests ──────────────────────────────────
