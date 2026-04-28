@@ -249,7 +249,18 @@ pub fn find_project_root(start: &Path) -> PathBuf {
 }
 
 #[must_use]
+/// Resolve the path used by [`ZipcodeConfig::load_global`].
+///
+/// Honours the `ZIPCODE_GLOBAL_CONFIG` env variable so tests can isolate
+/// from the developer's real `~/.zipcode/config.json`. Without this hook,
+/// any test that exercises `ZipcodeConfig::load` inherits whatever the
+/// user has set globally (e.g. `gpu_layers: 999`), making
+/// "invalid input falls back to default" assertions fail noisily on dev
+/// machines.
 pub fn global_config_path() -> PathBuf {
+    if let Ok(path) = std::env::var("ZIPCODE_GLOBAL_CONFIG") {
+        return PathBuf::from(path);
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".zipcode/config.json")
@@ -291,6 +302,29 @@ fn warn_type_mismatch(obj: &serde_json::Value, field: &str, expected: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Serialise tests that mutate `ZIPCODE_GLOBAL_CONFIG` so parallel runs
+    /// don't race on the env var. Mirrors the `SESSION_DIR_LOCK` pattern in
+    /// `conversation.rs` / `tests/skills.rs`.
+    static GLOBAL_CONFIG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    /// Run `f` with `ZIPCODE_GLOBAL_CONFIG` pointed at a non-existent path so
+    /// `Self::load_global()` falls back to the default. The lock guard is
+    /// returned alongside the tempdir so the caller's scope keeps both alive
+    /// for the test body — Drop on the guard releases the lock, Drop on the
+    /// dir cleans up the path.
+    fn with_isolated_global_config() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+        let guard = GLOBAL_CONFIG_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::TempDir::new().unwrap();
+        // Point at a path *inside* the tempdir that we never create, so
+        // `path.exists()` is false → `load_global()` returns Self::default().
+        std::env::set_var("ZIPCODE_GLOBAL_CONFIG", dir.path().join("absent.json"));
+        (dir, guard)
+    }
 
     #[test]
     fn test_default_config() {
@@ -704,6 +738,7 @@ mod tests {
 
     #[test]
     fn test_load_gpu_layers_as_string_uses_default() {
+        let (_global_dir, _global_guard) = with_isolated_global_config();
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join(".zipcode.json"),
@@ -716,6 +751,7 @@ mod tests {
 
     #[test]
     fn test_load_flash_attention_as_number_uses_default() {
+        let (_global_dir, _global_guard) = with_isolated_global_config();
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join(".zipcode.json"),
@@ -737,6 +773,7 @@ mod tests {
 
     #[test]
     fn test_load_mixed_valid_and_invalid_fields() {
+        let (_global_dir, _global_guard) = with_isolated_global_config();
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join(".zipcode.json"),
@@ -789,6 +826,7 @@ mod tests {
 
     #[test]
     fn test_load_llama_server_bin_as_number_uses_default() {
+        let (_global_dir, _global_guard) = with_isolated_global_config();
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join(".zipcode.json"),
