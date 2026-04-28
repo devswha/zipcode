@@ -14,7 +14,12 @@ const DEFAULT_MAX_SUMMARY_LINE_CHARS: usize = 120;
 const DEFAULT_TIER1_PAIR_CUTOFF: usize = 10;
 const DEFAULT_TIER1_BATCH_SIZE: usize = 10;
 const DEFAULT_TIER2_USAGE_THRESHOLD: f64 = 0.8;
-const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 32768;
+/// Matches `zipcode_inference::DEFAULT_CONTEXT_SIZE` (Gemma 4's 128K native
+/// window, also the default for `ZIPCODE_LLAMA_SERVER_CTX`). With the prior
+/// 32_768 default, tier-2 was triggering at 26_214 effective tokens — about
+/// 20 % of the actual window — and evicting tool responses prematurely on
+/// any deployment that didn't manually trim `CompactPolicy`.
+const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 131_072;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompactPolicy {
@@ -1168,7 +1173,7 @@ mod tests {
             (policy.tier2_usage_threshold - 0.8).abs() < f64::EPSILON,
             "tier2_usage_threshold should default to 0.8"
         );
-        assert_eq!(policy.context_window_tokens, 32768);
+        assert_eq!(policy.context_window_tokens, 131_072);
     }
 
     #[test]
@@ -1465,8 +1470,8 @@ mod tests {
     #[test]
     fn test_tier2_threshold_default() {
         let policy = CompactPolicy::default();
-        // 32768 * 0.8 = 26214.4 → floor = 26214
-        assert_eq!(policy.tier2_threshold_tokens(), 26_214);
+        // 131_072 * 0.8 = 104_857.6 → floor = 104_857
+        assert_eq!(policy.tier2_threshold_tokens(), 104_857);
     }
 
     #[test]
@@ -1476,7 +1481,7 @@ mod tests {
             ..CompactPolicy::default()
         };
         // NaN is not finite → falls back to DEFAULT_TIER2_USAGE_THRESHOLD (0.8)
-        assert_eq!(policy.tier2_threshold_tokens(), 26_214);
+        assert_eq!(policy.tier2_threshold_tokens(), 104_857);
     }
 
     #[test]
@@ -1486,7 +1491,7 @@ mod tests {
             ..CompactPolicy::default()
         };
         // Infinity is not finite → falls back to 0.8
-        assert_eq!(policy.tier2_threshold_tokens(), 26_214);
+        assert_eq!(policy.tier2_threshold_tokens(), 104_857);
     }
 
     #[test]
@@ -1495,7 +1500,7 @@ mod tests {
             tier2_usage_threshold: -1.0,
             ..CompactPolicy::default()
         };
-        // Negative clamped to 0 → 32768 * 0 = 0
+        // Negative clamped to 0 → 131_072 * 0 = 0
         assert_eq!(policy.tier2_threshold_tokens(), 0);
     }
 
@@ -1505,8 +1510,8 @@ mod tests {
             tier2_usage_threshold: 5.0,
             ..CompactPolicy::default()
         };
-        // 5.0 clamped to 1.0 → 32768 * 1.0 = 32768
-        assert_eq!(policy.tier2_threshold_tokens(), 32_768);
+        // 5.0 clamped to 1.0 → 131_072 * 1.0 = 131_072
+        assert_eq!(policy.tier2_threshold_tokens(), 131_072);
     }
 
     // ── collect_tool_pairs direct tests ──────────────────────────
