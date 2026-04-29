@@ -253,30 +253,31 @@ impl FullscreenUi {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn handle_key_event(&mut self, key: KeyEvent, conv: &mut ConversationLoop) -> Result<bool> {
-        if self.overlay.is_some() {
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                    self.overlay = None;
-                    self.status = "Ready".to_string();
-                    self.draw()?;
-                    return Ok(true);
-                }
-                _ => return Ok(true),
+    /// Handle a key event while an overlay (help, etc.) is active.
+    /// Returns `Some(should_continue)` if the key was consumed, `None` to
+    /// fall through to normal key handling.
+    fn handle_overlay_key(&mut self, key: KeyEvent) -> Option<Result<bool>> {
+        self.overlay.as_ref()?;
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.overlay = None;
+                self.status = "Ready".to_string();
+                Some(self.draw().and(Ok(true)))
             }
+            _ => Some(Ok(true)),
         }
+    }
 
-        if !matches!(key.code, KeyCode::Esc) {
-            self.esc_armed = false;
-        }
-
+    /// Handle control-key combinations (Ctrl+D, Ctrl+C, Ctrl+L) and the
+    /// Escape key. Returns `Some(should_continue)` if the key was consumed,
+    /// `None` otherwise.
+    fn handle_control_keys(&mut self, key: KeyEvent) -> Option<Result<bool>> {
         match key {
             KeyEvent {
                 code: KeyCode::Char('d'),
                 modifiers,
                 ..
-            } if modifiers.contains(KeyModifiers::CONTROL) => return Ok(false),
+            } if modifiers.contains(KeyModifiers::CONTROL) => Some(Ok(false)),
             KeyEvent {
                 code: KeyCode::Char('c'),
                 modifiers,
@@ -284,6 +285,7 @@ impl FullscreenUi {
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.composer.clear();
                 self.status = "Input cancelled".to_string();
+                None
             }
             KeyEvent {
                 code: KeyCode::Char('l'),
@@ -291,6 +293,7 @@ impl FullscreenUi {
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.status = "Screen refreshed".to_string();
+                None
             }
             KeyEvent {
                 code: KeyCode::Esc, ..
@@ -312,48 +315,57 @@ impl FullscreenUi {
                     self.esc_armed = false;
                     self.status = "Input cleared".to_string();
                 }
+                None
             }
-            KeyEvent {
-                code: KeyCode::F(1),
-                ..
-            } => self.open_help_overlay(),
-            KeyEvent {
-                code: KeyCode::BackTab,
-                ..
-            } => cycle_permission_mode(self, conv),
+            _ => None,
+        }
+    }
+
+    /// Handle scroll keys (PageUp, PageDown, Ctrl+Home, Ctrl+End).
+    fn handle_scroll_keys(&mut self, key: KeyEvent) -> bool {
+        match key {
             KeyEvent {
                 code: KeyCode::PageUp,
                 ..
             } => {
-                let moved = self.scroll_transcript_by_page(ScrollDirection::Older)?;
+                let moved = self
+                    .scroll_transcript_by_page(ScrollDirection::Older)
+                    .ok()
+                    .unwrap_or(0);
                 self.status = if moved == 0 {
                     "Already at the oldest visible history".to_string()
                 } else {
                     format!("Scrolled up {moved} line(s)")
                 };
+                true
             }
             KeyEvent {
                 code: KeyCode::PageDown,
                 ..
             } => {
-                let moved = self.scroll_transcript_by_page(ScrollDirection::Newer)?;
+                let moved = self
+                    .scroll_transcript_by_page(ScrollDirection::Newer)
+                    .ok()
+                    .unwrap_or(0);
                 self.status = if self.transcript_scroll == 0 {
                     "Back to latest output".to_string()
                 } else {
                     format!("Scrolled down {moved} line(s)")
                 };
+                true
             }
             KeyEvent {
                 code: KeyCode::Home,
                 modifiers,
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) => {
-                let moved = self.jump_to_oldest_transcript()?;
+                let moved = self.jump_to_oldest_transcript().ok().unwrap_or(0);
                 self.status = if moved == 0 {
                     "Already at the oldest visible history".to_string()
                 } else {
                     "Jumped to oldest visible history".to_string()
                 };
+                true
             }
             KeyEvent {
                 code: KeyCode::End,
@@ -366,28 +378,64 @@ impl FullscreenUi {
                 } else {
                     "Jumped to latest output".to_string()
                 };
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Handle cursor movement and navigation keys (arrows, Home/End,
+    /// Up/Down with history fallback, F1, BackTab).
+    fn handle_navigation_keys(&mut self, key: KeyEvent, conv: &mut ConversationLoop) -> bool {
+        match key {
+            KeyEvent {
+                code: KeyCode::F(1),
+                ..
+            } => {
+                self.open_help_overlay();
+                true
+            }
+            KeyEvent {
+                code: KeyCode::BackTab,
+                ..
+            } => {
+                cycle_permission_mode(self, conv);
+                true
             }
             KeyEvent {
                 code: KeyCode::Left,
                 ..
-            } => self.composer.move_left(),
+            } => {
+                self.composer.move_left();
+                true
+            }
             KeyEvent {
                 code: KeyCode::Right,
                 ..
-            } => self.composer.move_right(),
+            } => {
+                self.composer.move_right();
+                true
+            }
             KeyEvent {
                 code: KeyCode::Home,
                 ..
-            } => self.composer.move_home(),
+            } => {
+                self.composer.move_home();
+                true
+            }
             KeyEvent {
                 code: KeyCode::End, ..
-            } => self.composer.move_end(),
+            } => {
+                self.composer.move_end();
+                true
+            }
             KeyEvent {
                 code: KeyCode::Up, ..
             } => {
                 if !self.composer.move_up() {
                     let _ = self.composer.history_previous();
                 }
+                true
             }
             KeyEvent {
                 code: KeyCode::Down,
@@ -396,15 +444,35 @@ impl FullscreenUi {
                 if !self.composer.move_down() {
                     let _ = self.composer.history_next();
                 }
+                true
             }
+            _ => false,
+        }
+    }
+
+    /// Handle text editing keys (Backspace, Delete, Enter, Ctrl+J,
+    /// character input). Returns `Some(result)` when the key produces an
+    /// early return (submission), `None` otherwise.
+    fn handle_editing_keys(
+        &mut self,
+        key: KeyEvent,
+        conv: &mut ConversationLoop,
+    ) -> Option<Result<bool>> {
+        match key {
             KeyEvent {
                 code: KeyCode::Backspace,
                 ..
-            } => self.composer.backspace(),
+            } => {
+                self.composer.backspace();
+                None
+            }
             KeyEvent {
                 code: KeyCode::Delete,
                 ..
-            } => self.composer.delete_forward(),
+            } => {
+                self.composer.delete_forward();
+                None
+            }
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers,
@@ -414,23 +482,26 @@ impl FullscreenUi {
                 || modifiers.contains(KeyModifiers::ALT) =>
             {
                 self.composer.insert_newline();
+                None
             }
             KeyEvent {
                 code: KeyCode::Char('j'),
                 modifiers,
                 ..
-            } if modifiers.contains(KeyModifiers::CONTROL) => self.composer.insert_newline(),
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.composer.insert_newline();
+                None
+            }
             KeyEvent {
                 code: KeyCode::Enter,
                 ..
             } => {
                 if self.composer.try_escape_newline() {
                     self.status = "Inserted newline".to_string();
-                    self.draw()?;
-                    return Ok(true);
+                    return Some(self.draw().and(Ok(true)));
                 }
                 let submitted = self.composer.submit();
-                return self.handle_submitted_input(&submitted, conv);
+                Some(self.handle_submitted_input(&submitted, conv))
             }
             KeyEvent {
                 code: KeyCode::Char(ch),
@@ -438,8 +509,41 @@ impl FullscreenUi {
                 ..
             } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
                 self.composer.insert_char(ch);
+                None
             }
-            _ => {}
+            _ => None,
+        }
+    }
+
+    /// Main keyboard event dispatcher. Delegates to focused helpers for
+    /// overlay, control, scroll, navigation, and editing keys.
+    fn handle_key_event(&mut self, key: KeyEvent, conv: &mut ConversationLoop) -> Result<bool> {
+        // Overlay has priority — dismiss keys close it, everything else is swallowed.
+        if let Some(result) = self.handle_overlay_key(key) {
+            return result;
+        }
+
+        // Disarm the double-Escape "edit previous" trigger on any non-Esc key.
+        if !matches!(key.code, KeyCode::Esc) {
+            self.esc_armed = false;
+        }
+
+        // Try each handler in priority order. Control keys can produce early
+        // returns (Ctrl+D exits); scroll/navigation/editing return `true` when
+        // they consume the key.
+        if let Some(result) = self.handle_control_keys(key) {
+            return result;
+        }
+        if self.handle_scroll_keys(key) {
+            self.draw()?;
+            return Ok(true);
+        }
+        if self.handle_navigation_keys(key, conv) {
+            self.draw()?;
+            return Ok(true);
+        }
+        if let Some(result) = self.handle_editing_keys(key, conv) {
+            return result;
         }
 
         self.draw()?;
