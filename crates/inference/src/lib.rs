@@ -1,15 +1,31 @@
+//! Inference abstraction layer for zipcode.
+//!
+//! Provides the [`InferenceProvider`] trait and multiple backends (llama-server,
+//! llama-cpp, Candle, mock) for streaming token generation from GGUF models.
+//! All backends share the same wire types ([`ChatMessage`], [`TokenEvent`],
+//! [`GenerationConfig`]) so the runtime can swap engines without code changes.
+
+/// Chat-template formatting and tool-call parsing (Gemma 4, Llama 3.1, ChatML, Emulator).
 pub mod chat_template;
+/// Device selection (CUDA GPU with CPU fallback) for the Candle backend.
 #[cfg(feature = "candle")]
 pub mod device;
+/// Candle (pure-Rust) inference backend using `candle-transformers`.
 #[cfg(feature = "candle")]
 pub mod engine;
+/// llama.cpp C-binding backend via `llama-cpp-2`.
 #[cfg(feature = "llama-cpp")]
 pub mod llama_cpp_backend;
+/// llama-server subprocess backend using the OpenAI-compatible HTTP/SSE API.
 pub mod llama_server_backend;
+/// Mock inference provider for testing.
 pub mod mock;
+/// Token sampling with temperature, top-p, top-k, and repeat penalty.
 #[cfg(feature = "candle")]
 pub mod sampler;
+/// Registry that maps model filename patterns to chat-template implementations.
 pub mod template_registry;
+/// Core wire types shared across all crates: [`ChatMessage`], [`TokenEvent`], [`GenerationConfig`].
 pub mod types;
 
 pub use chat_template::{

@@ -29,6 +29,7 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 /// VRAM can override via `ZIPCODE_LLAMA_SERVER_CTX`.
 pub const DEFAULT_CONTEXT_SIZE: usize = 131_072;
 
+/// Configuration for the llama-server subprocess (GPU layers, context size, flash attention).
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     pub gpu_layers: Option<i32>,
@@ -83,6 +84,11 @@ fn flash_attention_args(binary: &Path, enabled: bool) -> Vec<&'static str> {
     }
 }
 
+/// Inference via llama-server subprocess using the OpenAI-compatible HTTP/SSE API.
+///
+/// Manages the full lifecycle: spawn subprocess, health-check `/health`,
+/// stream tokens via SSE, and tear down on drop. Also supports connecting
+/// to a pre-existing remote llama-server via `ZIPCODE_LLAMA_SERVER_URL`.
 pub struct LlamaServerProvider {
     /// Subprocess handle. `None` when connected to a pre-existing remote
     /// server via `ZIPCODE_LLAMA_SERVER_URL` — in that mode zipcode is a

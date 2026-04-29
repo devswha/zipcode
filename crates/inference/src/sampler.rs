@@ -4,6 +4,11 @@ use crate::types::GenerationConfig;
 
 const F32_EPSILON: f32 = 1e-6;
 
+/// Token sampler applying temperature, top-p, top-k, and repeat penalty.
+///
+/// Converts raw logits from the model into a probability distribution and
+/// samples a single token index. The sampling pipeline is:
+/// repeat penalty → temperature scaling → top-k → top-p → random sample.
 pub struct Sampler {
     temperature: f32,
     top_p: f32,
@@ -14,6 +19,7 @@ pub struct Sampler {
 }
 
 impl Sampler {
+    /// Create a sampler from a [`GenerationConfig`].
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn new(config: &GenerationConfig) -> Self {

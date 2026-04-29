@@ -5,6 +5,10 @@ use crate::chat_template::{ChatTemplate, GemmaTemplate, ToolSpec};
 use crate::types::{ChatMessage, FinishReason, InferenceError, TokenEvent, ToolCallParsed};
 use crate::InferenceProvider;
 
+/// Canned response variants for [`MockInferenceProvider`].
+///
+/// Each variant simulates a different kind of model output: plain text,
+/// a tool call, a custom event stream, or an error.
 pub enum MockResponse {
     /// Return plain text
     Text(String),
@@ -19,6 +23,10 @@ pub enum MockResponse {
     Error(InferenceError),
 }
 
+/// Test double for [`InferenceProvider`] that returns preset responses.
+///
+/// Responses are consumed in FIFO order. The provider also captures all
+/// messages passed to `generate_stream` so tests can assert on the input.
 pub struct MockInferenceProvider {
     /// Shared response queue — parent and cloned children draw from the same
     /// deque so tests can pre-load responses for both in one place.
@@ -36,6 +44,7 @@ pub struct MockInferenceProvider {
 }
 
 impl MockInferenceProvider {
+    /// Create a mock provider pre-loaded with the given response sequence.
     #[must_use]
     pub fn new(responses: Vec<MockResponse>) -> Self {
         Self {

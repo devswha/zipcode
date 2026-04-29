@@ -49,6 +49,10 @@ fn safe_ctx_size(n_prompt: usize, max_tokens: usize) -> u32 {
     )
 }
 
+/// Inference via llama.cpp C bindings (`llama-cpp-2`).
+///
+/// Loads GGUF models directly into the process and runs autoregressive
+/// generation using llama.cpp's C API. Requires the `llama-cpp` feature flag.
 pub struct LlamaCppProvider {
     model: LlamaModel,
     backend: LlamaBackend,
@@ -80,6 +84,7 @@ impl LlamaCppProvider {
         })
     }
 
+    /// Override the generation config (temperature, top-p, max_tokens, etc.).
     pub const fn set_config(&mut self, config: GenerationConfig) {
         self.config = config;
     }

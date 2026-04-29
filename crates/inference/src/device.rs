@@ -1,6 +1,7 @@
 use candle_core::Device;
 use tracing::info;
 
+/// Pick the best available compute device (CUDA GPU 0 if available, otherwise CPU).
 pub fn select_device() -> Device {
     match Device::new_cuda(0) {
         Ok(device) => {
@@ -14,6 +15,7 @@ pub fn select_device() -> Device {
     }
 }
 
+/// Return a human-readable label for the device (`"CUDA GPU"` or `"CPU"`).
 #[must_use]
 pub fn device_info(device: &Device) -> String {
     match device {

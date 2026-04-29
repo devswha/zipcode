@@ -32,6 +32,10 @@ use std::fmt::Write;
 use crate::types::{ChatMessage, Role, ToolCallParsed};
 use serde::{Deserialize, Serialize};
 
+/// Tool specification passed to the chat template for rendering.
+///
+/// Each tool exposed to the model is described by its name, a human-readable
+/// description, and a JSON Schema defining the expected parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: String,

@@ -16,6 +16,11 @@ use crate::sampler::Sampler;
 use crate::types::{ChatMessage, FinishReason, GenerationConfig, InferenceError, TokenEvent};
 use crate::InferenceProvider;
 
+/// Candle (pure-Rust) inference backend for GGUF models.
+///
+/// Uses `candle-transformers` for model weights and `tokenizers` for encoding.
+/// Currently employs `quantized_llama` as a stand-in because candle 0.8 lacks
+/// `quantized_gemma2`. Device selection (CUDA/CPU) is handled by [`crate::device`].
 pub struct InferenceEngine {
     model: gemma::ModelWeights,
     tokenizer: Tokenizer,
@@ -54,6 +59,7 @@ impl InferenceEngine {
         })
     }
 
+    /// Override the generation config (temperature, top-p, max_tokens, etc.).
     pub const fn set_config(&mut self, config: GenerationConfig) {
         self.config = config;
     }

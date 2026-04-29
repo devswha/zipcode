@@ -1,11 +1,19 @@
 use serde::{Deserialize, Serialize};
 
+/// Role of a participant in the conversation.
+///
+/// Maps to the Gemma 4 chat-template turn markers (`<start_of_turn>user`,
+/// `<start_of_turn>model`, etc.). Serialized as lowercase strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Human user or system prompt.
     User,
+    /// Model / assistant response.
     Model,
+    /// Tool execution result.
     Tool,
+    /// System-level instruction injected before user turns.
     System,
 }
 
@@ -14,6 +22,16 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// A single message in the conversation, flowing between all crates.
+///
+/// This is the primary wire type — it carries user input, model responses,
+/// tool invocations, and tool results. The `tool_calls` field is populated
+/// when the model requests tool execution; `tool_call_id` is set on tool
+/// result messages to correlate them back to the originating call.
+///
+/// The `agent_invisible` flag supports the two-tier context compaction system:
+/// messages marked invisible are excluded from inference but retained in the
+/// session file for replay fidelity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
@@ -32,6 +50,7 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    /// Create a user-role message.
     #[must_use]
     pub fn user(content: &str) -> Self {
         Self {
@@ -43,6 +62,7 @@ impl ChatMessage {
         }
     }
 
+    /// Create a system-role message (injected as the first turn).
     #[must_use]
     pub fn system(content: &str) -> Self {
         Self {
@@ -54,6 +74,7 @@ impl ChatMessage {
         }
     }
 
+    /// Create an assistant (model) message without tool calls.
     #[must_use]
     pub fn assistant(content: &str) -> Self {
         Self {
@@ -65,6 +86,7 @@ impl ChatMessage {
         }
     }
 
+    /// Create an assistant message that carries one or more parsed tool calls.
     #[must_use]
     pub fn assistant_with_tool_calls(content: &str, calls: Vec<ToolCallParsed>) -> Self {
         Self {
@@ -76,6 +98,7 @@ impl ChatMessage {
         }
     }
 
+    /// Create a tool-result message, correlated to a specific tool call by `call_id`.
     #[must_use]
     pub fn tool_result(call_id: &str, content: &str) -> Self {
         Self {
@@ -88,6 +111,10 @@ impl ChatMessage {
     }
 }
 
+/// A parsed tool call extracted from model output.
+///
+/// Contains the unique call id, tool name, and JSON arguments as produced
+/// by the chat-template parser (e.g. `parse_tool_calls`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallParsed {
     pub id: String,
@@ -95,8 +122,14 @@ pub struct ToolCallParsed {
     pub arguments: serde_json::Value,
 }
 
+/// Streaming event emitted by inference backends during generation.
+///
+/// Consumers read these from the `mpsc::Receiver` returned by
+/// [`InferenceProvider::generate_stream`]. The stream always ends with
+/// either `Done` or `Error`.
 #[derive(Debug, Clone)]
 pub enum TokenEvent {
+    /// A decoded text token from the model.
     Token(String),
     /// A chunk of the model's private reasoning channel (Gemma 4
     /// `<|channel>thought<channel|>`). The UI may render this as dimmed /
@@ -104,30 +137,47 @@ pub enum TokenEvent {
     /// Gemma 4 `chat_template_caps.supports_preserve_reasoning` is `false`
     /// and the GGUF-embedded `strip_thinking` macro drops it on re-injection.
     Thinking(String),
+    /// A fully parsed tool call emitted mid-stream.
     ToolCall(ToolCallParsed),
+    /// Generation finished with the given reason.
     Done(FinishReason),
+    /// An error occurred during generation.
     Error(InferenceError),
 }
 
+/// Why generation stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinishReason {
+    /// Model emitted a stop token (end of turn).
     Stop,
+    /// Reached the configured `max_tokens` limit.
     MaxTokens,
+    /// Model produced a tool call — the runtime should dispatch tools.
     ToolUse,
 }
 
+/// Errors that can occur during model loading or generation.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum InferenceError {
+    /// The specified model file does not exist or is unreadable.
     #[error("Model file not found: {0}")]
     ModelNotFound(String),
+    /// CUDA ran out of GPU memory during generation.
     #[error("CUDA out of memory")]
     OutOfMemory,
+    /// Tokenizer failed to load or encode/decode.
     #[error("Tokenizer error: {0}")]
     TokenizerError(String),
+    /// Generic generation failure (e.g. backend crash, malformed output).
     #[error("Generation error: {0}")]
     GenerationError(String),
 }
 
+/// Sampling and generation parameters passed to inference backends.
+///
+/// Controls temperature, top-p/top-k filtering, repeat penalty, and
+/// the maximum number of tokens per generation. The `enable_thinking`
+/// flag toggles Gemma 4's reasoning channel.
 #[derive(Debug, Clone)]
 pub struct GenerationConfig {
     pub temperature: f64,
