@@ -416,18 +416,17 @@ fn scan_llama31_tool_calls(output: &str) -> Vec<ToolCallParsed> {
         if let Some(end) = find_json_object_end(bytes, start) {
             let json_str = &output[start..end];
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // Require both "name" (non-empty string) AND "parameters" (object)
+                // to avoid false positives on JSON in model prose (e.g., code examples).
                 if let Some(name) = v["name"].as_str() {
                     if !name.is_empty() {
-                        let arguments = v
-                            .get("parameters")
-                            .filter(|p| p.is_object())
-                            .cloned()
-                            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-                        calls.push(ToolCallParsed {
-                            id: format!("call_{}", calls.len()),
-                            name: name.to_string(),
-                            arguments,
-                        });
+                        if let Some(params) = v.get("parameters").filter(|p| p.is_object()) {
+                            calls.push(ToolCallParsed {
+                                id: format!("call_{}", calls.len()),
+                                name: name.to_string(),
+                                arguments: params.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -456,7 +455,10 @@ fn strip_llama31_tool_calls(output: &str) -> String {
         if let Some(end) = find_json_object_end(bytes, start) {
             let json_str = &output[start..end];
             let is_tool_call = serde_json::from_str::<serde_json::Value>(json_str)
-                .map(|v| v["name"].as_str().is_some())
+                .map(|v| {
+                    v["name"].as_str().is_some()
+                        && v.get("parameters").is_some_and(|p| p.is_object())
+                })
                 .unwrap_or(false);
 
             if is_tool_call {
@@ -1249,6 +1251,85 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "bash");
         assert_eq!(calls[0].arguments["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_llama31_no_parameters_not_treated_as_tool_call() {
+        // JSON with "name" but no "parameters" should NOT be a tool call
+        // (prevents false positives from JSON in model prose)
+        let t = Llama31Template;
+        let output = r#"Here is an example: {"name": "bash", "command": "ls"}"#;
+        let calls = t.parse_tool_calls(output);
+        assert!(
+            calls.is_empty(),
+            "JSON with name but no parameters should not be a tool call"
+        );
+    }
+
+    #[test]
+    fn test_llama31_parameters_string_not_treated_as_tool_call() {
+        // JSON with "name" and "parameters" as string (not object) should NOT be a tool call
+        let t = Llama31Template;
+        let output = r#"{"name": "bash", "parameters": "some string"}"#;
+        let calls = t.parse_tool_calls(output);
+        assert!(
+            calls.is_empty(),
+            "JSON with parameters as non-object should not be a tool call"
+        );
+    }
+
+    #[test]
+    fn test_llama31_valid_tool_call_with_parameters_object() {
+        // JSON with "name" and "parameters" as object IS a tool call
+        let t = Llama31Template;
+        let output = r#"{"name": "bash", "parameters": {"command": "ls -la"}}"#;
+        let calls = t.parse_tool_calls(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].arguments["command"], "ls -la");
+    }
+
+    #[test]
+    fn test_llama31_prose_with_multiple_json_name_objects() {
+        // Multiple JSON objects with "name" in prose — none should be tool calls
+        let t = Llama31Template;
+        let output = r#"Here are some examples:
+{"name": "Alice", "role": "admin"}
+{"name": "Bob", "role": "user"}
+{"name": "Charlie"}"#;
+        let calls = t.parse_tool_calls(output);
+        assert!(
+            calls.is_empty(),
+            "JSON objects with name but no parameters in prose should not be tool calls"
+        );
+    }
+
+    #[test]
+    fn test_llama31_strip_preserves_prose_json_with_name() {
+        // strip should NOT remove JSON with "name" but no "parameters"
+        let t = Llama31Template;
+        let output = r#"Here is an example: {"name": "bash", "command": "ls"}"#;
+        let text = t.extract_text_content(output);
+        assert!(
+            text.contains("bash"),
+            "prose JSON with name but no parameters should be preserved as text"
+        );
+    }
+
+    #[test]
+    fn test_llama31_strip_removes_valid_tool_call() {
+        // strip should remove JSON with "name" AND "parameters" object
+        let t = Llama31Template;
+        let output = r#"I will run {"name": "bash", "parameters": {"command": "ls"}} now."#;
+        let text = t.extract_text_content(output);
+        assert!(
+            !text.contains("bash"),
+            "valid tool call JSON should be stripped from text"
+        );
+        assert!(
+            text.contains("I will run") && text.contains("now."),
+            "surrounding text should be preserved"
+        );
     }
 
     #[test]
