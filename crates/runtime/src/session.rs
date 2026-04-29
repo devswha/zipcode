@@ -376,17 +376,22 @@ fn validate_session_id(id: &str) -> Result<()> {
 fn collect_tool_pairs(messages: &[ChatMessage]) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     let mut i = 0;
-    while i + 1 < messages.len() {
+    while i < messages.len() {
         let asst = &messages[i];
-        let tool = &messages[i + 1];
-        if asst.role == Role::Model
-            && asst.tool_calls.is_some()
-            && !asst.agent_invisible
-            && tool.role == Role::Tool
-            && !tool.agent_invisible
-        {
-            pairs.push((i, i + 1));
-            i += 2;
+        if asst.role == Role::Model && asst.tool_calls.is_some() && !asst.agent_invisible {
+            // Collect ALL consecutive visible Tool messages after this assistant.
+            let mut j = i + 1;
+            while j < messages.len() {
+                let tool = &messages[j];
+                if tool.role == Role::Tool && !tool.agent_invisible {
+                    pairs.push((i, j));
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            // Advance past all collected tool results (or past i if none matched)
+            i = j;
         } else {
             i += 1;
         }
@@ -407,16 +412,17 @@ fn build_tool_pair_summary(
         let asst = &messages[asst_idx];
         let tool = &messages[tool_idx];
 
-        let tool_name = asst
-            .tool_calls
-            .as_ref()
-            .and_then(|calls| calls.first())
-            .map_or("unknown", |c| c.name.as_str());
+        // Match tool result to its specific call by tool_call_id
+        let matched_call = asst.tool_calls.as_ref().and_then(|calls| {
+            tool.tool_call_id
+                .as_deref()
+                .and_then(|id| calls.iter().find(|c| c.id == id))
+                .or_else(|| calls.first())
+        });
 
-        let args_preview = asst
-            .tool_calls
-            .as_ref()
-            .and_then(|calls| calls.first())
+        let tool_name = matched_call.map_or("unknown", |c| c.name.as_str());
+
+        let args_preview = matched_call
             .map(|c| truncate_inline(&c.arguments.to_string(), max_line_chars / 4))
             .unwrap_or_default();
 
@@ -1575,10 +1581,115 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_tool_pairs_empty() {
-        let messages: Vec<ChatMessage> = vec![];
+    fn test_collect_tool_pairs_multi_tool_calls() {
+        let call1 = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let call2 = ToolCallParsed {
+            id: "c2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "foo.rs"}),
+        };
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("thinking", vec![call1, call2]),
+            ChatMessage::tool_result("c1", "file1.rs\nfile2.rs"),
+            ChatMessage::tool_result("c2", "fn main() {}"),
+        ];
         let pairs = collect_tool_pairs(&messages);
-        assert!(pairs.is_empty());
+        // Both tool results should be paired with the same assistant
+        assert_eq!(
+            pairs,
+            vec![(0, 1), (0, 2)],
+            "multi-tool-call assistant should produce pairs for all consecutive tool results"
+        );
+    }
+
+    #[test]
+    fn test_collect_tool_pairs_multi_tool_calls_with_gap() {
+        let call1 = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let call2 = ToolCallParsed {
+            id: "c2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "foo.rs"}),
+        };
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("thinking", vec![call1, call2]),
+            ChatMessage::tool_result("c1", "file1.rs"),
+            ChatMessage::user("interrupt"),
+            ChatMessage::tool_result("c2", "fn main() {}"),
+        ];
+        let pairs = collect_tool_pairs(&messages);
+        // Gap breaks the chain: only the first tool result is paired
+        assert_eq!(
+            pairs,
+            vec![(0, 1)],
+            "non-adjacent tool result should not be paired"
+        );
+    }
+
+    #[test]
+    fn test_collect_tool_pairs_multi_tool_three_results() {
+        let call1 = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let call2 = ToolCallParsed {
+            id: "c2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "foo.rs"}),
+        };
+        let call3 = ToolCallParsed {
+            id: "c3".to_string(),
+            name: "grep_search".to_string(),
+            arguments: serde_json::json!({"pattern": "TODO"}),
+        };
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("", vec![call1, call2, call3]),
+            ChatMessage::tool_result("c1", "file1.rs"),
+            ChatMessage::tool_result("c2", "fn main() {}"),
+            ChatMessage::tool_result("c3", "TODO: fix this"),
+        ];
+        let pairs = collect_tool_pairs(&messages);
+        assert_eq!(
+            pairs,
+            vec![(0, 1), (0, 2), (0, 3)],
+            "three tool results should all be paired with the assistant"
+        );
+    }
+
+    #[test]
+    fn test_collect_tool_pairs_mixed_invisible_in_multi() {
+        let call1 = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let call2 = ToolCallParsed {
+            id: "c2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let mut tool2 = ChatMessage::tool_result("c2", "content");
+        tool2.agent_invisible = true;
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("", vec![call1, call2]),
+            ChatMessage::tool_result("c1", "output"),
+            tool2,
+        ];
+        let pairs = collect_tool_pairs(&messages);
+        // Only the visible tool result is paired; invisible one stops the chain
+        assert_eq!(
+            pairs,
+            vec![(0, 1)],
+            "invisible tool result in multi-call should stop chain"
+        );
     }
 
     // ── build_tool_pair_summary direct tests ─────────────────────
@@ -1622,6 +1733,128 @@ mod tests {
                 line.chars().count()
             );
         }
+    }
+
+    #[test]
+    fn test_build_tool_pair_summary_multi_tool_calls() {
+        let call1 = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let call2 = ToolCallParsed {
+            id: "c2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "foo.rs"}),
+        };
+        let messages = vec![
+            ChatMessage::assistant_with_tool_calls("", vec![call1, call2]),
+            ChatMessage::tool_result("c1", "file1.rs\nfile2.rs"),
+            ChatMessage::tool_result("c2", "fn main() {}"),
+        ];
+        let summary = build_tool_pair_summary(&[(0, 1), (0, 2)], &messages, 120);
+        assert!(summary.starts_with(TOOL_PAIR_SUMMARY_MARKER));
+        assert!(
+            summary.contains("bash("),
+            "summary should contain bash tool name"
+        );
+        assert!(
+            summary.contains("file1.rs"),
+            "summary should contain bash result"
+        );
+        assert!(
+            summary.contains("read_file("),
+            "summary should contain read_file tool name"
+        );
+        assert!(
+            summary.contains("fn main()"),
+            "summary should contain read_file result"
+        );
+    }
+
+    #[test]
+    fn test_compact_tool_pairs_multi_tool_calls_compacts_all() {
+        let call1 = ToolCallParsed {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let call2 = ToolCallParsed {
+            id: "c2".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "foo.rs"}),
+        };
+        let call3 = ToolCallParsed {
+            id: "c3".to_string(),
+            name: "grep_search".to_string(),
+            arguments: serde_json::json!({"pattern": "TODO"}),
+        };
+        let mut session = Session {
+            id: "session".to_string(),
+            messages: vec![
+                ChatMessage::system("system prompt"),
+                ChatMessage::user("first request"),
+                ChatMessage::assistant_with_tool_calls("checking", vec![call1, call2]),
+                ChatMessage::tool_result("c1", "file1.rs"),
+                ChatMessage::tool_result("c2", "fn main() {}"),
+                ChatMessage::user("second request"),
+                ChatMessage::assistant_with_tool_calls("searching", vec![call3]),
+                ChatMessage::tool_result("c3", "TODO: fix this"),
+                ChatMessage::assistant("done"),
+            ],
+            created_at: timestamp_now(),
+            updated_at: timestamp_now(),
+            parent_id: None,
+            resolved_path: std::path::PathBuf::new(),
+        };
+
+        // compact_tool_pairs(2, ...) should compact the first 2 pairs
+        let count = session.compact_tool_pairs(2, 120);
+        assert_eq!(count, 2, "should compact 2 tool pairs");
+
+        // collect_tool_pairs returns [(2,3), (2,4), (6,7)] — 3 pairs.
+        // batch_size=2 takes [(2,3), (2,4)].
+        // insert_before = batch[0].0 = 2 → summary inserted at index 2.
+        // After insert: [0:system, 1:user, 2:summary, 3:asst, 4:tool(c1), 5:tool(c2), ...]
+        // Then: messages[asst_idx+1].invisible and messages[tool_idx+1].invisible
+        // → messages[3] (asst), messages[4] (tool c1), messages[5] (tool c2) all invisible
+
+        // Verify summary was inserted at correct position
+        let summary_msg = &session.messages[2];
+        assert!(summary_msg.content.starts_with(TOOL_PAIR_SUMMARY_MARKER));
+
+        // Both tool results from the multi-call assistant should be invisible
+        let invisible_count = session
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Tool && m.agent_invisible)
+            .count();
+        assert_eq!(
+            invisible_count, 2,
+            "both tool results from first assistant should be invisible"
+        );
+
+        // The assistant that made the multi-tool-call should also be invisible
+        let asst_invisible = session
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Model && m.tool_calls.is_some() && m.agent_invisible)
+            .count();
+        assert_eq!(
+            asst_invisible, 1,
+            "the multi-tool-call assistant should be invisible"
+        );
+
+        // The second tool result pair (asst c3, tool c3) should remain visible
+        let visible_tool_count = session
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Tool && !m.agent_invisible)
+            .count();
+        assert_eq!(
+            visible_tool_count, 1,
+            "the third tool result should remain visible"
+        );
     }
 
     #[test]
