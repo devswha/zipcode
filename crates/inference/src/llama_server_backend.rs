@@ -744,10 +744,15 @@ struct ToolCallAccumulator {
 /// status line, and skip the response headers, returning a `BufReader`
 /// positioned at the start of the SSE body.
 fn open_sse_stream(host: &str, port: u16, request_body: &str) -> Result<BufReader<TcpStream>> {
-    let mut stream =
-        TcpStream::connect((host, port)).context("Failed to connect to llama-server")?;
-    stream.set_read_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
-    stream.set_write_timeout(Some(DEFAULT_REQUEST_TIMEOUT))?;
+    let mut stream = TcpStream::connect((host, port)).with_context(|| {
+        format!("Failed to connect to llama-server at {host}:{port} for SSE streaming")
+    })?;
+    stream
+        .set_read_timeout(Some(DEFAULT_REQUEST_TIMEOUT))
+        .with_context(|| format!("Failed to set read timeout on {host}:{port}"))?;
+    stream
+        .set_write_timeout(Some(DEFAULT_REQUEST_TIMEOUT))
+        .with_context(|| format!("Failed to set write timeout on {host}:{port}"))?;
 
     let http_req = format!(
         "POST /v1/chat/completions HTTP/1.1\r\n\
@@ -761,14 +766,20 @@ fn open_sse_stream(host: &str, port: u16, request_body: &str) -> Result<BufReade
         version = env!("CARGO_PKG_VERSION"),
         len = request_body.len(),
     );
-    stream.write_all(http_req.as_bytes())?;
-    stream.flush()?;
+    stream.write_all(http_req.as_bytes()).with_context(|| {
+        format!("Failed to send HTTP POST to {host}:{port}/v1/chat/completions")
+    })?;
+    stream
+        .flush()
+        .with_context(|| format!("Failed to flush HTTP request to {host}:{port}"))?;
 
     let mut reader = BufReader::new(stream);
 
     // Read status line
     let mut status_line = String::new();
-    reader.read_line(&mut status_line)?;
+    reader
+        .read_line(&mut status_line)
+        .with_context(|| format!("Failed to read HTTP status line from {host}:{port}"))?;
     if !status_line.contains(" 200 ") {
         // Read body for error details
         let mut error_body = String::new();
@@ -824,7 +835,8 @@ fn stream_sse_events(
     tx: &mpsc::Sender<TokenEvent>,
     eval_count_out: &Mutex<Option<usize>>,
 ) -> Result<()> {
-    let body = serde_json::to_string(request)?;
+    let body = serde_json::to_string(request)
+        .context("Failed to serialize chat completion request as JSON")?;
     let mut reader = open_sse_stream(host, port, &body)?;
 
     let mut tool_call_accum: Vec<ToolCallAccumulator> = Vec::new();
@@ -835,7 +847,9 @@ fn stream_sse_events(
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => {
-                stream_error = Some("llama-server SSE stream ended before [DONE]".to_string());
+                stream_error = Some(format!(
+                    "llama-server SSE stream at {host}:{port} ended before [DONE]"
+                ));
                 break;
             }
             Ok(_) => {}
@@ -843,11 +857,15 @@ fn stream_sse_events(
                 if e.kind() == std::io::ErrorKind::TimedOut
                     || e.kind() == std::io::ErrorKind::WouldBlock =>
             {
-                stream_error =
-                    Some("llama-server SSE stream timed out or stalled before [DONE]".to_string());
+                stream_error = Some(format!(
+                    "llama-server SSE stream at {host}:{port} timed out or stalled before [DONE]"
+                ));
                 break;
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("I/O error reading SSE stream from {host}:{port}"));
+            }
         }
 
         let line = line.trim();
@@ -926,11 +944,20 @@ fn stream_sse_events(
 
     if !tool_call_accum.is_empty() {
         for acc in tool_call_accum {
+            let raw_args = acc.arguments.clone();
             let arguments: serde_json::Value =
                 serde_json::from_str(&acc.arguments).with_context(|| {
                     format!(
-                        "llama-server returned an incomplete tool call for `{}`",
-                        acc.name
+                        "llama-server returned an invalid tool call for `{}`: \
+                         failed to parse arguments as JSON ({} bytes received): \
+                         {:?}",
+                        acc.name,
+                        raw_args.len(),
+                        if raw_args.len() > 200 {
+                            format!("{}...[truncated]", &raw_args[..200])
+                        } else {
+                            raw_args
+                        }
                     )
                 })?;
             let _ = tx.send(TokenEvent::ToolCall(ToolCallParsed {
