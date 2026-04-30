@@ -154,16 +154,15 @@ Chain: `top_k → top_p → temperature → sample`. Used by `InferenceEngine`. 
 
 ## Tests
 
-**EXTRACTED** — current inline inventory from source + `cargo test -p zipcode-inference --release` on 2026-04-28.
+**EXTRACTED** — current inline inventory from source + `cargo test -p zipcode-inference` on 2026-04-30.
 
-- `lib.rs` — 3 tests total:
-  - `parse_accepts_known_backends`
-  - `parse_rejects_unknown_backend`
-  - `local_gemma4_model_loads_via_llama_server` (`#[ignore]`, requires local Gemma 4 GGUF + helper)
-- `types.rs` — 4 tests covering `ChatMessage` constructors and `GenerationConfig` defaults
-- `chat_template.rs` — 20 tests covering formatting plus malformed / nested / unclosed `<tool_call>` recovery paths — see [chat-template](chat-template.md)
-- `llama_server_backend.rs` — 14 tests covering SSE parsing, streaming behavior, request building, and flash-attention flag compatibility; newer tests add: thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options
-- `device.rs` / `sampler.rs` and additional modules account for the remaining coverage in the crate total (`251` passing + `1` ignored)
+- `lib.rs` — 21 tests covering backend parsing, registry resolution, and the ignored `local_gemma4_model_loads_via_llama_server` end-to-end probe
+- `types.rs` — 18 tests covering `ChatMessage` constructors, `GenerationConfig` defaults, and `TokenEvent` variants
+- `chat_template.rs` — 50 tests covering Gemma / ChatML / Llama 3.1 / emulator formatting plus malformed / nested / unclosed `<tool_call>` recovery paths — see [chat-template](chat-template.md)
+- `llama_server_backend.rs` — 109 tests covering SSE parsing, streaming behavior, request building, flash-attention flag compatibility, thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options
+- `sampler.rs` — 21 tests covering top-k / top-p / temperature scaling and numerical-stability edge cases
+- `template_registry.rs` — 23 tests covering glob resolution, override merging, malformed-JSON fallback, and deterministic specificity sort (#140 regression coverage)
+- `device.rs` / `mock.rs` / `engine.rs` round out the rest; crate total: **271 passing + 2 ignored** plus 7 in `tests/template_integration.rs`
 
 ---
 
