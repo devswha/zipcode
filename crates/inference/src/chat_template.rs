@@ -457,7 +457,8 @@ fn strip_llama31_tool_calls(output: &str) -> String {
             let is_tool_call = serde_json::from_str::<serde_json::Value>(json_str)
                 .map(|v| {
                     v["name"].as_str().is_some()
-                        && v.get("parameters").is_some_and(|p| p.is_object())
+                        && v.get("parameters")
+                            .is_some_and(serde_json::Value::is_object)
                 })
                 .unwrap_or(false);
 
