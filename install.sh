@@ -36,6 +36,63 @@ require_file() {
     [ -f "${path}" ] || fail "${label} not found: ${path}"
 }
 
+# Probe the C build deps that `cargo build -p zipcode` needs to compile
+# `llama-cpp-sys-2`. Surfaces missing tooling at the top of the install
+# instead of letting bindgen panic 80 lines deep into cargo output.
+#
+# Tracked as #148. Without this, fresh hosts fail with
+#   thread 'main' panicked at bindgen-*/lib.rs: Unable to find libclang
+# which is opaque for non-Rust users.
+ensure_build_deps_available() {
+    local missing=()
+
+    command -v cmake >/dev/null 2>&1 || missing+=("cmake")
+    command -v pkg-config >/dev/null 2>&1 || missing+=("pkg-config")
+
+    if ! probe_libclang; then
+        missing+=("libclang")
+    fi
+
+    [ "${#missing[@]}" -eq 0 ] && return 0
+
+    echo "Missing native build prerequisites: ${missing[*]}" >&2
+    if command -v apt-get >/dev/null 2>&1; then
+        local apt_pkgs="libclang-dev cmake pkg-config build-essential"
+        echo "" >&2
+        echo "On Debian/Ubuntu, install with:" >&2
+        echo "  sudo apt-get install -y ${apt_pkgs}" >&2
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "" >&2
+        echo "On Fedora/RHEL, install with:" >&2
+        echo "  sudo dnf install -y clang-devel cmake pkgconf-pkg-config gcc-c++" >&2
+    elif command -v brew >/dev/null 2>&1; then
+        echo "" >&2
+        echo "On macOS (Homebrew), install with:" >&2
+        echo "  brew install cmake llvm pkg-config" >&2
+    else
+        echo "" >&2
+        echo "Install your platform's libclang/cmake/pkg-config equivalents and re-run." >&2
+    fi
+    fail "build dependencies missing: ${missing[*]}"
+}
+
+probe_libclang() {
+    [ -n "${LIBCLANG_PATH:-}" ] && [ -e "${LIBCLANG_PATH}" ] && return 0
+    if command -v ldconfig >/dev/null 2>&1; then
+        ldconfig -p 2>/dev/null | grep -q "libclang" && return 0
+    fi
+    local candidate
+    for candidate in /usr/lib/x86_64-linux-gnu/libclang.so \
+                     /usr/lib/x86_64-linux-gnu/libclang-*.so* \
+                     /usr/lib/libclang.so* \
+                     /usr/local/lib/libclang.so* \
+                     /opt/homebrew/opt/llvm/lib/libclang.dylib \
+                     /usr/local/opt/llvm/lib/libclang.dylib; do
+        [ -e "${candidate}" ] && return 0
+    done
+    return 1
+}
+
 list_model_candidates() {
     local search_dir="$1"
     [ -d "${search_dir}" ] || return 0
@@ -596,6 +653,7 @@ if [ -z "${BINARY_SOURCE}" ]; then
         [ -x "${BINARY_SOURCE}" ] || fail "--skip-build was set but ${BINARY_SOURCE} does not exist"
     else
         command -v cargo >/dev/null 2>&1 || fail "cargo is required for clone installs. Install Rust or use a release bundle."
+        ensure_build_deps_available
         echo "Building zipcode from source..."
         (cd "${SCRIPT_DIR}" && cargo build --release -p zipcode)
     fi
