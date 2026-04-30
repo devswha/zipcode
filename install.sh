@@ -36,6 +36,61 @@ require_file() {
     [ -f "${path}" ] || fail "${label} not found: ${path}"
 }
 
+# Make `cargo` available before invoking `cargo build`. If rustup
+# already installed Rust into `~/.cargo` but the current shell has
+# not sourced its env yet, source it. Otherwise prompt to install
+# Rust via rustup (interactive: default Y; non-interactive: fail
+# with the rustup one-liner so CI can decide).
+ensure_cargo_available() {
+    if command -v cargo >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # rustup installs cargo into ~/.cargo/bin and writes ~/.cargo/env
+    # to add it to PATH. A fresh post-install shell often doesn't
+    # have that on PATH yet.
+    if [ -f "${HOME}/.cargo/env" ]; then
+        # shellcheck disable=SC1091
+        . "${HOME}/.cargo/env"
+        if command -v cargo >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    if [ -x "${HOME}/.cargo/bin/cargo" ]; then
+        export PATH="${HOME}/.cargo/bin:${PATH}"
+        if command -v cargo >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    echo "cargo is required to build zipcode from source." >&2
+    if ! command -v curl >/dev/null 2>&1; then
+        fail "Install Rust manually (https://rustup.rs) or rerun with --skip-build and a prebuilt binary."
+    fi
+
+    local default
+    default="$(default_choice_for_stdin "Y" "n")"
+    local answer
+    answer="$(prompt_choice "Install Rust via rustup now? (y/N)" "${default}")"
+    case "${answer}" in
+        [Yy]|[Yy][Ee][Ss])
+            echo "Installing rustup (stable toolchain, default profile)..." >&2
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --default-toolchain stable --profile default \
+                || fail "rustup installer failed; install Rust manually from https://rustup.rs"
+            if [ -f "${HOME}/.cargo/env" ]; then
+                # shellcheck disable=SC1091
+                . "${HOME}/.cargo/env"
+            fi
+            command -v cargo >/dev/null 2>&1 \
+                || fail "rustup ran but cargo is still not on PATH; open a new shell and rerun ./install.sh"
+            ;;
+        *)
+            fail "Install Rust manually (https://rustup.rs) or rerun with --skip-build and a prebuilt binary."
+            ;;
+    esac
+}
+
 # Probe the C build deps that `cargo build -p zipcode` needs to compile
 # `llama-cpp-sys-2`. Surfaces missing tooling at the top of the install
 # instead of letting bindgen panic 80 lines deep into cargo output.
@@ -652,7 +707,7 @@ if [ -z "${BINARY_SOURCE}" ]; then
     if [ "${SKIP_BUILD}" -eq 1 ]; then
         [ -x "${BINARY_SOURCE}" ] || fail "--skip-build was set but ${BINARY_SOURCE} does not exist"
     else
-        command -v cargo >/dev/null 2>&1 || fail "cargo is required for clone installs. Install Rust or use a release bundle."
+        ensure_cargo_available
         ensure_build_deps_available
         echo "Building zipcode from source..."
         (cd "${SCRIPT_DIR}" && cargo build --release -p zipcode)
