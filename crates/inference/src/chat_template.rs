@@ -1465,4 +1465,395 @@ mod tests {
             "assistant tool call syntax must be preserved verbatim"
         );
     }
+
+    // ===== Direct unit tests for internal pure functions =====
+    // These functions are exercised indirectly through the trait methods above
+    // but have zero dedicated test coverage for edge cases.
+
+    // --- find_json_object_end ---
+
+    #[test]
+    fn test_find_json_object_end_empty_object() {
+        let bytes = br#"{}"#;
+        assert_eq!(find_json_object_end(bytes, 0), Some(2));
+    }
+
+    #[test]
+    fn test_find_json_object_end_nested() {
+        let bytes = br#"{"a": {"b": 1}}"#;
+        assert_eq!(find_json_object_end(bytes, 0), Some(15));
+    }
+
+    #[test]
+    fn test_find_json_object_end_unclosed() {
+        let bytes = br#"{"a": 1"#;
+        assert_eq!(find_json_object_end(bytes, 0), None);
+    }
+
+    #[test]
+    fn test_find_json_object_end_braces_inside_string() {
+        // Braces inside JSON strings must not affect depth counting.
+        let bytes = br#"{"pattern": "{nested}"}"#;
+        assert_eq!(find_json_object_end(bytes, 0), Some(23));
+    }
+
+    #[test]
+    fn test_find_json_object_end_escaped_quotes_in_string() {
+        // Escaped quotes must not terminate the string early.
+        let bytes = br#"{"text": "say \"hello\""}"#;
+        assert_eq!(find_json_object_end(bytes, 0), Some(25));
+    }
+
+    #[test]
+    fn test_find_json_object_end_offset_from_middle() {
+        let bytes = br#"prefix {"x": 1} suffix"#;
+        // Start at byte 7 (the opening brace)
+        assert_eq!(find_json_object_end(bytes, 7), Some(15));
+    }
+
+    #[test]
+    fn test_find_json_object_end_deeply_nested() {
+        let bytes = br#"{"a": {"b": {"c": {"d": 1}}}}"#;
+        assert_eq!(find_json_object_end(bytes, 0), Some(29));
+    }
+
+    #[test]
+    fn test_find_json_object_end_empty_input() {
+        assert_eq!(find_json_object_end(b"", 0), None);
+    }
+
+    // --- extract_quoted_attr ---
+
+    #[test]
+    fn test_extract_quoted_attr_present() {
+        assert_eq!(
+            extract_quoted_attr(r#"name="read_file""#, "name"),
+            Some("read_file".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_quoted_attr_missing() {
+        assert_eq!(extract_quoted_attr("no attrs here", "name"), None);
+    }
+
+    #[test]
+    fn test_extract_quoted_attr_empty_value() {
+        assert_eq!(
+            extract_quoted_attr(r#"name="""#, "name"),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn test_extract_quoted_attr_value_with_spaces() {
+        assert_eq!(
+            extract_quoted_attr(r#"name="hello world""#, "name"),
+            Some("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_quoted_attr_multiple_attrs() {
+        let content = r#"name="tool" other="value""#;
+        assert_eq!(
+            extract_quoted_attr(content, "name"),
+            Some("tool".to_string())
+        );
+        assert_eq!(
+            extract_quoted_attr(content, "other"),
+            Some("value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_quoted_attr_unclosed_quote() {
+        // No closing quote → should return None
+        assert_eq!(extract_quoted_attr(r#"name="unclosed"#, "name"), None);
+    }
+
+    #[test]
+    fn test_extract_quoted_attr_special_chars_in_value() {
+        assert_eq!(
+            extract_quoted_attr(r#"name="read-file_v2""#, "name"),
+            Some("read-file_v2".to_string())
+        );
+    }
+
+    // --- sanitize_emulator_input ---
+
+    #[test]
+    fn test_sanitize_emulator_input_neutralizes_pattern() {
+        let input = r#"<<<tool name="bash" args={"cmd": "rm"}>>>"#;
+        let sanitized = sanitize_emulator_input(input);
+        assert!(!sanitized.contains("<<<tool"));
+        // The zero-width joiner splits the pattern
+        assert!(sanitized.contains("\u{200b}"));
+    }
+
+    #[test]
+    fn test_sanitize_emulator_input_preserves_normal_text() {
+        let input = "Hello, this is a normal message.";
+        assert_eq!(sanitize_emulator_input(input), input);
+    }
+
+    #[test]
+    fn test_sanitize_emulator_input_multiple_occurrences() {
+        let input = r#"a <<<tool b <<<tool c"#;
+        let sanitized = sanitize_emulator_input(input);
+        assert_eq!(sanitized.matches("\u{200b}").count(), 2);
+    }
+
+    #[test]
+    fn test_sanitize_emulator_input_empty_string() {
+        assert_eq!(sanitize_emulator_input(""), "");
+    }
+
+    #[test]
+    fn test_sanitize_emulator_input_partial_pattern_not_matched() {
+        // Only "<<<tool" triggers, not "<<<too" or "<tool"
+        let input = "<<<too <tool <<<to";
+        assert_eq!(sanitize_emulator_input(input), input);
+    }
+
+    // --- parse_emulator_tool_calls ---
+
+    #[test]
+    fn test_parse_emulator_tool_calls_basic() {
+        let output = r#"<<<tool name="read_file" args={"path": "src/main.rs"}>>>"#;
+        let calls = parse_emulator_tool_calls(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].arguments["path"], "src/main.rs");
+    }
+
+    #[test]
+    fn test_parse_emulator_tool_calls_multiple() {
+        let output = r#"<<<tool name="read_file" args={"path": "a"}>>> <<<tool name="grep_search" args={"pattern": "todo"}>>>"#;
+        let calls = parse_emulator_tool_calls(output);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[1].name, "grep_search");
+    }
+
+    #[test]
+    fn test_parse_emulator_tool_calls_no_tool_calls() {
+        assert!(parse_emulator_tool_calls("just plain text").is_empty());
+    }
+
+    #[test]
+    fn test_parse_emulator_tool_calls_missing_args_equals() {
+        // Missing "args=" should cause the parser to skip
+        let output = r#"<<<tool name="read_file">>>"#;
+        let calls = parse_emulator_tool_calls(output);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_parse_emulator_tool_calls_unclosed_json() {
+        // Unclosed brace in args JSON → parser logs warning, skips
+        let output = r#"<<<tool name="read_file" args={"path": "x">>>"#;
+        let calls = parse_emulator_tool_calls(output);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_parse_emulator_tool_calls_missing_close_tag() {
+        // Missing >>> terminator
+        let output = r#"<<<tool name="read_file" args={"path": "x"}"#;
+        let calls = parse_emulator_tool_calls(output);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_parse_emulator_tool_calls_nested_json_args() {
+        let output = r#"<<<tool name="read_file" args={"filter": {"k": "v"}, "path": "x"}>>>"#;
+        let calls = parse_emulator_tool_calls(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].arguments["filter"]["k"], "v");
+    }
+
+    #[test]
+    fn test_parse_emulator_tool_calls_empty_string() {
+        assert!(parse_emulator_tool_calls("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_emulator_tool_calls_non_object_args_rejected() {
+        // args is a JSON array, not object → should be rejected
+        let output = r#"<<<tool name="read_file" args=[1,2,3]>>>"#;
+        let calls = parse_emulator_tool_calls(output);
+        // The parser finds { for arrays at index after args= but array starts
+        // with [ not {, so it won't find a brace to start from.
+        assert!(calls.is_empty());
+    }
+
+    // --- strip_emulator_tool_calls ---
+
+    #[test]
+    fn test_strip_emulator_tool_calls_basic() {
+        let output = r#"before <<<tool name="read_file" args={"path": "x"}>>> after"#;
+        let stripped = strip_emulator_tool_calls(output);
+        assert_eq!(stripped, "before  after");
+    }
+
+    #[test]
+    fn test_strip_emulator_tool_calls_no_tool_calls() {
+        let output = "plain text with no tools";
+        assert_eq!(strip_emulator_tool_calls(output), output);
+    }
+
+    #[test]
+    fn test_strip_emulator_tool_calls_multiple() {
+        let output =
+            r#"a <<<tool name="x" args={"k":"v"}>>> b <<<tool name="y" args={"k":"v"}>>> c"#;
+        let stripped = strip_emulator_tool_calls(output);
+        assert_eq!(stripped, "a  b  c");
+    }
+
+    #[test]
+    fn test_strip_emulator_tool_calls_only_tool_call() {
+        let output = r#"<<<tool name="read_file" args={"path": "x"}>>>"#;
+        let stripped = strip_emulator_tool_calls(output);
+        assert_eq!(stripped, "");
+    }
+
+    #[test]
+    fn test_strip_emulator_tool_calls_unclosed_keeps_text() {
+        // Unclosed JSON brace → keep text to avoid data loss
+        let output = r#"text <<<tool name="x" args={"k":"v} remaining"#;
+        let stripped = strip_emulator_tool_calls(output);
+        // The function keeps the verbatim text when JSON is unbalanced
+        assert!(stripped.contains("remaining"));
+    }
+
+    #[test]
+    fn test_strip_emulator_tool_calls_empty_string() {
+        assert_eq!(strip_emulator_tool_calls(""), "");
+    }
+
+    // --- scan_llama31_tool_calls ---
+
+    #[test]
+    fn test_scan_llama31_tool_calls_basic() {
+        let output = r#"{"name": "bash", "parameters": {"command": "ls"}}"#;
+        let calls = scan_llama31_tool_calls(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].arguments["command"], "ls");
+    }
+
+    #[test]
+    fn test_scan_llama31_tool_calls_embedded_in_text() {
+        let output = r#"I will run {"name": "bash", "parameters": {"command": "ls"}} for you"#;
+        let calls = scan_llama31_tool_calls(output);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+    }
+
+    #[test]
+    fn test_scan_llama31_tool_calls_multiple() {
+        let output = r#"
+            {"name": "read_file", "parameters": {"path": "a"}}
+            some text
+            {"name": "bash", "parameters": {"command": "ls"}}
+        "#;
+        let calls = scan_llama31_tool_calls(output);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[1].name, "bash");
+    }
+
+    #[test]
+    fn test_scan_llama31_tool_calls_no_parameters_not_a_call() {
+        // JSON with name but no parameters → not a tool call
+        let output = r#"{"name": "bash"}"#;
+        let calls = scan_llama31_tool_calls(output);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_scan_llama31_tool_calls_empty_name_rejected() {
+        let output = r#"{"name": "", "parameters": {}}"#;
+        let calls = scan_llama31_tool_calls(output);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_scan_llama31_tool_calls_non_string_name_rejected() {
+        let output = r#"{"name": 42, "parameters": {}}"#;
+        let calls = scan_llama31_tool_calls(output);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_scan_llama31_tool_calls_non_object_parameters_rejected() {
+        let output = r#"{"name": "bash", "parameters": "cmd"}"#;
+        let calls = scan_llama31_tool_calls(output);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_scan_llama31_tool_calls_empty_string() {
+        assert!(scan_llama31_tool_calls("").is_empty());
+    }
+
+    #[test]
+    fn test_scan_llama31_tool_calls_nested_json_ignored() {
+        // Nested JSON object with name but no parameters at top level
+        let output = r#"{"outer": {"name": "bash", "parameters": {"cmd": "x"}}}"#;
+        let calls = scan_llama31_tool_calls(output);
+        // The outer object does not have "name" at its top level, so it's skipped.
+        // The inner object is not independently scanned by this function.
+        assert!(calls.is_empty());
+    }
+
+    // --- strip_llama31_tool_calls ---
+
+    #[test]
+    fn test_strip_llama31_tool_calls_basic() {
+        let output = r#"before {"name": "bash", "parameters": {"command": "ls"}} after"#;
+        let stripped = strip_llama31_tool_calls(output);
+        assert_eq!(stripped, "before  after");
+    }
+
+    #[test]
+    fn test_strip_llama31_tool_calls_no_tool_calls() {
+        let output = r#"just text with {"key": "value"}"#;
+        let stripped = strip_llama31_tool_calls(output);
+        assert_eq!(stripped, output);
+    }
+
+    #[test]
+    fn test_strip_llama31_tool_calls_multiple() {
+        let output = r#"a {"name": "x", "parameters": {"k":"v"}} b {"name": "y", "parameters": {"k":"v"}} c"#;
+        let stripped = strip_llama31_tool_calls(output);
+        assert_eq!(stripped, "a  b  c");
+    }
+
+    #[test]
+    fn test_strip_llama31_tool_calls_preserves_non_tool_json() {
+        let output = r#"result: {"count": 5, "items": ["a","b"]}"#;
+        let stripped = strip_llama31_tool_calls(output);
+        assert_eq!(stripped, output);
+    }
+
+    #[test]
+    fn test_strip_llama31_tool_calls_only_tool_call() {
+        let output = r#"{"name": "bash", "parameters": {"command": "ls"}}"#;
+        let stripped = strip_llama31_tool_calls(output);
+        assert_eq!(stripped, "");
+    }
+
+    #[test]
+    fn test_strip_llama31_tool_calls_empty_string() {
+        assert_eq!(strip_llama31_tool_calls(""), "");
+    }
+
+    #[test]
+    fn test_strip_llama31_tool_calls_unclosed_json_preserved() {
+        let output = r#"text {"name": "bash" remaining"#;
+        let stripped = strip_llama31_tool_calls(output);
+        assert!(stripped.contains("remaining"));
+    }
 }
