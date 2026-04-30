@@ -84,7 +84,7 @@ impl LlamaCppProvider {
         })
     }
 
-    /// Override the generation config (temperature, top-p, max_tokens, etc.).
+    /// Override the generation config (temperature, `top-p`, `max_tokens`, etc.).
     pub const fn set_config(&mut self, config: GenerationConfig) {
         self.config = config;
     }

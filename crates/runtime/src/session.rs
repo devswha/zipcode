@@ -16,7 +16,7 @@ const DEFAULT_TIER1_BATCH_SIZE: usize = 10;
 const DEFAULT_TIER2_USAGE_THRESHOLD: f64 = 0.8;
 /// Matches `zipcode_inference::DEFAULT_CONTEXT_SIZE` (Gemma 4's 128K native
 /// window, also the default for `ZIPCODE_LLAMA_SERVER_CTX`). With the prior
-/// 32_768 default, tier-2 was triggering at 26_214 effective tokens — about
+/// `32_768` default, `tier-2` was triggering at `26_214` effective tokens — about
 /// 20 % of the actual window — and evicting tool responses prematurely on
 /// any deployment that didn't manually trim `CompactPolicy`.
 const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 131_072;
