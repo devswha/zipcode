@@ -122,6 +122,90 @@ PY
     return 1
 }
 
+# Ensure `hf` or `huggingface-cli` is available before attempting a
+# Hugging Face download. Mirrors the cargo / build-deps bootstrap in
+# install.sh: probe PATH first, also probe `~/.local/bin/` (where
+# `pip install --user` lands), and fall back to prompting the user
+# to install `huggingface_hub` via pipx or pip. Default Y interactive,
+# n non-interactive.
+ensure_hf_cli_available() {
+    if command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # `pip install --user` puts CLI shims under ~/.local/bin which fresh
+    # shells often don't have on PATH yet. Probe explicitly so an
+    # already-installed huggingface_hub just works.
+    if [ -x "${HOME}/.local/bin/hf" ] || [ -x "${HOME}/.local/bin/huggingface-cli" ]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+        if command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    echo "Neither hf nor huggingface-cli was found on PATH." >&2
+
+    local installer=""
+    local install_cmd=""
+    if command -v pipx >/dev/null 2>&1; then
+        installer="pipx"
+        install_cmd="pipx install huggingface_hub"
+    elif command -v pip3 >/dev/null 2>&1; then
+        installer="pip3"
+        install_cmd="pip3 install --user huggingface_hub"
+    elif command -v pip >/dev/null 2>&1; then
+        installer="pip"
+        install_cmd="pip install --user huggingface_hub"
+    fi
+
+    if [ -z "${install_cmd}" ]; then
+        echo "Install pip3 or pipx, then run: pip install --user huggingface_hub" >&2
+        return 1
+    fi
+
+    echo "" >&2
+    echo "Suggested install (${installer}):" >&2
+    echo "  ${install_cmd}" >&2
+
+    local default
+    if [ -t 0 ] && [ -t 2 ]; then
+        default="Y"
+    else
+        default="n"
+    fi
+    local answer=""
+    if [ "${AUTO_YES}" -eq 1 ]; then
+        answer="${default}"
+    else
+        printf 'Run the command above now? (y/N) [%s] ' "${default}" >&2
+        IFS= read -r answer || true
+        answer="${answer:-${default}}"
+    fi
+
+    case "${answer}" in
+        [Yy]|[Yy][Ee][Ss])
+            echo "Running: ${install_cmd}" >&2
+            sh -c "${install_cmd}" || {
+                echo "huggingface_hub install failed; install manually and rerun." >&2
+                return 1
+            }
+            # Refresh PATH so the new ~/.local/bin/hf shim is reachable.
+            if [ -d "${HOME}/.local/bin" ]; then
+                export PATH="${HOME}/.local/bin:${PATH}"
+            fi
+            if command -v hf >/dev/null 2>&1 || command -v huggingface-cli >/dev/null 2>&1; then
+                return 0
+            fi
+            echo "huggingface_hub installed but no hf/huggingface-cli on PATH; open a new shell and rerun." >&2
+            return 1
+            ;;
+        *)
+            echo "Install huggingface_hub manually and rerun: ${install_cmd}" >&2
+            return 1
+            ;;
+    esac
+}
+
 download_model_repo() {
     local output_file
     output_file="$(mktemp)"
@@ -188,6 +272,8 @@ if [ "${AUTO_YES}" -ne 1 ]; then
         exit 0
     fi
 fi
+
+ensure_hf_cli_available || exit 1
 
 echo "Downloading model snapshot from ${HF_REPO}..."
 download_model_repo || {
