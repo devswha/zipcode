@@ -3,7 +3,20 @@ use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
 fn zipcode_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_zipcode"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_zipcode"));
+    strip_inherited_zipcode_env(&mut cmd);
+    cmd
+}
+
+/// Strip env vars that the user's shell may export and that would otherwise
+/// bleed into spawned `zipcode` processes (e.g. point inference at a
+/// developer's tailnet llama-server). Tests must run in a clean env so
+/// failures are reproducible regardless of who runs them.
+fn strip_inherited_zipcode_env(cmd: &mut Command) {
+    cmd.env_remove("ZIPCODE_LLAMA_SERVER_URL")
+        .env_remove("ZIPCODE_LLAMA_SERVER_ALIAS")
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .env_remove("LLAMA_SERVER_BIN");
 }
 
 fn repo_root() -> PathBuf {
@@ -306,6 +319,9 @@ fn run_zipcode_in_pty(
 import fcntl, os, pty, select, struct, subprocess, sys, termios, time
 cmd = [{cmd:?}, {rendered_args}]
 env = os.environ.copy()
+for var in ("ZIPCODE_LLAMA_SERVER_URL", "ZIPCODE_LLAMA_SERVER_ALIAS",
+            "ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"):
+    env.pop(var, None)
 env["HOME"] = {home:?}
 {env_lines}if {has_automation_script}:
     env["ZIPCODE_TUI_AUTOMATION_SCRIPT"] = {automation_script}
@@ -1640,7 +1656,9 @@ fn root_install_script_bootstraps_clone_users_into_ready_state() {
         "install should persist the recommended flash_attention default, got: {config}"
     );
 
-    let doctor = Command::new(&launcher)
+    let mut doctor_cmd = Command::new(&launcher);
+    strip_inherited_zipcode_env(&mut doctor_cmd);
+    let doctor = doctor_cmd
         .arg("doctor")
         .env("HOME", &home)
         .output()
@@ -1798,7 +1816,9 @@ echo fake llama-server
         "second install should succeed, got: {second:?}"
     );
 
-    let helper_run = Command::new(&installed_wrapper)
+    let mut helper_cmd = Command::new(&installed_wrapper);
+    strip_inherited_zipcode_env(&mut helper_cmd);
+    let helper_run = helper_cmd
         .arg("--help")
         .env("HOME", &home)
         .output()
@@ -1870,7 +1890,9 @@ fn root_install_script_interviews_users_with_links_then_paths() {
         "interactive install should ask for the helper path, got: {combined}"
     );
 
-    let doctor = Command::new(home.join(".local/bin/zipcode"))
+    let mut doctor_cmd = Command::new(home.join(".local/bin/zipcode"));
+    strip_inherited_zipcode_env(&mut doctor_cmd);
+    let doctor = doctor_cmd
         .arg("doctor")
         .env("HOME", &home)
         .output()
@@ -2045,7 +2067,9 @@ echo "fake helper builder installed llama-server into $install_dir/bin/llama-ser
         "install should run the configured helper builder, got: {combined}"
     );
 
-    let doctor = Command::new(home.join(".local/bin/zipcode"))
+    let mut doctor_cmd = Command::new(home.join(".local/bin/zipcode"));
+    strip_inherited_zipcode_env(&mut doctor_cmd);
+    let doctor = doctor_cmd
         .arg("doctor")
         .env("HOME", &home)
         .output()
@@ -2060,7 +2084,9 @@ echo "fake helper builder installed llama-server into $install_dir/bin/llama-ser
         "terminal download flow should leave a Ready install, got: {stdout}"
     );
 
-    let bare = Command::new(home.join(".local/bin/zipcode"))
+    let mut bare_cmd = Command::new(home.join(".local/bin/zipcode"));
+    strip_inherited_zipcode_env(&mut bare_cmd);
+    let bare = bare_cmd
         .env("HOME", &home)
         .output()
         .expect("run installed zipcode");
@@ -2262,6 +2288,9 @@ while True:
 import os, pty, select, subprocess, sys, time
 cmd = [{cmd:?}, "repl", "--ui", "fullscreen", "--backend", "llama-server", "--model", {model:?}]
 env = os.environ.copy()
+for var in ("ZIPCODE_LLAMA_SERVER_URL", "ZIPCODE_LLAMA_SERVER_ALIAS",
+            "ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"):
+    env.pop(var, None)
 env["ZIPCODE_LLAMA_SERVER_BIN"] = {helper:?}
 env["ZIPCODE_TUI_AUTOMATION_SCRIPT"] = "/status\n/quit\n"
 env["HOME"] = {home:?}
