@@ -111,24 +111,49 @@ ensure_build_deps_available() {
     [ "${#missing[@]}" -eq 0 ] && return 0
 
     echo "Missing native build prerequisites: ${missing[*]}" >&2
+
+    local pm_label="" pm_cmd=""
     if command -v apt-get >/dev/null 2>&1; then
-        local apt_pkgs="libclang-dev cmake pkg-config build-essential"
-        echo "" >&2
-        echo "On Debian/Ubuntu, install with:" >&2
-        echo "  sudo apt-get install -y ${apt_pkgs}" >&2
+        pm_label="apt-get"
+        pm_cmd="sudo apt-get update && sudo apt-get install -y libclang-dev cmake pkg-config build-essential"
     elif command -v dnf >/dev/null 2>&1; then
-        echo "" >&2
-        echo "On Fedora/RHEL, install with:" >&2
-        echo "  sudo dnf install -y clang-devel cmake pkgconf-pkg-config gcc-c++" >&2
+        pm_label="dnf"
+        pm_cmd="sudo dnf install -y clang-devel cmake pkgconf-pkg-config gcc-c++"
     elif command -v brew >/dev/null 2>&1; then
-        echo "" >&2
-        echo "On macOS (Homebrew), install with:" >&2
-        echo "  brew install cmake llvm pkg-config" >&2
-    else
+        pm_label="brew"
+        pm_cmd="brew install cmake llvm pkg-config"
+    fi
+
+    if [ -z "${pm_cmd}" ]; then
         echo "" >&2
         echo "Install your platform's libclang/cmake/pkg-config equivalents and re-run." >&2
+        fail "build dependencies missing: ${missing[*]}"
     fi
-    fail "build dependencies missing: ${missing[*]}"
+
+    echo "" >&2
+    echo "Suggested install (${pm_label}):" >&2
+    echo "  ${pm_cmd}" >&2
+
+    local default
+    default="$(default_choice_for_stdin "Y" "n")"
+    local answer
+    answer="$(prompt_choice "Run the command above now? (y/N)" "${default}")"
+    case "${answer}" in
+        [Yy]|[Yy][Ee][Ss])
+            echo "Running: ${pm_cmd}" >&2
+            sh -c "${pm_cmd}" || fail "package install failed; rerun the suggested command manually."
+            # Re-probe; bail if anything is still missing.
+            local still_missing=()
+            command -v cmake >/dev/null 2>&1 || still_missing+=("cmake")
+            command -v pkg-config >/dev/null 2>&1 || still_missing+=("pkg-config")
+            probe_libclang || still_missing+=("libclang")
+            [ "${#still_missing[@]}" -eq 0 ] \
+                || fail "still missing after install: ${still_missing[*]}"
+            ;;
+        *)
+            fail "build dependencies missing: ${missing[*]}"
+            ;;
+    esac
 }
 
 probe_libclang() {
