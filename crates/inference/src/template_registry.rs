@@ -75,24 +75,35 @@ impl TemplateRegistry {
     ///
     /// Tries an exact key lookup first, then falls through to glob matching.
     /// Returns `None` if nothing matches.
+    ///
+    /// When multiple patterns match (e.g. `"qwen*"` and `"qwen2.5-*"` both match
+    /// `"qwen2.5-7b"`), the most specific pattern wins — measured as the count
+    /// of non-wildcard characters. Ties break lexicographically for stable,
+    /// deterministic resolution across runs.
     pub fn resolve_for_model(&self, model_name: &str) -> Option<&ModelEntry> {
         // Exact key match
         if let Some(entry) = self.entries.get(model_name) {
             return Some(entry);
         }
 
-        // Glob pattern match
-        for (pattern, entry) in &self.entries {
-            match glob::Pattern::new(pattern) {
-                Ok(pat) if pat.matches(model_name) => return Some(entry),
-                Ok(_) => {}
+        // Glob pattern match — collect all matches, then pick the most specific.
+        // HashMap iteration order is non-deterministic, so we sort the matches
+        // before returning to ensure the same pattern wins across runs.
+        let mut hits: Vec<(&String, &ModelEntry)> = self
+            .entries
+            .iter()
+            .filter(|(pattern, _)| match glob::Pattern::new(pattern) {
+                Ok(pat) => pat.matches(model_name),
                 Err(e) => {
                     tracing::debug!("Skipping malformed glob pattern '{pattern}': {e}");
+                    false
                 }
-            }
-        }
+            })
+            .collect();
 
-        None
+        hits.sort_by(|(a, _), (b, _)| specificity(b).cmp(&specificity(a)).then_with(|| a.cmp(b)));
+
+        hits.into_iter().next().map(|(_, entry)| entry)
     }
 
     /// Return the [`ChatTemplate`] implementation for `model_name`.
@@ -111,6 +122,17 @@ impl TemplateRegistry {
             _ => Box::new(GemmaTemplate),
         }
     }
+}
+
+/// Specificity score for a glob pattern: count of non-wildcard characters.
+///
+/// Higher score → more specific. Used to disambiguate overlapping patterns
+/// in [`TemplateRegistry::resolve_for_model`].
+fn specificity(pattern: &str) -> usize {
+    pattern
+        .chars()
+        .filter(|c| !matches!(c, '*' | '?' | '[' | ']'))
+        .count()
 }
 
 /// Build the default [`TemplateRegistry`] with baseline model-family mappings.
@@ -466,6 +488,47 @@ mod tests {
             6,
             "default registry should have exactly 6 entries"
         );
+    }
+
+    // ── Regression test: #140 deterministic glob resolution ────────────
+
+    #[test]
+    fn test_overlapping_globs_resolve_to_most_specific_pattern() {
+        // Regression for #140: when two glob patterns both match a model name,
+        // the more specific pattern (more non-wildcard chars) must win on
+        // every run. HashMap iteration order is otherwise non-deterministic.
+        let custom_json = r#"{
+            "qwen*": {"tool_format": "chatml", "native_tool_calling": false},
+            "qwen2.5-*": {"tool_format": "llama31_json", "native_tool_calling": true}
+        }"#;
+        let path = std::env::temp_dir().join("zipcode_test_registry_overlap_140.json");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(custom_json.as_bytes()).unwrap();
+        }
+        let registry = TemplateRegistry::load_from(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // Run resolution many times — every call must return the more
+        // specific pattern's entry, regardless of HashMap bucket ordering.
+        for _ in 0..50 {
+            let entry = registry.resolve_for_model("qwen2.5-7b").unwrap();
+            assert_eq!(
+                entry.tool_format, "llama31_json",
+                "more specific 'qwen2.5-*' must win over 'qwen*'"
+            );
+            assert!(entry.native_tool_calling);
+        }
+    }
+
+    #[test]
+    fn test_specificity_score_counts_non_wildcard_chars() {
+        assert_eq!(specificity("qwen*"), 4);
+        assert_eq!(specificity("qwen2.5-*"), 8);
+        assert_eq!(specificity("*-emulator"), 9);
+        // `[`/`]` themselves are stripped, but their contents still count.
+        assert_eq!(specificity("[abc]xyz"), 6);
+        assert_eq!(specificity("?"), 0);
     }
 
     #[test]
