@@ -73,16 +73,16 @@ Drop these into a code search or walk the links — the wiki is pre-wired for th
 
 ---
 
-## Test surface (525+ passing across the workspace)
+## Test surface (1,161 passing across the workspace)
 
 | Crate | Unit / inline | Integration | Notable |
 |-------|---------------|-------------|---------|
-| `inference` | 251 passing + 1 ignored | 0 separate integration crates | `chat_template.rs` alone carries 20 parsing/formatting robustness tests; `llama_server_backend.rs` has 14 parser/streaming tests; newer tests cover thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options |
-| `tools` | 178 | 0 | Every tool has focused unit coverage; workspace-escape regressions exist for both glob and grep search |
-| `runtime` | 263 unit + 7 doc-tests | 24 (`tests/integration.rs`) | `MockInferenceProvider` drives loop tests including read-only denial, workspace-write approval accept/reject, traversal blocking, persistence, and compaction resume |
+| `inference` | 271 passing + 2 ignored | 7 (template) | `chat_template.rs` alone carries 20 parsing/formatting robustness tests; `llama_server_backend.rs` has 14 parser/streaming tests; newer tests cover thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options |
+| `tools` | 186 | 52 (tools_integration) | Every tool has focused unit coverage; workspace-escape regressions exist for both glob and grep search |
+| `runtime` | 285 unit + 7 doc-tests | 31 (integration + conversation) | `MockInferenceProvider` drives loop tests including read-only denial, workspace-write approval accept/reject, traversal blocking, persistence, and compaction resume |
 | `cli` | 284 unit (in `main.rs` binary) | 45 smoke tests (`tests/smoke.rs`) | Unit tests live across `commands`, `repl`, `render`, `tui`, `tui_composer`, and `width`; smoke tests spawn the real binary in temp `HOME` |
 
-**EXTRACTED** from `cargo test --workspace --release` on 2026-04-28 plus per-file test inventories in the source tree.
+**EXTRACTED** from `cargo test --workspace` on 2026-04-30 plus per-file test inventories in the source tree.
 
 ---
 

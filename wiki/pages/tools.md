@@ -137,7 +137,7 @@ Algorithm:
 2. Canonicalize (via `canonicalize_even_if_missing()` at `:71-95` for paths that don't exist yet).
 3. Assert `canonical.starts_with(&cwd_canonical)`.
 
-**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Shared path-safety regression coverage lives in `crates/tools/src/lib.rs:519+`, but it still won't catch a brand-new tool that forgets the helper.
+**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Shared path-safety regression coverage lives in `crates/tools/src/lib.rs:627+`, but it still won't catch a brand-new tool that forgets the helper.
 
 ---
 
@@ -151,20 +151,20 @@ Algorithm:
 
 ## Tests
 
-**EXTRACTED** — 178 unit tests total in `zipcode-tools` (`cargo test -p zipcode-tools --release` on 2026-04-28).
+**EXTRACTED** — 238 unit tests total in `zipcode-tools` (186 unit + 52 integration; `cargo test -p zipcode-tools` on 2026-04-30).
 
 Recent regression coverage that materially changed the crate since the previous wiki snapshot includes:
 
 - `bash` timeout descendant cleanup and large-stdout false-timeout protection. `crates/tools/src/bash.rs:133`, `crates/tools/src/bash.rs:163`
-- `repl` timeout descendant cleanup and large-stdout false-timeout protection. `crates/tools/src/repl.rs:206`, `crates/tools/src/repl.rs:240`
-- `glob_search` rejects absolute and parent-directory escape patterns. `crates/tools/src/glob_search.rs:192`, `crates/tools/src/glob_search.rs:208`
-- `grep_search` rejects absolute and parent-directory traversal globs and stops scanning once the output budget is full. `crates/tools/src/grep_search.rs:339`, `crates/tools/src/grep_search.rs:358`, `crates/tools/src/grep_search.rs:375`
+- `repl` timeout descendant cleanup and large-stdout false-timeout protection. `crates/tools/src/repl.rs:237`, `crates/tools/src/repl.rs:275`
+- `glob_search` rejects absolute and parent-directory escape patterns. `crates/tools/src/glob_search.rs:177`, `crates/tools/src/glob_search.rs:193`
+- `grep_search` rejects absolute and parent-directory traversal globs and stops scanning once the output budget is full. `crates/tools/src/grep_search.rs:355`, `crates/tools/src/grep_search.rs:372`, `crates/tools/src/grep_search.rs:317`
 
 The rest of the crate still has broad per-tool coverage for:
 
 | Area | Example coverage anchors |
 |------|---------------------------|
-| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:509`, `crates/tools/src/lib.rs:491`, `crates/tools/src/lib.rs:519` |
+| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:509`, `crates/tools/src/lib.rs:484`, `crates/tools/src/lib.rs:627` |
 | File readers / writers / editor behaviors | `crates/tools/src/read_file.rs`, `crates/tools/src/write_file.rs`, `crates/tools/src/edit_file.rs` |
 | Search behavior and budget limits | `crates/tools/src/glob_search.rs`, `crates/tools/src/grep_search.rs` |
 | Execution tools (`bash`, `repl`) | `crates/tools/src/bash.rs`, `crates/tools/src/repl.rs` |

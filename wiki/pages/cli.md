@@ -151,11 +151,11 @@ Notable newer regression guards added since the earlier snapshot include:
 
 | Area | Example tests |
 |------|---------------|
-| Dirty-tree update gating before any fetch | `crates/cli/tests/smoke.rs:521`, `crates/cli/tests/smoke.rs:558` |
-| Missing-model startup guidance for explicit `prompt` / `repl` subcommands | `crates/cli/tests/smoke.rs:628`, `crates/cli/tests/smoke.rs:712` |
-| Stale helper-path fallback discovery | `crates/cli/tests/smoke.rs:905` |
-| Unrunnable helper GPU-offload config surfaced in `doctor` and bare startup | `crates/cli/tests/smoke.rs:1018`, `crates/cli/tests/smoke.rs:1064` |
-| Project-local config parse errors point to the right file | `crates/cli/tests/smoke.rs:1208` |
+|| Dirty-tree update gating before any fetch | `crates/cli/tests/smoke.rs:533`, `crates/cli/tests/smoke.rs:558` |
+|| Missing-model startup guidance for explicit `prompt` / `repl` subcommands | `crates/cli/tests/smoke.rs:640`, `crates/cli/tests/smoke.rs:718` |
+|| Stale helper-path fallback discovery | `crates/cli/tests/smoke.rs:917` |
+|| Unrunnable helper GPU-offload config surfaced in `doctor` and bare startup | `crates/cli/tests/smoke.rs:1112`, `crates/cli/tests/smoke.rs:1161` |
+|| Project-local config parse errors point to the right file | `crates/cli/tests/smoke.rs:1456` |
 | Root installer remains `Ready` when multiple existing models are available | `crates/cli/tests/smoke.rs:1840` |
 | Plain REPL session-load failures stay inline instead of exiting | `crates/cli/tests/smoke.rs:2070` |
 | `/clear` persists the new session immediately | `crates/cli/tests/smoke.rs:2113` |
