@@ -55,9 +55,10 @@ struct Cli {
     #[arg(long, value_name = "BACKEND", global = true)]
     backend: Option<String>,
 
-    /// UI mode for interactive sessions
-    #[arg(long, value_enum, default_value_t = UiMode::Fullscreen, global = true)]
-    ui: UiMode,
+    /// UI mode for interactive sessions (only `repl` / `prompt` / no-subcommand
+    /// honor this flag; `doctor`/`setup`/`update` reject it).
+    #[arg(long, value_enum, global = true)]
+    ui: Option<UiMode>,
 
     /// Resume a saved session by id
     #[arg(long, value_name = "SESSION_ID", global = true)]
@@ -118,6 +119,33 @@ enum Commands {
     },
 }
 
+/// Error out when global flags `--ui` / `--session` are passed to a
+/// subcommand that wouldn't honor them. Previously such flags were
+/// silently swallowed, which masked typos in shell scripts and made
+/// `--help` output noisy with irrelevant options. Tracked as #59 / #72.
+fn reject_irrelevant_global_flags(
+    command: Option<&Commands>,
+    ui_set: bool,
+    session_set: bool,
+) -> Result<()> {
+    let (sub_name, accepts_ui, accepts_session) = match command {
+        Some(Commands::Doctor) => ("doctor", false, false),
+        Some(Commands::Setup { .. }) => ("setup", false, false),
+        Some(Commands::Update { .. }) => ("update", false, false),
+        Some(Commands::Skill { .. }) => ("skill", false, false),
+        // Repl, Prompt, and the no-subcommand default both honor --ui
+        // and --session.
+        _ => return Ok(()),
+    };
+    if ui_set && !accepts_ui {
+        anyhow::bail!("--ui is not applicable to `{sub_name}`");
+    }
+    if session_set && !accepts_session {
+        anyhow::bail!("--session is not applicable to `{sub_name}`");
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -147,6 +175,11 @@ fn main() -> Result<()> {
     let backend = cli.backend.as_deref();
     let session_id = cli.session.as_deref();
 
+    // Reject global flags whose effect would be silently dropped on
+    // non-interactive subcommands first, before any session validation
+    // tries to load the file. Tracked as #59 / #72.
+    reject_irrelevant_global_flags(cli.command.as_ref(), cli.ui.is_some(), session_id.is_some())?;
+
     // Fail fast on a typo'd `--session` regardless of subcommand. Without
     // this, `zipcode --session does-not-exist doctor` (and any other
     // subcommand that doesn't actually consume `session_id`) silently
@@ -155,9 +188,17 @@ fn main() -> Result<()> {
         commands::validate_session_id_or_exit(id)?;
     }
 
+    let resolved_ui = cli.ui.unwrap_or(UiMode::Fullscreen);
+
     match cli.command {
         Some(Commands::Repl) => {
-            commands::run_repl_command(model_path, permission_mode, backend, session_id, cli.ui)?;
+            commands::run_repl_command(
+                model_path,
+                permission_mode,
+                backend,
+                session_id,
+                resolved_ui,
+            )?;
         }
         Some(Commands::Doctor) => {
             commands::doctor(model_path, backend)?;
@@ -175,7 +216,13 @@ fn main() -> Result<()> {
             commands::run_skill_command(&name, &params, model_path, permission_mode, backend)?;
         }
         None => {
-            commands::run_default(model_path, permission_mode, backend, session_id, cli.ui)?;
+            commands::run_default(
+                model_path,
+                permission_mode,
+                backend,
+                session_id,
+                resolved_ui,
+            )?;
         }
     }
 
