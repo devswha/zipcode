@@ -778,3 +778,392 @@ fn each_tool_name_matches_impl() {
         assert_eq!(tool.name(), *name);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 11. tool_search end-to-end via execute_tool()
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn tool_search_finds_bash_by_name() {
+    let registry = full_registry();
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let result = execute_tool(
+        &registry,
+        "tool_search",
+        serde_json::json!({ "query": "bash" }),
+        &ctx,
+    )
+    .unwrap();
+    assert!(
+        result.content.contains("bash"),
+        "should find bash, got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("Execute a shell command"),
+        "should include bash description, got: {}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("read_file"),
+        "should not include read_file, got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn tool_search_finds_by_description_keyword() {
+    let registry = full_registry();
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let result = execute_tool(
+        &registry,
+        "tool_search",
+        serde_json::json!({ "query": "regex" }),
+        &ctx,
+    )
+    .unwrap();
+    assert!(
+        result.content.contains("grep_search"),
+        "should find grep_search via 'regex' keyword, got: {}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("bash"),
+        "should not include bash, got: {}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("write_file"),
+        "should not include write_file, got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn tool_search_no_match_returns_not_found() {
+    let registry = full_registry();
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let result = execute_tool(
+        &registry,
+        "tool_search",
+        serde_json::json!({ "query": "nonexistent_tool_xyz" }),
+        &ctx,
+    )
+    .unwrap();
+    assert!(
+        result.content.contains("No tools found"),
+        "should report no matches, got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn tool_search_empty_query_rejected_via_execute_tool() {
+    let registry = full_registry();
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let result = execute_tool(
+        &registry,
+        "tool_search",
+        serde_json::json!({ "query": "" }),
+        &ctx,
+    );
+    assert!(result.is_err(), "empty query should be rejected");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("empty"),
+        "error should mention empty, got: {err}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 12. todo_write roundtrip end-to-end
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn todo_write_creates_json_file_and_bash_reads_it() {
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let registry = full_registry();
+
+    // Write a todo list
+    let write_result = execute_tool(
+        &registry,
+        "todo_write",
+        serde_json::json!({
+            "todos": [
+                { "id": "1", "content": "test task alpha", "status": "pending" }
+            ]
+        }),
+        &ctx,
+    )
+    .unwrap();
+    assert!(
+        !write_result.content.contains("Error"),
+        "todo_write should succeed, got: {}",
+        write_result.content
+    );
+
+    // Verify the file exists via bash
+    let ls_result = execute_tool(
+        &registry,
+        "bash",
+        serde_json::json!({ "command": "ls .zipcode-todos.json" }),
+        &ctx,
+    )
+    .unwrap();
+    assert!(
+        ls_result.content.contains(".zipcode-todos.json"),
+        "todo file should exist, got: {}",
+        ls_result.content
+    );
+
+    // Read the file and verify content
+    let read_result = execute_tool(
+        &registry,
+        "read_file",
+        serde_json::json!({ "path": ".zipcode-todos.json" }),
+        &ctx,
+    )
+    .unwrap();
+    assert!(
+        read_result.content.contains("test task alpha"),
+        "file should contain the todo content, got: {}",
+        read_result.content
+    );
+}
+
+#[test]
+fn todo_write_overwrite_updates_file() {
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let registry = full_registry();
+
+    // Write initial todo with one item
+    execute_tool(
+        &registry,
+        "todo_write",
+        serde_json::json!({
+            "todos": [
+                { "id": "1", "content": "initial task", "status": "pending" }
+            ]
+        }),
+        &ctx,
+    )
+    .unwrap();
+
+    // Overwrite with two items
+    execute_tool(
+        &registry,
+        "todo_write",
+        serde_json::json!({
+            "todos": [
+                { "id": "1", "content": "initial task", "status": "completed" },
+                { "id": "2", "content": "second task", "status": "pending" }
+            ]
+        }),
+        &ctx,
+    )
+    .unwrap();
+
+    // Verify both items are in the file
+    let read_result = execute_tool(
+        &registry,
+        "read_file",
+        serde_json::json!({ "path": ".zipcode-todos.json" }),
+        &ctx,
+    )
+    .unwrap();
+    assert!(
+        read_result.content.contains("initial task"),
+        "should contain first item, got: {}",
+        read_result.content
+    );
+    assert!(
+        read_result.content.contains("second task"),
+        "should contain second item, got: {}",
+        read_result.content
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 13. read_file with offset/limit end-to-end
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn read_file_with_offset_and_limit_via_execute_tool() {
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let registry = full_registry();
+
+    // Create a 5-line file
+    execute_tool(
+        &registry,
+        "write_file",
+        serde_json::json!({
+            "path": "multiline.txt",
+            "content": "line one\nline two\nline three\nline four\nline five"
+        }),
+        &ctx,
+    )
+    .unwrap();
+
+    // Read with offset=1, limit=2 (should show lines 2-3 only)
+    let result = execute_tool(
+        &registry,
+        "read_file",
+        serde_json::json!({
+            "path": "multiline.txt",
+            "offset": 1,
+            "limit": 2
+        }),
+        &ctx,
+    )
+    .unwrap();
+
+    assert!(
+        result.content.contains("line two"),
+        "should contain line two, got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("line three"),
+        "should contain line three, got: {}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("line one"),
+        "should NOT contain line one (before offset), got: {}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("line four"),
+        "should NOT contain line four (past limit), got: {}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("line five"),
+        "should NOT contain line five (past limit), got: {}",
+        result.content
+    );
+}
+
+#[test]
+fn read_file_full_content_no_offset() {
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let registry = full_registry();
+
+    execute_tool(
+        &registry,
+        "write_file",
+        serde_json::json!({
+            "path": "full.txt",
+            "content": "alpha\nbeta\ngamma"
+        }),
+        &ctx,
+    )
+    .unwrap();
+
+    let result = execute_tool(
+        &registry,
+        "read_file",
+        serde_json::json!({ "path": "full.txt" }),
+        &ctx,
+    )
+    .unwrap();
+
+    assert!(
+        result.content.contains("alpha"),
+        "should contain alpha, got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("beta"),
+        "should contain beta, got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("gamma"),
+        "should contain gamma, got: {}",
+        result.content
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 14. bash creates file then glob/grep finds it
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn bash_creates_file_then_glob_finds_it() {
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let registry = full_registry();
+
+    // Use bash to create a file
+    execute_tool(
+        &registry,
+        "bash",
+        serde_json::json!({
+            "command": "mkdir -p src && echo 'fn main() {}' > src/generated.rs"
+        }),
+        &ctx,
+    )
+    .unwrap();
+
+    // Glob should find the generated file
+    let glob_result = execute_tool(
+        &registry,
+        "glob_search",
+        serde_json::json!({ "pattern": "src/*.rs" }),
+        &ctx,
+    )
+    .unwrap();
+
+    assert!(
+        glob_result.content.contains("generated.rs"),
+        "glob should find generated.rs, got: {}",
+        glob_result.content
+    );
+}
+
+#[test]
+fn bash_creates_file_then_grep_finds_content() {
+    let dir = TempDir::new().unwrap();
+    let ctx = test_ctx(dir.path());
+    let registry = full_registry();
+
+    // Use bash to create a file with specific content
+    execute_tool(
+        &registry,
+        "bash",
+        serde_json::json!({
+            "command": "echo 'SEARCH_TARGET_123' > marker.txt"
+        }),
+        &ctx,
+    )
+    .unwrap();
+
+    // Grep should find the content
+    let grep_result = execute_tool(
+        &registry,
+        "grep_search",
+        serde_json::json!({ "pattern": "SEARCH_TARGET_123" }),
+        &ctx,
+    )
+    .unwrap();
+
+    assert!(
+        grep_result.content.contains("marker.txt"),
+        "grep should find marker.txt, got: {}",
+        grep_result.content
+    );
+    assert!(
+        grep_result.content.contains("SEARCH_TARGET_123"),
+        "grep should show the search target, got: {}",
+        grep_result.content
+    );
+}
