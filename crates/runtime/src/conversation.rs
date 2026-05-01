@@ -335,151 +335,57 @@ impl ConversationLoop {
         }
     }
 
-    /// Build the `Arc<SpawnChildFn>` callback that the Agent tool uses to
-    /// delegate work back into the runtime.
-    ///
-    /// Captures enough state to build a real child `ConversationLoop` and run
-    /// a full turn without needing `&mut self` inside the closure.
-    fn make_spawn_child_callback(&self) -> Option<Arc<zipcode_tools::SpawnChildFn>> {
-        let child_engine = self.engine.clone_for_child()?;
-
-        let session_id = self.session.id.clone();
-        let current_depth: u32 = self.depth;
-        let permission_policy = self.permission.clone();
-        let child_ids = Arc::clone(&self.child_session_ids);
-        let all_tool_names: Vec<String> =
-            self.tools.names().into_iter().map(String::from).collect();
-        let tool_registry_snapshot = self.tools.create_filtered(&all_tool_names);
-        let system_prompt = self.system_prompt.clone();
-        let cwd = self.cwd.clone();
-
-        // Wrap the engine in Arc<Mutex> so the closure (which is Fn, not FnMut)
-        // can take ownership each call. In practice the closure is called once.
-        let engine_cell = Arc::new(std::sync::Mutex::new(Some(child_engine)));
-
-        Some(Arc::new(
-            move |task_prompt, allowlist, permission_override, max_tokens| {
-                if current_depth >= MAX_AGENT_DEPTH {
-                    anyhow::bail!(
-                        "spawn_child refused: already at maximum agent depth ({MAX_AGENT_DEPTH})"
-                    );
-                }
-
-                let engine = engine_cell
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("spawn callback already consumed (called more than once)")
-                    })?;
-
-                let child_permission = permission_policy.inherit_for_child(permission_override);
-                let child_registry = tool_registry_snapshot
-                    .create_filtered(allowlist.map_or_else(|| &all_tool_names, AsRef::as_ref));
-                let child_tool_specs = convert_tool_specs(child_registry.specs());
-                let child_session = crate::session::Session::new_child(session_id.clone());
-                let child_session_id = child_session.id.clone();
-                let child_session_path = child_session.path();
-
-                child_ids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push((child_session_id.clone(), child_session_path));
-
-                let mut child_loop = Self {
-                    engine,
-                    tools: child_registry,
-                    session: child_session,
-                    permission: child_permission,
-                    system_prompt: system_prompt.clone(),
-                    tool_specs: child_tool_specs,
-                    cwd: cwd.clone(),
-                    depth: current_depth + 1,
-                    last_sent_idx: 0,
-                    child_session_ids: Arc::new(Mutex::new(Vec::new())),
-                    skill_registry: None,
-                    compact_policy: CompactPolicy::default(),
-                };
-
-                let mut sink = DevNullCallback;
-                child_loop.run_turn(task_prompt, &mut sink)?;
-
-                let tool_call_count = child_loop
-                    .session
-                    .messages
-                    .iter()
-                    .filter(|m| m.role == zipcode_inference::Role::Tool)
-                    .count();
-
-                let summary = child_loop
-                    .session
-                    .messages
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == zipcode_inference::Role::Model && !m.content.is_empty())
-                    .map_or_else(|| "(no response)".to_string(), |m| m.content.clone());
-
-                let _ = max_tokens;
-
-                Ok(ChildResult {
-                    summary,
-                    tool_call_count,
-                    child_session_id,
-                })
-            },
-        ))
-    }
-
-    /// Spawn a child conversation loop for a sub-agent task.
+    /// Build a child `ConversationLoop`, run a single turn, and extract the
+    /// result. This is the shared implementation used by both `spawn_child`
+    /// (direct `&mut self` call) and `make_spawn_child_callback` (closure-based).
     ///
     /// # Errors
     ///
-    /// Returns an error if the current depth is already at `MAX_AGENT_DEPTH`,
-    /// if the backend cannot be cloned for child use, or if session I/O fails.
-    pub fn spawn_child(
-        &mut self,
-        task_prompt: &str,
-        allowlist: Option<&[String]>,
+    /// Returns an error if `parent_depth >= MAX_AGENT_DEPTH`, if the child
+    /// turn fails during inference or tool execution, or if session I/O fails.
+    #[allow(clippy::too_many_arguments)]
+    fn build_and_run_child(
+        engine: Box<dyn InferenceProvider>,
+        parent_session_id: &str,
+        parent_depth: u32,
+        permission_policy: &PermissionPolicy,
         permission_override: Option<PermissionMode>,
+        tools: &ToolRegistry,
+        allowlist: Option<&[String]>,
+        system_prompt: &str,
+        cwd: &std::path::Path,
+        child_ids: &Arc<Mutex<Vec<(String, std::path::PathBuf)>>>,
+        task_prompt: &str,
         max_tokens: Option<usize>,
     ) -> Result<ChildResult> {
-        if self.depth >= MAX_AGENT_DEPTH {
+        if parent_depth >= MAX_AGENT_DEPTH {
             anyhow::bail!(
                 "spawn_child refused: already at maximum agent depth ({MAX_AGENT_DEPTH})"
             );
         }
 
-        let child_engine = self
-            .engine
-            .clone_for_child()
-            .ok_or_else(|| anyhow::anyhow!("inference backend does not support child agents"))?;
-
-        let child_permission = self.permission.inherit_for_child(permission_override);
-        let child_registry = if let Some(names) = allowlist {
-            self.tools.create_filtered(names)
-        } else {
-            let all: Vec<String> = self.tools.names().into_iter().map(String::from).collect();
-            self.tools.create_filtered(&all)
-        };
+        let child_permission = permission_policy.inherit_for_child(permission_override);
+        let all_names: Vec<String> = tools.names().into_iter().map(String::from).collect();
+        let child_registry = tools.create_filtered(allowlist.unwrap_or(&all_names));
         let child_tool_specs = convert_tool_specs(child_registry.specs());
-        let child_session = Session::new_child(self.session.id.clone());
+        let child_session = Session::new_child(parent_session_id.to_string());
         let child_session_id = child_session.id.clone();
         let child_session_path = child_session.path();
 
-        self.child_session_ids
+        child_ids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((child_session_id.clone(), child_session_path));
 
         let mut child_loop = Self {
-            engine: child_engine,
+            engine,
             tools: child_registry,
             session: child_session,
             permission: child_permission,
-            system_prompt: self.system_prompt.clone(),
+            system_prompt: system_prompt.to_string(),
             tool_specs: child_tool_specs,
-            cwd: self.cwd.clone(),
-            depth: self.depth + 1,
+            cwd: cwd.to_path_buf(),
+            depth: parent_depth + 1,
             last_sent_idx: 0,
             child_session_ids: Arc::new(Mutex::new(Vec::new())),
             skill_registry: None,
@@ -504,13 +410,97 @@ impl ConversationLoop {
             .find(|m| m.role == zipcode_inference::Role::Model && !m.content.is_empty())
             .map_or_else(|| "(no response)".to_string(), |m| m.content.clone());
 
-        let _ = max_tokens;
+        let _ = max_tokens; // TODO: wire into GenerationConfig
 
         Ok(ChildResult {
             summary,
             tool_call_count,
             child_session_id,
         })
+    }
+
+    /// Build the `Arc<SpawnChildFn>` callback that the Agent tool uses to
+    /// delegate work back into the runtime.
+    ///
+    /// Captures enough state to build a real child `ConversationLoop` and run
+    /// a full turn without needing `&mut self` inside the closure.
+    fn make_spawn_child_callback(&self) -> Option<Arc<zipcode_tools::SpawnChildFn>> {
+        let child_engine = self.engine.clone_for_child()?;
+
+        let session_id = self.session.id.clone();
+        let current_depth: u32 = self.depth;
+        let permission_policy = self.permission.clone();
+        let child_ids = Arc::clone(&self.child_session_ids);
+        let all_tool_names: Vec<String> =
+            self.tools.names().into_iter().map(String::from).collect();
+        let tool_registry_snapshot = self.tools.create_filtered(&all_tool_names);
+        let system_prompt = self.system_prompt.clone();
+        let cwd = self.cwd.clone();
+
+        // Wrap the engine in Arc<Mutex> so the closure (which is Fn, not FnMut)
+        // can take ownership each call. In practice the closure is called once.
+        let engine_cell = Arc::new(std::sync::Mutex::new(Some(child_engine)));
+
+        Some(Arc::new(
+            move |task_prompt, allowlist, permission_override, max_tokens| {
+                let engine = engine_cell
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("spawn callback already consumed (called more than once)")
+                    })?;
+
+                Self::build_and_run_child(
+                    engine,
+                    &session_id,
+                    current_depth,
+                    &permission_policy,
+                    permission_override,
+                    &tool_registry_snapshot,
+                    allowlist,
+                    &system_prompt,
+                    &cwd,
+                    &child_ids,
+                    task_prompt,
+                    max_tokens,
+                )
+            },
+        ))
+    }
+
+    /// Spawn a child conversation loop for a sub-agent task.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the current depth is already at `MAX_AGENT_DEPTH`,
+    /// if the backend cannot be cloned for child use, or if session I/O fails.
+    pub fn spawn_child(
+        &mut self,
+        task_prompt: &str,
+        allowlist: Option<&[String]>,
+        permission_override: Option<PermissionMode>,
+        max_tokens: Option<usize>,
+    ) -> Result<ChildResult> {
+        let child_engine = self
+            .engine
+            .clone_for_child()
+            .ok_or_else(|| anyhow::anyhow!("inference backend does not support child agents"))?;
+
+        Self::build_and_run_child(
+            child_engine,
+            &self.session.id,
+            self.depth,
+            &self.permission,
+            permission_override,
+            &self.tools,
+            allowlist,
+            &self.system_prompt,
+            &self.cwd,
+            &self.child_session_ids,
+            task_prompt,
+            max_tokens,
+        )
     }
 }
 
