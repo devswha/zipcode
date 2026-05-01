@@ -1474,7 +1474,7 @@ mod tests {
 
     #[test]
     fn test_find_json_object_end_empty_object() {
-        let bytes = br#"{}"#;
+        let bytes = br"{}";
         assert_eq!(find_json_object_end(bytes, 0), Some(2));
     }
 
@@ -1599,7 +1599,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_emulator_input_multiple_occurrences() {
-        let input = r#"a <<<tool b <<<tool c"#;
+        let input = r"a <<<tool b <<<tool c";
         let sanitized = sanitize_emulator_input(input);
         assert_eq!(sanitized.matches("\u{200b}").count(), 2);
     }

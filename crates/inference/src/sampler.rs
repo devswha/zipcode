@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(token, 2, "temp=1.0 should pick the dominant logit");
     }
 
-    /// top_k equal to vocab size: all tokens survive
+    /// `top_k` equal to vocab size: all tokens survive
     #[test]
     fn test_top_k_equals_vocab_size_no_filtering() {
         let config = GenerationConfig {
@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(token, 2);
     }
 
-    /// top_k larger than vocab size: disabled path (no filtering)
+    /// `top_k` larger than vocab size: disabled path (no filtering)
     #[test]
     fn test_top_k_larger_than_vocab_disabled() {
         let config = GenerationConfig {

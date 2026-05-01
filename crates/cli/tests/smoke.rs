@@ -272,6 +272,7 @@ while True:
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_zipcode_in_pty(
     args: &[String],
     home: &std::path::Path,

@@ -191,14 +191,27 @@ mod tests {
         )
         .unwrap();
 
-        let list = received_allowlist.lock().unwrap();
-        let list = list.as_ref().unwrap();
         assert!(
-            !list.contains(&"agent".to_string()),
+            !received_allowlist
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains(&"agent".to_string()),
             "agent should be stripped"
         );
-        assert!(list.contains(&"read_file".to_string()));
-        assert!(list.contains(&"grep_search".to_string()));
+        assert!(received_allowlist
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains(&"read_file".to_string()));
+        assert!(received_allowlist
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains(&"grep_search".to_string()));
     }
 
     #[test]
@@ -279,7 +292,7 @@ mod tests {
         );
     }
 
-    /// Agent at depth 1 should also succeed (MAX_AGENT_DEPTH is 2)
+    /// Agent at depth 1 should also succeed (`MAX_AGENT_DEPTH` is 2)
     #[test]
     fn test_depth_one_succeeds() {
         let tool = AgentTool;
@@ -330,7 +343,7 @@ mod tests {
         assert_eq!(*received.lock().unwrap(), "");
     }
 
-    /// tool_allowlist with only "agent" → all stripped, passes None
+    /// `tool_allowlist` with only "agent" → all stripped, passes None
     #[test]
     fn test_allowlist_only_agent_stripped_to_none() {
         let received_allowlist: Arc<std::sync::Mutex<Option<Vec<String>>>> =
@@ -355,15 +368,18 @@ mod tests {
         .unwrap();
 
         // After stripping "agent", the list is empty but still Some(empty_vec)
-        let list = received_allowlist.lock().unwrap();
-        let list = list.as_ref().unwrap();
         assert!(
-            list.is_empty(),
-            "allowlist with only 'agent' should produce an empty list, got: {list:?}"
+            received_allowlist
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_empty(),
+            "allowlist with only 'agent' should produce an empty list"
         );
     }
 
-    /// Valid max_tokens integer is forwarded to spawn callback
+    /// Valid `max_tokens` integer is forwarded to spawn callback
     #[test]
     fn test_valid_max_tokens_forwarded() {
         let received_tokens: Arc<std::sync::Mutex<Option<usize>>> =
@@ -394,7 +410,7 @@ mod tests {
         );
     }
 
-    /// No max_tokens field → None passed to callback
+    /// No `max_tokens` field → None passed to callback
     #[test]
     fn test_no_max_tokens_passes_none() {
         let received_tokens: Arc<std::sync::Mutex<Option<usize>>> =
@@ -421,7 +437,7 @@ mod tests {
         );
     }
 
-    /// Schema should include tool_allowlist and skill properties
+    /// Schema should include `tool_allowlist` and skill properties
     #[test]
     fn test_schema_includes_optional_properties() {
         let tool = AgentTool;

@@ -112,7 +112,7 @@ mod tests {
     fn make_registry_with_skill(
         name: &str,
         body: &str,
-        allowlist: Vec<String>,
+        allowlist: &[String],
     ) -> Arc<SkillRegistry> {
         use std::io::Write;
         use tempfile::TempDir;
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_skill_tool_unknown_skill_errors_with_available_list() {
-        let registry = make_registry_with_skill("review", "Review code", vec![]);
+        let registry = make_registry_with_skill("review", "Review code", &[]);
         let tool = SkillTool { registry };
         let result = tool
             .execute(
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_skill_tool_renders_and_calls_spawn_child() {
-        let registry = make_registry_with_skill("greet", "Hello {{ who }}!", vec![]);
+        let registry = make_registry_with_skill("greet", "Hello {{ who }}!", &[]);
         let tool = SkillTool { registry };
 
         let received_task: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -251,7 +251,7 @@ mod tests {
         let registry = make_registry_with_skill(
             "limited",
             "Do something",
-            vec!["read_file".to_string(), "grep_search".to_string()],
+            &["read_file".to_string(), "grep_search".to_string()],
         );
         let tool = SkillTool { registry };
 
@@ -273,10 +273,18 @@ mod tests {
         )
         .unwrap();
 
-        let list = received_allowlist.lock().unwrap();
-        let list = list.as_ref().unwrap();
-        assert!(list.contains(&"read_file".to_string()));
-        assert!(list.contains(&"grep_search".to_string()));
+        assert!(received_allowlist
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains(&"read_file".to_string()));
+        assert!(received_allowlist
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains(&"grep_search".to_string()));
     }
 
     #[test]
@@ -328,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_skill_tool_without_spawn_callback_errors() {
-        let registry = make_registry_with_skill("review", "Review code", vec![]);
+        let registry = make_registry_with_skill("review", "Review code", &[]);
         let tool = SkillTool { registry };
         let result = tool
             .execute(serde_json::json!({"name": "review"}), &ctx_no_callback())
@@ -338,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_skill_tool_empty_allowlist_passes_none_to_spawn_child() {
-        let registry = make_registry_with_skill("open", "Open task", vec![]);
+        let registry = make_registry_with_skill("open", "Open task", &[]);
         let tool = SkillTool { registry };
 
         let received_allowlist: Arc<Mutex<Option<Vec<String>>>> =
@@ -365,7 +373,7 @@ mod tests {
     /// Empty string name should not match any skill → "skill not found"
     #[test]
     fn test_skill_tool_empty_name_rejected() {
-        let registry = make_registry_with_skill("review", "Review code", vec![]);
+        let registry = make_registry_with_skill("review", "Review code", &[]);
         let tool = SkillTool { registry };
         let result = tool
             .execute(serde_json::json!({"name": ""}), &ctx_no_callback())
@@ -395,7 +403,7 @@ mod tests {
     /// params as a string (not object) → `as_object()` returns None → empty `HashMap` (no crash)
     #[test]
     fn test_skill_tool_params_non_object_no_crash() {
-        let registry = make_registry_with_skill("greet", "Hello {{ who }}!", vec![]);
+        let registry = make_registry_with_skill("greet", "Hello {{ who }}!", &[]);
         let tool = SkillTool { registry };
 
         let received_task: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -425,7 +433,7 @@ mod tests {
     #[test]
     fn test_skill_tool_params_values_not_strings() {
         let registry =
-            make_registry_with_skill("greet", "Hello {{ who }}! Count: {{ count }}.", vec![]);
+            make_registry_with_skill("greet", "Hello {{ who }}! Count: {{ count }}.", &[]);
         let tool = SkillTool { registry };
 
         let received_task: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -458,7 +466,7 @@ mod tests {
     #[test]
     fn test_skill_tool_multiple_placeholders() {
         let registry =
-            make_registry_with_skill("multi", "Hello {{ a }} and {{ b }} from {{ c }}!", vec![]);
+            make_registry_with_skill("multi", "Hello {{ a }} and {{ b }} from {{ c }}!", &[]);
         let tool = SkillTool { registry };
 
         let received_task: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -488,7 +496,7 @@ mod tests {
     /// `spawn_child` callback returns Err — should propagate as `anyhow::Error`
     #[test]
     fn test_skill_tool_spawn_child_error_propagated() {
-        let registry = make_registry_with_skill("fail", "Fail task", vec![]);
+        let registry = make_registry_with_skill("fail", "Fail task", &[]);
         let tool = SkillTool { registry };
 
         let cb: Arc<SpawnChildFn> =
@@ -506,7 +514,7 @@ mod tests {
     /// Result message includes `tool_call_count` from `ChildResult`
     #[test]
     fn test_skill_tool_result_includes_tool_call_count() {
-        let registry = make_registry_with_skill("work", "Do work", vec![]);
+        let registry = make_registry_with_skill("work", "Do work", &[]);
         let tool = SkillTool { registry };
 
         let cb: Arc<SpawnChildFn> = Arc::new(|_task, _al, _perm, _tok| {
@@ -568,7 +576,7 @@ mod tests {
     /// No params key at all — should work fine with empty `HashMap`
     #[test]
     fn test_skill_tool_no_params_key() {
-        let registry = make_registry_with_skill("plain", "No placeholders here", vec![]);
+        let registry = make_registry_with_skill("plain", "No placeholders here", &[]);
         let tool = SkillTool { registry };
 
         let received_task: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -597,7 +605,7 @@ mod tests {
     /// params field is JSON null — treated as missing → empty `HashMap`
     #[test]
     fn test_skill_tool_params_null_value() {
-        let registry = make_registry_with_skill("greet", "Hello {{ who }}!", vec![]);
+        let registry = make_registry_with_skill("greet", "Hello {{ who }}!", &[]);
         let tool = SkillTool { registry };
 
         let received_task: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));

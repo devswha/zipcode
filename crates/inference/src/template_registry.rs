@@ -80,6 +80,7 @@ impl TemplateRegistry {
     /// `"qwen2.5-7b"`), the most specific pattern wins — measured as the count
     /// of non-wildcard characters. Ties break lexicographically for stable,
     /// deterministic resolution across runs.
+    #[must_use]
     pub fn resolve_for_model(&self, model_name: &str) -> Option<&ModelEntry> {
         // Exact key match
         if let Some(entry) = self.entries.get(model_name) {

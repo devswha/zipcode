@@ -1886,7 +1886,7 @@ mod tests {
         );
     }
 
-    /// Sanity check the inverse: when validation passes (no model_issue),
+    /// Sanity check the inverse: when validation passes (no `model_issue`),
     /// `Ready` is still returned.
     #[test]
     fn classify_user_readiness_ready_when_no_issues() {

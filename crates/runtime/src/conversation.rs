@@ -1106,9 +1106,12 @@ mod tests {
         };
 
         let result = conv.spawn_child("task 1", None, None, None).unwrap();
-        let ids = conv.child_session_ids.lock().unwrap();
         assert!(
-            ids.iter().any(|(id, _)| id == &result.child_session_id),
+            conv.child_session_ids
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(id, _)| id == &result.child_session_id),
             "child session id should be tracked"
         );
     }
@@ -1228,8 +1231,9 @@ mod tests {
     /// Tier-1 fires when pair count exceeds cutoff and reduces the visible pair count.
     #[test]
     fn test_run_turn_triggers_tier1_when_pair_count_exceeds_cutoff() {
-        let (_dir, _guard) = with_test_session_dir();
         use zipcode_inference::mock::MockResponse;
+
+        let (_dir, _guard) = with_test_session_dir();
 
         // cutoff=2, batch_size=2 → triggers when pairs > 2 and compacts 2 pairs
         let policy = CompactPolicy {
@@ -1258,8 +1262,9 @@ mod tests {
     /// Tier-1 is skipped when pair count does not exceed the cutoff.
     #[test]
     fn test_run_turn_skips_tier1_below_cutoff() {
-        let (_dir, _guard) = with_test_session_dir();
         use zipcode_inference::mock::MockResponse;
+
+        let (_dir, _guard) = with_test_session_dir();
 
         // cutoff=10 → 2 pairs will not trigger
         let policy = CompactPolicy {
@@ -1288,11 +1293,12 @@ mod tests {
     /// `evict_tool_responses_progressive(8)` will find content to evict.
     #[test]
     fn test_run_turn_triggers_tier2_when_usage_over_threshold() {
-        let (_dir, _guard) = with_test_session_dir();
         use crate::permission::PermissionPolicy;
         use std::sync::{Arc, Mutex};
         use zipcode_inference::mock::{MockInferenceProvider, MockResponse};
         use zipcode_tools::{PermissionMode, ToolRegistry};
+
+        let (_dir, _guard) = with_test_session_dir();
 
         // context=10, threshold=0.8 → threshold_tokens = floor(10*0.8) = 8
         let policy = CompactPolicy {
@@ -1342,11 +1348,12 @@ mod tests {
     /// Tier-2 is skipped when usage is below threshold.
     #[test]
     fn test_run_turn_skips_tier2_below_threshold() {
-        let (_dir, _guard) = with_test_session_dir();
         use crate::permission::PermissionPolicy;
         use std::sync::{Arc, Mutex};
         use zipcode_inference::mock::{MockInferenceProvider, MockResponse};
         use zipcode_tools::{PermissionMode, ToolRegistry};
+
+        let (_dir, _guard) = with_test_session_dir();
 
         // context=32768, threshold=0.8 → 26214 threshold; report only 1000
         let policy = CompactPolicy {
@@ -1390,8 +1397,9 @@ mod tests {
     /// A panic inside `compact_tool_pairs` does not propagate — `run_turn` returns Ok.
     #[test]
     fn test_tier1_panic_does_not_propagate() {
-        let (_dir, _guard) = with_test_session_dir();
         use zipcode_inference::mock::MockResponse;
+
+        let (_dir, _guard) = with_test_session_dir();
 
         // Set cutoff=0 so tier-1 fires, but batch_size=0 triggers no-op inside
         // compact_tool_pairs (pairs.len() < 0 is always false, so it returns 0).
@@ -1415,8 +1423,9 @@ mod tests {
     /// When the provider returns None for `prompt_eval_count`, tier-2 is skipped entirely.
     #[test]
     fn test_provider_without_prompt_eval_count_skips_tier2() {
-        let (_dir, _guard) = with_test_session_dir();
         use zipcode_inference::mock::MockResponse;
+
+        let (_dir, _guard) = with_test_session_dir();
 
         // Default MockInferenceProvider has no prompt_eval_count (returns None)
         let policy = CompactPolicy {

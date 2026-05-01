@@ -250,8 +250,9 @@ mod tests {
 
     #[test]
     fn test_read_offset_beyond_eof() {
-        let mut f = NamedTempFile::new().unwrap();
         use std::io::Write;
+
+        let mut f = NamedTempFile::new().unwrap();
         writeln!(f, "line one").unwrap();
         writeln!(f, "line two").unwrap();
 

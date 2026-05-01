@@ -72,7 +72,7 @@ fn create_filtered_includes_only_allowlisted_tools() {
     let registry = full_registry();
     let filtered = registry.create_filtered(&["read_file".to_string(), "grep_search".to_string()]);
     let mut names = filtered.names();
-    names.sort();
+    names.sort_unstable();
     assert_eq!(names, vec!["grep_search", "read_file"]);
 }
 
@@ -95,7 +95,7 @@ fn create_filtered_ignores_unknown_tool_names() {
         "another_fake".to_string(),
     ]);
     let mut names = filtered.names();
-    names.sort();
+    names.sort_unstable();
     assert_eq!(names, vec!["read_file"]);
 }
 
@@ -104,7 +104,7 @@ fn create_filtered_always_excludes_agent_tool() {
     let registry = full_registry();
     let filtered = registry.create_filtered(&["agent".to_string(), "bash".to_string()]);
     let mut names = filtered.names();
-    names.sort();
+    names.sort_unstable();
     assert_eq!(names, vec!["bash"]);
 }
 
@@ -709,7 +709,7 @@ fn make_relative_deeply_nested() {
 fn full_registry_has_10_tools() {
     let registry = full_registry();
     let mut names = registry.names();
-    names.sort();
+    names.sort_unstable();
     assert_eq!(names.len(), 10, "should have exactly 10 registered tools");
     assert_eq!(
         names,

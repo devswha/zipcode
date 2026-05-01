@@ -321,7 +321,7 @@ impl FullscreenUi {
         }
     }
 
-    /// Handle scroll keys (PageUp, PageDown, Ctrl+Home, Ctrl+End).
+    /// Handle scroll keys (`PageUp`, `PageDown`, Ctrl+Home, Ctrl+End).
     fn handle_scroll_keys(&mut self, key: KeyEvent) -> bool {
         match key {
             KeyEvent {
@@ -385,7 +385,7 @@ impl FullscreenUi {
     }
 
     /// Handle cursor movement and navigation keys (arrows, Home/End,
-    /// Up/Down with history fallback, F1, BackTab).
+    /// Up/Down with history fallback, F1, `BackTab`).
     fn handle_navigation_keys(&mut self, key: KeyEvent, conv: &mut ConversationLoop) -> bool {
         match key {
             KeyEvent {
