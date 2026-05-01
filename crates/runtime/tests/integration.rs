@@ -102,8 +102,8 @@ fn build_test_loop_with_engine(
 ) -> ConversationLoop {
     use zipcode_tools::{
         bash::BashTool, edit_file::EditFileTool, glob_search::GlobSearchTool,
-        grep_search::GrepSearchTool, read_file::ReadFileTool, write_file::WriteFileTool,
-        ToolRegistry,
+        grep_search::GrepSearchTool, read_file::ReadFileTool, repl::ReplTool,
+        write_file::WriteFileTool, ToolRegistry,
     };
 
     let mut registry = ToolRegistry::new();
@@ -113,6 +113,7 @@ fn build_test_loop_with_engine(
     registry.register(Box::new(EditFileTool));
     registry.register(Box::new(GlobSearchTool));
     registry.register(Box::new(GrepSearchTool));
+    registry.register(Box::new(ReplTool));
 
     let tool_specs: Vec<ToolSpec> = registry
         .specs()
@@ -363,6 +364,84 @@ fn workspace_write_permission_prompt_records_denial_when_rejected() {
     let mut cb = TestCallback::with_permission_response(false);
 
     conv.run_turn("run bash", &mut cb).unwrap();
+
+    assert_eq!(
+        cb.permission_prompts.len(),
+        1,
+        "expected one permission prompt"
+    );
+    assert!(
+        cb.tool_calls.is_empty(),
+        "tool should not execute after rejection"
+    );
+    assert!(
+        cb.tool_results.is_empty(),
+        "denial should not surface as callback tool result"
+    );
+
+    let has_denial = conv.session.messages.iter().any(|m| {
+        let json = serde_json::to_string(m).unwrap_or_default();
+        json.contains("User denied permission for this action.")
+    });
+    assert!(
+        has_denial,
+        "expected denied permission message in session history"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 4b: repl tool approval flow (mirrors bash tests above)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn workspace_write_permission_prompt_executes_repl_when_approved() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "repl".to_string(),
+            args: serde_json::json!({ "language": "python", "code": "print('repl approved')" }),
+        },
+        MockResponse::Text("done".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::WorkspaceWrite);
+    let mut cb = TestCallback::with_permission_response(true);
+
+    conv.run_turn("run repl", &mut cb).unwrap();
+
+    assert_eq!(
+        cb.permission_prompts.len(),
+        1,
+        "expected one permission prompt"
+    );
+    assert!(cb.permission_prompts[0].contains("requires approval"));
+    assert_eq!(cb.tool_calls.len(), 1, "expected approved tool execution");
+    assert_eq!(cb.tool_calls[0].0, "repl");
+    assert_eq!(
+        cb.tool_results.len(),
+        1,
+        "expected tool result after approval"
+    );
+    assert!(cb.tool_results[0].1.contains("repl approved"));
+}
+
+#[test]
+fn workspace_write_permission_prompt_records_denial_when_rejected_for_repl() {
+    let dir = TempDir::new().unwrap();
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "repl".to_string(),
+            args: serde_json::json!({ "language": "python", "code": "print('should-not-run')" }),
+        },
+        MockResponse::Text("done".to_string()),
+    ]);
+
+    let mut conv = build_test_loop(&dir, mock, PermissionMode::WorkspaceWrite);
+    let mut cb = TestCallback::with_permission_response(false);
+
+    conv.run_turn("run repl", &mut cb).unwrap();
 
     assert_eq!(
         cb.permission_prompts.len(),
