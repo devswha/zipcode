@@ -628,6 +628,7 @@ pub fn server_options_from_config(config: &ZipcodeConfig) -> ServerOptions {
         context_size: std::env::var("ZIPCODE_LLAMA_SERVER_CTX")
             .ok()
             .and_then(|v| v.parse().ok())
+            .or(config.context_size)
             .unwrap_or(DEFAULT_CONTEXT_SIZE),
     }
 }
@@ -1197,6 +1198,7 @@ mod tests {
             generation: GenerationOverrides::default(),
             gpu_layers: None,
             flash_attention: false,
+            context_size: None,
         };
 
         let resolved = resolve_model_path(None, &config, &nested, &dir).unwrap();
@@ -1226,6 +1228,7 @@ mod tests {
             generation: GenerationOverrides::default(),
             gpu_layers: None,
             flash_attention: false,
+            context_size: None,
         };
 
         let resolved = resolve_model_path(None, &config, &dir, &dir).unwrap();
@@ -1251,6 +1254,7 @@ mod tests {
             generation: GenerationOverrides::default(),
             gpu_layers: None,
             flash_attention: false,
+            context_size: None,
         };
 
         let resolved = resolve_model_path(None, &config, &dir, &dir).unwrap();
@@ -1279,6 +1283,7 @@ mod tests {
             generation: GenerationOverrides::default(),
             gpu_layers: None,
             flash_attention: false,
+            context_size: None,
         };
 
         let err = resolve_model_path(None, &config, &dir, &dir).unwrap_err();
@@ -1744,6 +1749,38 @@ mod tests {
         std::env::remove_var("ZIPCODE_LLAMA_SERVER_CTX");
 
         assert_eq!(opts.context_size, 16384);
+    }
+
+    #[test]
+    fn server_options_uses_config_context_size_when_no_env() {
+        std::env::remove_var("ZIPCODE_LLAMA_SERVER_CTX");
+        let config = ZipcodeConfig {
+            context_size: Some(32768),
+            ..ZipcodeConfig::default()
+        };
+        let opts = server_options_from_config(&config);
+        assert_eq!(
+            opts.context_size, 32768,
+            "config.context_size should win over DEFAULT_CONTEXT_SIZE \
+             when no env var is set"
+        );
+    }
+
+    #[test]
+    fn server_options_env_beats_config_context_size() {
+        let config = ZipcodeConfig {
+            context_size: Some(32768),
+            ..ZipcodeConfig::default()
+        };
+
+        std::env::set_var("ZIPCODE_LLAMA_SERVER_CTX", "8192");
+        let opts = server_options_from_config(&config);
+        std::env::remove_var("ZIPCODE_LLAMA_SERVER_CTX");
+
+        assert_eq!(
+            opts.context_size, 8192,
+            "ZIPCODE_LLAMA_SERVER_CTX env should still beat config"
+        );
     }
 
     #[test]

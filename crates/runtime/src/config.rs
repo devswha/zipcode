@@ -18,6 +18,8 @@ pub struct ZipcodeConfig {
     pub gpu_layers: Option<i32>,
     #[serde(default)]
     pub flash_attention: bool,
+    #[serde(default)]
+    pub context_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,6 +76,7 @@ impl Default for ZipcodeConfig {
             generation: GenerationOverrides::default(),
             gpu_layers: None,
             flash_attention: false,
+            context_size: None,
         }
     }
 }
@@ -171,6 +174,7 @@ impl ZipcodeConfig {
             warn_type_mismatch(&project, "generation", "object");
             warn_type_mismatch(&project, "gpu_layers", "number");
             warn_type_mismatch(&project, "flash_attention", "boolean");
+            warn_type_mismatch(&project, "context_size", "number");
 
             if let Some(perm) = project["permission_mode"].as_str() {
                 config.permission_mode = perm.to_string();
@@ -210,6 +214,12 @@ impl ZipcodeConfig {
             }
             if let Some(fa) = project["flash_attention"].as_bool() {
                 config.flash_attention = fa;
+            }
+            if let Some(ctx) = project["context_size"].as_u64() {
+                if ctx == 0 {
+                    anyhow::bail!("context_size must be > 0, got 0");
+                }
+                config.context_size = Some(usize::try_from(ctx).unwrap_or(usize::MAX));
             }
         }
 

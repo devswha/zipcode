@@ -145,6 +145,79 @@ recommended_flash_attention() {
     printf '%s\n' "true"
 }
 
+# Heuristic per-token KV-cache size (KiB) used to budget context against
+# free VRAM. Calibrated against actual llama-server allocations on a
+# 24 GiB RTX 4090 with Gemma 4: at ctx=32768 the 31B model reserved
+# 2560 MiB for non-SWA layers + 3600 MiB for SWA layers = 6160 MiB
+# total, i.e. ~192 KiB/token (the iSWA architecture has more layers
+# touching the cache than a plain transformer). E2B is roughly an order
+# of magnitude smaller per layer; ~30 KiB/token leaves safety margin.
+# Unknown models get a conservative middle estimate.
+kv_kb_per_tok_for_model() {
+    local model_path="${1:-}"
+    local lower
+    lower="$(basename -- "${model_path:-}" | tr '[:upper:]' '[:lower:]')"
+    case "${lower}" in
+        *e2b*) printf '30' ;;
+        *31b*) printf '192' ;;
+        *) printf '128' ;;
+    esac
+}
+
+# Pick a safe `context_size` (in tokens) given the configured model and
+# detected GPU. Returns one of {4096, 8192, 16384, 32768, 65536, 131072}.
+#
+# The default zipcode context is 131072 (Gemma 4 native). On a 24 GiB GPU
+# with 31B-Q4_K_M that allocation pattern blows VRAM and `cudaMalloc`
+# fails, so the helper now lives in install_common.sh and is wired into
+# config generation.
+recommended_context_size() {
+    local model_path="${1:-}"
+    [ -n "${model_path}" ] || { printf '4096'; return 0; }
+
+    local vram_mb
+    if ! vram_mb="$(detect_total_vram_mb 2>/dev/null)" || [ "${vram_mb:-0}" -le 0 ]; then
+        printf '4096'
+        return 0
+    fi
+
+    if [ ! -f "${model_path}" ]; then
+        printf '4096'
+        return 0
+    fi
+
+    local model_bytes model_mb
+    model_bytes="$(stat -c '%s' "${model_path}" 2>/dev/null \
+        || stat -f '%z' "${model_path}" 2>/dev/null || echo 0)"
+    model_mb="$((model_bytes / 1024 / 1024))"
+
+    # Reserve ~2 GiB for compute/scratch + llama-server slot KV.
+    local avail_mb=$(( vram_mb - model_mb - 2048 ))
+    if [ "${avail_mb}" -le 256 ]; then
+        printf '4096'
+        return 0
+    fi
+
+    local kv_kb
+    kv_kb="$(kv_kb_per_tok_for_model "${model_path}")"
+
+    # Derate by 25% as further measurement-uncertainty margin.
+    local raw_ctx max_ctx
+    raw_ctx=$(( avail_mb * 1024 / kv_kb ))
+    max_ctx=$(( raw_ctx * 75 / 100 ))
+
+    local ladder=(4096 8192 16384 32768 65536 131072)
+    local choice=4096 c
+    for c in "${ladder[@]}"; do
+        if [ "${c}" -le "${max_ctx}" ]; then
+            choice="${c}"
+        else
+            break
+        fi
+    done
+    printf '%s' "${choice}"
+}
+
 helper_supports_gpu_defaults() {
     local helper_path="${1:-}"
     [ -n "${helper_path}" ] || return 1
@@ -167,6 +240,7 @@ write_default_config() {
     local model_file=""
     local gpu_layers=""
     local flash_attention="false"
+    local context_size=""
     local entries=()
     local last_index=0
     local i=0
@@ -181,6 +255,7 @@ write_default_config() {
     fi
     gpu_layers="$(recommended_gpu_layers "${helper_path}" "${model_path}" || true)"
     flash_attention="$(recommended_flash_attention "${helper_path}" || printf '%s' "false")"
+    context_size="$(recommended_context_size "${model_path}" || true)"
 
     entries+=("  \"model_dir\": \"$(json_escape "${model_dir}")\"")
     entries+=("  \"permission_mode\": \"workspace-write\"")
@@ -194,6 +269,9 @@ write_default_config() {
         entries+=("  \"gpu_layers\": ${gpu_layers}")
     fi
     entries+=("  \"flash_attention\": ${flash_attention}")
+    if [ -n "${context_size}" ]; then
+        entries+=("  \"context_size\": ${context_size}")
+    fi
 
     mkdir -p "$(dirname -- "${config_file}")"
     last_index=$((${#entries[@]} - 1))
