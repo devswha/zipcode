@@ -73,6 +73,14 @@ struct Cli {
     #[arg(long, short = 'v', global = true)]
     verbose: bool,
 
+    /// Skip every approval prompt for the duration of this run by
+    /// forcing `permission_mode = full-access`. Equivalent to
+    /// `--permission-mode full-access`, useful as a one-shot override
+    /// inside a workspace where you trust the agent. Conflicts with
+    /// an explicit `--permission-mode`.
+    #[arg(long, global = true)]
+    yolo: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -117,6 +125,25 @@ enum Commands {
         #[arg(long)]
         rebuild: bool,
     },
+}
+
+/// Resolve the effective `permission_mode` string from the two CLI
+/// surfaces that can set it: `--yolo` (shorthand for `full-access`) and
+/// `--permission-mode <MODE>`. Mutually exclusive — pass one or neither.
+fn resolve_permission_mode_str(
+    yolo: bool,
+    permission_mode: Option<CliPermissionMode>,
+) -> Result<Option<&'static str>> {
+    if yolo && permission_mode.is_some() {
+        anyhow::bail!(
+            "--yolo and --permission-mode are mutually exclusive (use one or the other)"
+        );
+    }
+    Ok(if yolo {
+        Some("full-access")
+    } else {
+        permission_mode.map(CliPermissionMode::as_str)
+    })
 }
 
 /// Error out when global flags `--ui` / `--session` are passed to a
@@ -171,7 +198,7 @@ fn main() -> Result<()> {
     render::set_verbose(cli.verbose || verbose_env);
 
     let model_path = cli.model.as_deref();
-    let permission_mode = cli.permission_mode.map(CliPermissionMode::as_str);
+    let permission_mode = resolve_permission_mode_str(cli.yolo, cli.permission_mode)?;
     let backend = cli.backend.as_deref();
     let session_id = cli.session.as_deref();
 
@@ -254,6 +281,47 @@ mod tests {
             "workspace-write"
         );
         assert_eq!(CliPermissionMode::FullAccess.to_string(), "full-access");
+    }
+
+    // --- --yolo flag tests ---
+
+    #[test]
+    fn yolo_alone_yields_full_access() {
+        assert_eq!(
+            resolve_permission_mode_str(true, None).unwrap(),
+            Some("full-access")
+        );
+    }
+
+    #[test]
+    fn yolo_plus_permission_mode_is_rejected() {
+        let err = resolve_permission_mode_str(true, Some(CliPermissionMode::ReadOnly))
+            .expect_err("yolo + permission-mode must conflict");
+        assert!(
+            err.to_string().contains("mutually exclusive"),
+            "error should mention mutual exclusion, got: {err}"
+        );
+    }
+
+    #[test]
+    fn no_yolo_no_permission_mode_yields_none() {
+        assert_eq!(resolve_permission_mode_str(false, None).unwrap(), None);
+    }
+
+    #[test]
+    fn permission_mode_alone_passes_through() {
+        assert_eq!(
+            resolve_permission_mode_str(false, Some(CliPermissionMode::WorkspaceWrite)).unwrap(),
+            Some("workspace-write")
+        );
+    }
+
+    #[test]
+    fn clap_accepts_yolo_flag() {
+        let cli = Cli::try_parse_from(["zipcode", "--yolo", "doctor"])
+            .expect("--yolo should parse");
+        assert!(cli.yolo);
+        assert!(cli.permission_mode.is_none());
     }
 
     #[test]
