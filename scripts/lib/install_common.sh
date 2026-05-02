@@ -96,11 +96,44 @@ cuda_available() {
     return 1
 }
 
+detect_total_vram_mb() {
+    command -v nvidia-smi >/dev/null 2>&1 || return 1
+    local out
+    out="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null \
+        | head -n1 | tr -d ' [:space:]')"
+    [ -n "${out}" ] && [ "${out}" -gt 0 ] 2>/dev/null || return 1
+    printf '%s\n' "${out}"
+}
+
+# Recommend the value zipcode should write into config.json's `gpu_layers`.
+# Returns 999 when the model fits cleanly on the detected GPU (or the model
+# size is unknown), 0 when the model + KV-cache headroom won't fit (so the
+# user gets a working CPU fallback instead of a CUDA OOM at first run).
+#
+# Args:
+#   $1 helper_path  — llama-server binary (probed for GPU backend support)
+#   $2 model_path   — optional; path to the .gguf so size can be checked
 recommended_gpu_layers() {
     local helper_path="${1:-}"
+    local model_path="${2:-}"
     [ -n "${helper_path}" ] || return 1
     cuda_available || return 1
     helper_supports_gpu_defaults "${helper_path}" || return 1
+
+    if [ -n "${model_path}" ] && [ -f "${model_path}" ]; then
+        local model_bytes model_mb vram_mb
+        model_bytes="$(stat -c '%s' "${model_path}" 2>/dev/null \
+            || stat -f '%z' "${model_path}" 2>/dev/null || echo 0)"
+        model_mb="$((model_bytes / 1024 / 1024))"
+        if vram_mb="$(detect_total_vram_mb 2>/dev/null)" && [ "${vram_mb}" -gt 0 ]; then
+            # Need ~3 GiB headroom for KV cache, activations, and ctx growth.
+            if [ "$((model_mb + 3072))" -gt "${vram_mb}" ]; then
+                printf '%s\n' "0"
+                return 0
+            fi
+        fi
+    fi
+
     printf '%s\n' "999"
 }
 
@@ -146,7 +179,7 @@ write_default_config() {
     if [ -n "${model_path}" ]; then
         model_file="$(basename -- "${model_path}")"
     fi
-    gpu_layers="$(recommended_gpu_layers "${helper_path}" || true)"
+    gpu_layers="$(recommended_gpu_layers "${helper_path}" "${model_path}" || true)"
     flash_attention="$(recommended_flash_attention "${helper_path}" || printf '%s' "false")"
 
     entries+=("  \"model_dir\": \"$(json_escape "${model_dir}")\"")

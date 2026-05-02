@@ -292,6 +292,120 @@ prompt_press_enter() {
     IFS= read -r _ || true
 }
 
+# Inspect the host (NVIDIA GPU + system RAM) so we can recommend a model
+# variant that actually fits. Outputs `vram_mb|ram_mb|gpu_label`. Missing
+# components stay 0 / "(none)" so the caller can format them gracefully.
+detect_system_capabilities() {
+    local vram_mb=0
+    local ram_mb=0
+    local gpu_label="(none)"
+
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        local nvline
+        if nvline="$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1)"; then
+            local name_part total_part
+            name_part="$(printf '%s' "${nvline}" | awk -F',' '{gsub(/^[ \t]+|[ \t]+$/, "", $1); print $1}')"
+            total_part="$(printf '%s' "${nvline}" | awk -F',' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')"
+            if [ -n "${total_part}" ] && [ "${total_part}" -gt 0 ] 2>/dev/null; then
+                vram_mb="${total_part}"
+                gpu_label="${name_part:-NVIDIA GPU}"
+            fi
+        fi
+    fi
+
+    if [ -r /proc/meminfo ]; then
+        ram_mb="$(awk '/^MemTotal:/ {printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null || echo 0)"
+    elif command -v sysctl >/dev/null 2>&1; then
+        local hw
+        hw="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+        ram_mb="$((hw / 1024 / 1024))"
+    fi
+
+    printf '%s|%s|%s' "${vram_mb:-0}" "${ram_mb:-0}" "${gpu_label}"
+}
+
+# Map detected VRAM/RAM to a (preset, quant) pair. Headroom budget assumes
+# a 4k context with KV cache + activations; users wanting larger context
+# should pick the next quant down.
+#
+#   31B-bf16   ≈ 62 GB  → needs ≥ 70 GB VRAM
+#   31B-Q8_0   ≈ 32 GB  → needs ≥ 36 GB VRAM
+#   31B-Q4_K_M ≈ 19 GB  → needs ≥ 22 GB VRAM (just fits a 24 GB 4090)
+#   E2B-Q8_0   ≈  5 GB  → needs ≥  8 GB VRAM
+#   E2B-Q4_K_M ≈  3 GB  → needs ≥  4 GB VRAM
+recommend_preset_quant() {
+    local vram_mb="${1:-0}"
+    local ram_mb="${2:-0}"
+
+    if [ "${vram_mb}" -ge 70000 ]; then
+        printf '31b:bf16'
+    elif [ "${vram_mb}" -ge 36000 ]; then
+        printf '31b:q8_0'
+    elif [ "${vram_mb}" -ge 22000 ]; then
+        printf '31b:q4_k_m'
+    elif [ "${vram_mb}" -ge 8000 ]; then
+        printf 'e2b:q8_0'
+    elif [ "${vram_mb}" -ge 3500 ]; then
+        printf 'e2b:q4_k_m'
+    elif [ "${ram_mb}" -ge 24000 ]; then
+        printf 'e2b:q8_0'
+    else
+        printf 'e2b:q4_k_m'
+    fi
+}
+
+format_mb_human() {
+    local mb="${1:-0}"
+    if [ "${mb}" -ge 1024 ] 2>/dev/null; then
+        awk -v m="${mb}" 'BEGIN { printf "%.1f GB", m/1024 }'
+    elif [ "${mb}" -gt 0 ] 2>/dev/null; then
+        printf '%d MB' "${mb}"
+    else
+        printf 'unknown'
+    fi
+}
+
+# Run detection once per process, populating SYSTEM_* globals and exporting
+# ZIPCODE_QUANT_PREFERENCE so any subshell that later calls
+# preferred_model_for_preset will pick a matching .gguf.
+detect_system_capabilities_into_vars() {
+    [ -n "${SYSTEM_CAPABILITIES_DETECTED:-}" ] && return 0
+
+    local caps rest rec
+    caps="$(detect_system_capabilities)"
+    SYSTEM_VRAM_MB="${caps%%|*}"
+    rest="${caps#*|}"
+    SYSTEM_RAM_MB="${rest%%|*}"
+    SYSTEM_GPU_LABEL="${rest#*|}"
+
+    rec="$(recommend_preset_quant "${SYSTEM_VRAM_MB}" "${SYSTEM_RAM_MB}")"
+    SYSTEM_REC_PRESET="${rec%%:*}"
+    SYSTEM_REC_QUANT="${rec##*:}"
+
+    export SYSTEM_VRAM_MB SYSTEM_RAM_MB SYSTEM_GPU_LABEL
+    export SYSTEM_REC_PRESET SYSTEM_REC_QUANT
+    export ZIPCODE_QUANT_PREFERENCE="${SYSTEM_REC_QUANT}"
+    SYSTEM_CAPABILITIES_DETECTED=1
+}
+
+print_capability_summary() {
+    [ -n "${SYSTEM_CAPABILITY_SUMMARY_PRINTED:-}" ] && return 0
+    SYSTEM_CAPABILITY_SUMMARY_PRINTED=1
+
+    echo >&2
+    echo "Detected hardware:" >&2
+    if [ "${SYSTEM_VRAM_MB:-0}" -gt 0 ]; then
+        printf '  • GPU: %s (%s VRAM)\n' "${SYSTEM_GPU_LABEL}" "$(format_mb_human "${SYSTEM_VRAM_MB}")" >&2
+    else
+        printf '  • GPU: none detected (CPU-only inference)\n' >&2
+    fi
+    if [ "${SYSTEM_RAM_MB:-0}" -gt 0 ]; then
+        printf '  • RAM: %s\n' "$(format_mb_human "${SYSTEM_RAM_MB}")" >&2
+    fi
+    printf '  • Recommended: %s + %s quantization\n' \
+        "$(model_preset_name "${SYSTEM_REC_PRESET}")" "${SYSTEM_REC_QUANT}" >&2
+}
+
 model_preset_name() {
     case "$1" in
         e2b) printf '%s\n' "Gemma 4 E2B IT (recommended smaller download)" ;;
@@ -319,6 +433,7 @@ tokenizer_url_for_preset() {
 preferred_model_for_preset() {
     local preset="$1"
     local search_dir="$2"
+    local quant_pref="${3:-${ZIPCODE_QUANT_PREFERENCE:-}}"
     local needle=""
     local candidate=""
     local lower_name=""
@@ -344,6 +459,18 @@ preferred_model_for_preset() {
         return 1
     fi
 
+    if [ -n "${quant_pref}" ]; then
+        for candidate in "${matches[@]}"; do
+            lower_name="$(basename -- "${candidate}" | tr '[:upper:]' '[:lower:]')"
+            case "${lower_name}" in
+                *"${quant_pref}"*)
+                    printf '%s\n' "${candidate}"
+                    return 0
+                    ;;
+            esac
+        done
+    fi
+
     for candidate in "${matches[@]}"; do
         lower_name="$(basename -- "${candidate}" | tr '[:upper:]' '[:lower:]')"
         case "${lower_name}" in
@@ -356,6 +483,30 @@ preferred_model_for_preset() {
 
     fallback="${matches[0]}"
     printf '%s\n' "${fallback}"
+}
+
+# Given a candidate list and a quant preference, return the 1-based index
+# of the first candidate matching the preference. Falls back to 1 if no
+# match (or empty preference). Used to set sensible defaults in
+# prompt_model_choice when multiple quants are present locally.
+candidate_index_for_quant_pref() {
+    local quant_pref="${1:-}"
+    shift
+    local i=0 candidate lower_name
+
+    if [ -n "${quant_pref}" ]; then
+        for candidate in "$@"; do
+            i=$((i + 1))
+            lower_name="$(basename -- "${candidate}" | tr '[:upper:]' '[:lower:]')"
+            case "${lower_name}" in
+                *"${quant_pref}"*)
+                    printf '%s' "${i}"
+                    return 0
+                    ;;
+            esac
+        done
+    fi
+    printf '1'
 }
 
 prompt_model_choice() {
@@ -383,6 +534,15 @@ prompt_model_choice() {
 
 choose_model_preset() {
     local preset_choice=""
+    local default_idx="1"
+
+    detect_system_capabilities_into_vars
+    print_capability_summary
+
+    case "${SYSTEM_REC_PRESET:-e2b}" in
+        e2b) default_idx="1" ;;
+        31b) default_idx="2" ;;
+    esac
 
     echo >&2
     cat >&2 <<EOF
@@ -391,12 +551,12 @@ Choose a model profile:
   2. $(model_preset_name 31b)
 EOF
 
-    preset_choice="$(prompt_choice "Selection:" "1")"
+    preset_choice="$(prompt_choice "Selection:" "${default_idx}")"
     case "${preset_choice}" in
         1) printf '%s' "e2b" ;;
         2) printf '%s' "31b" ;;
-        *) echo "Unknown selection '${preset_choice}'. Using the recommended E2B model." >&2
-           printf '%s' "e2b" ;;
+        *) echo "Unknown selection '${preset_choice}'. Using the recommended preset (${SYSTEM_REC_PRESET:-e2b})." >&2
+           printf '%s' "${SYSTEM_REC_PRESET:-e2b}" ;;
     esac
 }
 
@@ -545,7 +705,11 @@ resolve_setup_model() {
             ;;
         *)
             if [ -t 0 ] || [ -p /dev/stdin ]; then
-                prompt_model_choice "1" "${candidates[@]}"
+                detect_system_capabilities_into_vars
+                print_capability_summary
+                local default_idx
+                default_idx="$(candidate_index_for_quant_pref "${ZIPCODE_QUANT_PREFERENCE:-}" "${candidates[@]}")"
+                prompt_model_choice "${default_idx}" "${candidates[@]}"
                 return 0
             fi
             return 1
