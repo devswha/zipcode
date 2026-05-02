@@ -151,7 +151,7 @@ Algorithm:
 
 ## Tests
 
-**EXTRACTED** — 238 unit tests total in `zipcode-tools` (186 unit + 52 integration; `cargo test -p zipcode-tools` on 2026-04-30).
+**EXTRACTED** — 248 tests total in `zipcode-tools` (186 unit + 62 integration; `cargo test -p zipcode-tools` on 2026-05-02).
 
 Recent regression coverage that materially changed the crate since the previous wiki snapshot includes:
 
@@ -159,6 +159,10 @@ Recent regression coverage that materially changed the crate since the previous 
 - `repl` timeout descendant cleanup and large-stdout false-timeout protection. `crates/tools/src/repl.rs:237`, `crates/tools/src/repl.rs:275`
 - `glob_search` rejects absolute and parent-directory escape patterns. `crates/tools/src/glob_search.rs:177`, `crates/tools/src/glob_search.rs:193`
 - `grep_search` rejects absolute and parent-directory traversal globs and stops scanning once the output budget is full. `crates/tools/src/grep_search.rs:355`, `crates/tools/src/grep_search.rs:372`, `crates/tools/src/grep_search.rs:317`
+- `tool_search` end-to-end via `execute_tool()` — keyword search by name/description returns correct matches, empty query rejected. `crates/tools/tests/tools_integration.rs`
+- `todo_write` roundtrip end-to-end — write creates JSON file that `bash` can list and `read_file` can read back; overwrite updates content. `crates/tools/tests/tools_integration.rs`
+- `read_file` offset/limit via `execute_tool()` — partial reads verified through the integration dispatch path. `crates/tools/tests/tools_integration.rs`
+- `bash` creates file then `glob_search`/`grep_search` finds it — cross-tool chain starting from bash (the most common real-world pattern). `crates/tools/tests/tools_integration.rs`
 
 The rest of the crate still has broad per-tool coverage for:
 

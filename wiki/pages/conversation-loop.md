@@ -7,7 +7,7 @@
 
 ## `ConversationLoop` struct
 
-**EXTRACTED** `conversation.rs:58-80`
+**EXTRACTED** `conversation.rs:58-81`
 
 ```rust
 pub struct ConversationLoop {
@@ -18,10 +18,15 @@ pub struct ConversationLoop {
     pub system_prompt: String,
     pub tool_specs: Vec<ToolSpec>,
     pub cwd: std::path::PathBuf,
+    pub depth: u32,                        // nesting: 0 = top-level, 1 = sub-agent
+    pub last_sent_idx: usize,              // context-window send boundary
+    pub child_session_ids: Arc<Mutex<Vec<(String, PathBuf)>>>,
+    pub skill_registry: Option<Arc<SkillRegistry>>,
+    pub compact_policy: CompactPolicy,     // tier-1/tier-2 compaction triggers
 }
 ```
 
-Generic over inference backend via the trait object. Owns everything needed to drive one user turn to completion.
+Generic over inference backend via the trait object. Owns everything needed to drive one user turn to completion. The `depth`, `child_session_ids`, and `skill_registry` fields support the [`spawn_child()`](#child-loop-creation--build_and_run_child) agent-delegation path; `compact_policy` controls automatic context compaction; `last_sent_idx` enables incremental context sending when the engine manages its own context window.
 
 ---
 
@@ -126,8 +131,41 @@ Current named coverage includes:
 22. `consecutive_turns_accumulate_messages` — multiple user turns accumulate messages in session history in order. `crates/runtime/tests/integration.rs:1171`
 23. `conversation_loop_sends_full_history_when_provider_does_not_manage_context` — full message history is sent to the provider when it does not manage context itself. `crates/runtime/tests/integration.rs:1264`
 24. `conversation_loop_sends_only_new_segment_when_provider_manages_context` — only the new segment is sent to the provider when it manages its own context. `crates/runtime/tests/integration.rs:1325`
+25. `workspace_write_permission_prompt_executes_repl_when_approved` — approval prompt is emitted and `repl` executes only after acceptance. `crates/runtime/tests/integration.rs:398`
+26. `workspace_write_permission_prompt_records_denial_when_rejected_for_repl` — rejected approval for `repl` leaves a denial tool-result message in session history without executing the tool. `crates/runtime/tests/integration.rs:431`
 
-24 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-04-28).
+26 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-05-02).
+
+---
+
+## Child-loop creation: `build_and_run_child`
+
+**EXTRACTED** `conversation.rs:347-426`
+
+Refactored in commit `8259d42` — the duplicated child-loop creation logic was extracted from `make_spawn_child_callback` and `spawn_child` into a shared private helper:
+
+```rust
+fn build_and_run_child(
+    engine: Box<dyn InferenceProvider>,
+    task: &str,
+    allowlist: Option<&[String]>,
+    parent_depth: u32,
+    parent_session: &Session,
+    parent_permission: &PermissionPolicy,
+    parent_registry: &ToolRegistry,
+    child_session_ids: Arc<Mutex<Vec<(String, PathBuf)>>>,
+) -> Result<ChildResult>
+```
+
+Both `spawn_child()` (public API, `conversation.rs:478`) and `make_spawn_child_callback()` (Agent tool callback, `conversation.rs:427`) now delegate to this single canonical implementation. The helper handles:
+- Depth guard (`MAX_AGENT_DEPTH` check)
+- Permission inheritance via `inherit_for_child()`
+- Tool registry filtering (allowlist handling)
+- Child session creation (`Session::new_child()`)
+- Child session ID tracking
+- `ConversationLoop` construction and `run_turn()` execution
+
+**INFERRED:** Any future change to child-loop creation (e.g., adding a field, changing session handling) now requires editing only one location instead of two.
 
 ---
 
