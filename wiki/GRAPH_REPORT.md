@@ -1,6 +1,6 @@
 # GRAPH_REPORT — zipcode knowledge graph
 
-Graphify-style summary of the zipcode `crates/` workspace as of 2026-04-28 (provenance anchors refreshed).
+Graphify-style summary of the zipcode `crates/` workspace as of 2026-05-03 (provenance anchors refreshed).
 
 > This report is the "map" view of the wiki: god nodes ranked, surprising cross-crate connections, questions the graph can answer, and a consolidated gotcha list. Community pages live under [`pages/`](pages/).
 
@@ -12,10 +12,10 @@ Ranked by how many other concepts route through them.
 
 | Rank | Node | Location | Why it's central |
 |------|------|----------|------------------|
-| 1 | `InferenceProvider` trait | `crates/inference/src/lib.rs:31` | 4 implementors; single point where `runtime` talks to inference. Swapping backends = implement one trait. |
+| 1 | `InferenceProvider` trait | `crates/inference/src/lib.rs:47` | 4 implementors; single point where `runtime` talks to inference. Swapping backends = implement one trait. |
 | 2 | `ConversationLoop` | `crates/runtime/src/conversation.rs:58` | Holds `Box<dyn InferenceProvider>` + `ToolRegistry` + `PermissionPolicy` + `Session` + `system_prompt`. Every turn flows through `run_turn()`. |
 | 3 | `Tool` trait + `ToolRegistry` | `crates/tools/src/lib.rs:431,445` | 10 implementors; `execute_tool()` (`:509`) is the single entry point from `runtime`. |
-| 4 | `ChatMessage` | `crates/inference/src/types.rs:18` | Wire format carried by every component: REPL → conversation loop → inference → chat template → back. |
+| 4 | `ChatMessage` | `crates/inference/src/types.rs:36` | Wire format carried by every component: REPL → conversation loop → inference → chat template → back. |
 | 5 | `PermissionMode` | `crates/tools/src/lib.rs:305` | Referenced by `ToolContext`, `PermissionPolicy`, CLI args, config. Gates every tool call. |
 | 6 | Gemma chat template | `crates/inference/src/chat_template.rs:11` | Every prompt is formatted through `format_conversation()` before reaching any backend. |
 | 7 | `resolve_and_validate_path()` | `crates/tools/src/lib.rs:19` | Called by every file-touching tool (read, write, edit, glob, grep). Single path-safety gate. |
@@ -30,7 +30,7 @@ See [`pages/`](pages/) for detail on each.
 
 2. **The conversation loop's iteration cap lives in `runtime`, but the tool-result truncation cap lives in `tools`.** `MAX_TOOL_ITERATIONS = 25` (`crates/runtime/src/conversation.rs:94`) and `MAX_TOOL_OUTPUT_BYTES = 8192` (`crates/tools/src/lib.rs:502`). Two independent safety limits, two independent crates. **Why it matters:** a runaway agent is bounded by both — model iterations AND per-tool output size.
 
-3. **Chat template parsing is upstream of the conversation loop.** The model returns raw text; `chat_template::parse_tool_calls()` (`crates/inference/src/chat_template.rs:60`) extracts `<tool_call>` JSON before `ConversationLoop` ever sees a `ToolCallParsed`. **Why it matters:** a model that doesn't emit `<tool_call>` blocks (Qwen, Llama 3, OpenAI-compatible) will be silently tool-blind.
+3. **Chat template parsing is upstream of the conversation loop.** The model returns raw text; `chat_template::parse_tool_calls()` (`crates/inference/src/chat_template.rs:842`) extracts `<tool_call>` JSON before `ConversationLoop` ever sees a `ToolCallParsed`. **Why it matters:** a model that doesn't emit `<tool_call>` blocks (Qwen, Llama 3, OpenAI-compatible) will be silently tool-blind.
 
 4. **`cli` owns model-path resolution, not `runtime`.** `crates/cli/src/repl.rs` resolves `--model` flag > project config > global config > `~/.zipcode/models` scan. **Why it matters:** automated test drivers need to pass `--model` or set config; `runtime` can't find a model by itself.
 
@@ -73,16 +73,16 @@ Drop these into a code search or walk the links — the wiki is pre-wired for th
 
 ---
 
-## Test surface (1,163 passing + 2 ignored across the workspace)
+## Test surface (1,228 passing + 2 ignored across the workspace)
 
 | Crate | Unit / inline | Integration | Notable |
 |-------|---------------|-------------|---------|
-| `inference` | 273 passing + 2 ignored | 7 (template) | `chat_template.rs` alone carries 50 parsing/formatting robustness tests; `llama_server_backend.rs` has 109 parser/streaming tests covering thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options |
-| `tools` | 186 | 52 (tools_integration) | Every tool has focused unit coverage; workspace-escape regressions exist for both glob and grep search |
-| `runtime` | 285 unit + 7 doc-tests | 31 (integration + conversation) | `MockInferenceProvider` drives loop tests including read-only denial, workspace-write approval accept/reject, traversal blocking, persistence, and compaction resume |
-| `cli` | 284 unit (in `main.rs` binary) | 45 smoke tests (`tests/smoke.rs`) | Unit tests live across `commands`, `repl`, `render`, `tui`, `tui_composer`, and `width`; smoke tests spawn the real binary in temp `HOME` |
+| `inference` | 284 passing | 7 (template) | `chat_template.rs` alone carries 50+ parsing/formatting robustness tests; `llama_server_backend.rs` has parser/streaming tests covering thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options |
+| `tools` | 186 | 62 (tools_integration) | Every tool has focused unit coverage; workspace-escape regressions exist for both glob and grep search |
+| `runtime` | 324 unit + 7 doc-tests | 43 (integration + compaction + agent_delegation + skills) | `MockInferenceProvider` drives loop tests including read-only denial, workspace-write approval accept/reject, traversal blocking, persistence, and compaction resume |
+| `cli` | 268 unit | 47 smoke tests (`tests/smoke.rs`) | Unit tests live across `commands`, `repl`, `render`, `tui`, `tui_composer`, and `width`; smoke tests spawn the real binary in temp `HOME` |
 
-**EXTRACTED** from `cargo test --workspace` on 2026-04-30 plus per-file test inventories in the source tree.
+**EXTRACTED** from `cargo test --workspace` on 2026-05-03 plus per-file test inventories in the source tree.
 
 ---
 
