@@ -96,6 +96,7 @@ copy_runtime_libs() {
             found=1
         done < <(find "${root}" -maxdepth 3 -type f \( \
             -name 'libllama.so*' -o \
+            -name 'libllama-common.so*' -o \
             -name 'libggml.so*' -o \
             -name 'libggml-*.so*' -o \
             -name 'libmtmd.so*' \
