@@ -2831,3 +2831,245 @@ exit 0
         "compute capability should be narrowed to detected arch, got: {log}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Permission-prompt smoke tests (partial fix for #50)
+//
+// Issue #50 identified that the CLI permission-prompt surface had:
+// - Unit tests for `permission_prompt_allowed` (in repl.rs)
+// - Runtime integration tests for `bash` and `repl` approval flows (in
+//   crates/runtime/tests/integration.rs)
+// - BUT zero smoke-level tests exercising the actual CLI binary process
+//   end-to-end through the `[permission] ... [Y/n]` prompt.
+//
+// These two tests close that gap by running the real `zipcode` binary against
+// a fake llama-server that emits a `bash` tool call, verifying:
+// 1. Non-interactive prompt mode: permission is denied (stdin is a pipe, not TTY)
+// 2. Interactive plain REPL mode: permission is approved when user sends "y\n"
+// ---------------------------------------------------------------------------
+
+/// Fake llama-server that responds to `/v1/chat/completions` with an SSE stream
+/// containing a `bash` tool call on the **first** request, and a plain-text
+/// "done" response on subsequent requests. This avoids the infinite-loop trap
+/// where the model retries the denied tool call forever.
+fn write_tool_call_llama_server(path: &std::path::Path) {
+    write_executable(
+        path,
+        r#"#!/usr/bin/python3
+import http.server
+import json
+import socketserver
+import sys
+
+args = sys.argv[1:]
+port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
+request_count = 0
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"status":"ok"}' if self.path == "/health" else b"ok"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        global request_count
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        request_count += 1
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        if request_count == 1:
+            # First request: emit a bash tool call
+            tool_call_payload = json.dumps({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_perm_1",
+                            "function": {
+                                "name": "bash",
+                                "arguments": "{\"command\":\"echo permission-smoke-test\"}"
+                            }
+                        }]
+                    }
+                }]
+            }).encode()
+            finish_payload = json.dumps({
+                "choices": [{"finish_reason": "tool_calls"}]
+            }).encode()
+            self.wfile.write(b"data: " + tool_call_payload + b"\n\n")
+            self.wfile.write(b"data: " + finish_payload + b"\n\n")
+        else:
+            # Subsequent requests: plain text response to terminate the loop
+            done_payload = json.dumps({
+                "choices": [{
+                    "delta": {"content": "Understood, I will not use bash."},
+                    "finish_reason": "stop"
+                }]
+            }).encode()
+            self.wfile.write(b"data: " + done_payload + b"\n\n")
+        self.wfile.write(b"data: [DONE]\n\n")
+
+    def log_message(self, format, *args):
+        return
+
+class Server(socketserver.TCPServer):
+    allow_reuse_address = True
+
+server = Server(("127.0.0.1", port), Handler)
+server.serve_forever()
+"#,
+    );
+}
+
+/// Verify that running `zipcode prompt "hello"` in non-interactive (pipe) mode
+/// with a model that emits a `bash` tool call shows the `[permission]` prompt
+/// and **denies** the tool because stdin is not a TTY.
+///
+/// Regression: without the `permission_prompt_allowed` guard, the CLI would
+/// either crash or silently execute the tool in non-interactive mode.
+#[test]
+fn noninteractive_prompt_denies_approval_gated_bash_tool_call() {
+    let home = make_temp_dir("permission-smoke-noninteractive");
+    let model_dir = home.join(".zipcode/models");
+    let helper_dir = home.join(".zipcode/bin");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&helper_dir).expect("create helper dir");
+    std::fs::write(model_dir.join("fake.gguf"), b"GGUF").expect("write fake model");
+    let helper_path = helper_dir.join("llama-server");
+    write_tool_call_llama_server(&helper_path);
+
+    // Run `zipcode prompt "hello"` in non-PTY pipe mode (`.output()` uses pipes).
+    // stdin is a pipe (not a TTY), so `permission_prompt_allowed` returns false,
+    // and the bash tool call should be denied without executing.
+    let output = zipcode_bin()
+        .args([
+            "--backend",
+            "llama-server",
+            "--model",
+            model_dir
+                .join("fake.gguf")
+                .to_str()
+                .expect("utf-8 model path"),
+            "prompt",
+            "hello",
+        ])
+        .env("HOME", &home)
+        .env("ZIPCODE_LLAMA_SERVER_BIN", &helper_path)
+        .env_remove("ZIPCODE_LLAMA_SERVER_URL")
+        .env_remove("ZIPCODE_LLAMA_SERVER_ALIAS")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode prompt with tool-call server");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The CLI must show the permission prompt marker at least once
+    assert!(
+        combined.contains("[permission]"),
+        "non-interactive prompt should show the [permission] marker, got: {combined}"
+    );
+    assert!(
+        combined.contains("requires approval"),
+        "non-interactive prompt should explain the approval requirement, got: {combined}"
+    );
+
+    // The bash tool must NOT have been executed — the denial message should
+    // appear, and there should be no tool-result output from the bash invocation.
+    assert!(
+        !combined.contains("permission-smoke-test"),
+        "non-interactive prompt must NOT execute the denied bash tool, got: {combined}"
+    );
+
+    // Must not panic or show a backtrace
+    assert!(
+        !combined.contains("panicked at") && !combined.contains("RUST_BACKTRACE"),
+        "should not panic during permission denial, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+/// Verify that running `zipcode repl --ui plain` in interactive (PTY) mode
+/// with a model that emits a `bash` tool call shows the `[permission]` prompt
+/// and **approves** the tool when the user sends "y\n".
+///
+/// Regression: without the `CliCallback::on_permission_prompt` implementation,
+/// the REPL would either skip the prompt or crash.
+#[test]
+fn interactive_plain_repl_approves_bash_tool_when_user_says_yes() {
+    let home = make_temp_dir("permission-smoke-interactive");
+    let model_dir = home.join(".zipcode/models");
+    let helper_dir = home.join(".zipcode/bin");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&helper_dir).expect("create helper dir");
+    std::fs::write(model_dir.join("fake.gguf"), b"GGUF").expect("write fake model");
+    let helper_path = helper_dir.join("llama-server");
+    write_tool_call_llama_server(&helper_path);
+
+    let args = vec![
+        "repl".to_string(),
+        "--ui".to_string(),
+        "plain".to_string(),
+        "--backend".to_string(),
+        "llama-server".to_string(),
+        "--model".to_string(),
+        model_dir
+            .join("fake.gguf")
+            .to_str()
+            .expect("utf-8 model path")
+            .to_string(),
+    ];
+
+    // Run in a PTY. The fake server emits a bash tool call on the first
+    // `/v1/chat/completions` request. The REPL will show a `[permission]`
+    // prompt. We send "y\n" to approve, then "/quit\n" to exit.
+    let output = run_plain_zipcode_with_input(
+        &args,
+        &home,
+        &repo_root(),
+        "hello\ny\n/quit\n",
+        &[(
+            "ZIPCODE_LLAMA_SERVER_BIN",
+            helper_path.display().to_string(),
+        )],
+    );
+
+    assert!(
+        output.status.success(),
+        "interactive plain REPL should exit 0, got: {output:?}"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The CLI must show the permission prompt marker
+    assert!(
+        combined.contains("[permission]"),
+        "interactive REPL should show the [permission] marker, got: {combined}"
+    );
+    assert!(
+        combined.contains("requires approval"),
+        "interactive REPL should explain the approval requirement, got: {combined}"
+    );
+
+    // The bash tool should have been approved and executed
+    assert!(
+        combined.contains("permission-smoke-test") || combined.contains("echo"),
+        "interactive REPL should execute the approved bash tool, got: {combined}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
