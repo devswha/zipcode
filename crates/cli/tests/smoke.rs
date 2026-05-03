@@ -511,6 +511,88 @@ fn doctor_accepts_global_model_flag_after_subcommand() {
 }
 
 #[test]
+fn yolo_flag_doctor_exits_nonzero_when_not_ready() {
+    // --yolo should be accepted by the binary, but doctor should still exit
+    // non-zero when no model is configured (same as bare "doctor").
+    let home = make_temp_dir("yolo-doctor-isolated-home");
+    let output = zipcode_bin()
+        .args(["--yolo", "doctor"])
+        .env("HOME", &home)
+        .env(
+            "ZIPCODE_GLOBAL_CONFIG",
+            home.join(".zipcode/absent-config.json"),
+        )
+        .env_remove("ZIPCODE_LLAMA_SERVER_URL")
+        .env_remove("ZIPCODE_LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode --yolo doctor");
+
+    // Should NOT panic — no backtrace in output
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "--yolo doctor should not panic, stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("backtrace"),
+        "--yolo doctor should not produce a backtrace, stderr: {stderr}"
+    );
+
+    // Doctor exits non-zero when model not configured (expected behavior)
+    assert!(
+        !output.status.success(),
+        "--yolo doctor should exit non-zero when not ready, got status {:?} stdout {:?} stderr {:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        stderr,
+    );
+}
+
+#[test]
+fn yolo_and_permission_mode_mutually_exclusive() {
+    // --yolo and --permission-mode are mutually exclusive — the binary
+    // should reject the combination with a clear error before doing anything.
+    let home = make_temp_dir("yolo-mutex-home");
+    let output = zipcode_bin()
+        .args(["--yolo", "--permission-mode", "read-only", "doctor"])
+        .env("HOME", &home)
+        .env(
+            "ZIPCODE_GLOBAL_CONFIG",
+            home.join(".zipcode/absent-config.json"),
+        )
+        .output()
+        .expect("failed to run zipcode --yolo --permission-mode");
+
+    assert!(
+        !output.status.success(),
+        "--yolo + --permission-mode should be rejected, got status {:?}",
+        output.status,
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("mutually exclusive"),
+        "error should mention mutual exclusion, got stderr: {stderr}"
+    );
+}
+
+#[test]
+fn yolo_help_mentions_yolo() {
+    // --help output should document the --yolo flag so users can discover it.
+    let output = zipcode_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to run zipcode --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--yolo"),
+        "--help should mention --yolo flag, got: {stdout}"
+    );
+}
+
+#[test]
 fn help_flag() {
     let output = zipcode_bin()
         .arg("--help")
