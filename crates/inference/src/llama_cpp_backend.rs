@@ -161,11 +161,10 @@ impl LlamaCppProvider {
 
         // Autoregressive generation loop
         let mut generated_text = String::new();
-        let mut n_cur = n_prompt;
         let mut finished = false;
         let mut decoder = encoding_rs::UTF_8.new_decoder();
 
-        for _ in 0..self.config.max_tokens {
+        for n_cur in (n_prompt..).take(self.config.max_tokens) {
             // Sample next token
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
 
@@ -217,8 +216,6 @@ impl LlamaCppProvider {
                 )));
                 break;
             }
-
-            n_cur += 1;
         }
 
         if !finished {
