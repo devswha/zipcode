@@ -888,4 +888,226 @@ mod tests {
         let result = resolve_project_path(Path::new("models"), Path::new("/project"));
         assert_eq!(result, PathBuf::from("/project/models"));
     }
+
+    // ── save_global tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_save_global_creates_file_and_dirs() {
+        let (_global_dir, _global_guard) = with_isolated_global_config();
+        let config_path = _global_dir.path().join("saved-config.json");
+        std::env::set_var("ZIPCODE_GLOBAL_CONFIG", &config_path);
+
+        let config = ZipcodeConfig {
+            permission_mode: "full-access".to_string(),
+            gpu_layers: Some(42),
+            flash_attention: true,
+            ..Default::default()
+        };
+
+        let returned_path = config.save_global().expect("save_global should succeed");
+        assert_eq!(returned_path, config_path);
+
+        // File should exist and contain valid JSON
+        let content = std::fs::read_to_string(&config_path).expect("file should be readable");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&content).expect("should be valid JSON");
+        assert_eq!(parsed["permission_mode"], "full-access");
+        assert_eq!(parsed["gpu_layers"], 42);
+        assert_eq!(parsed["flash_attention"], true);
+    }
+
+    #[test]
+    fn test_save_global_roundtrip_with_load() {
+        let (_global_dir, _global_guard) = with_isolated_global_config();
+        let config_path = _global_dir.path().join("roundtrip.json");
+        std::env::set_var("ZIPCODE_GLOBAL_CONFIG", &config_path);
+
+        let original = ZipcodeConfig {
+            permission_mode: "read-only".to_string(),
+            gpu_layers: Some(10),
+            flash_attention: false,
+            generation: GenerationOverrides {
+                temperature: Some(0.7),
+                top_p: Some(0.9),
+                max_tokens: Some(2048),
+            },
+            model_file: Some("test-model.gguf".to_string()),
+            context_size: Some(8192),
+            ..Default::default()
+        };
+
+        original.save_global().expect("save should succeed");
+
+        let loaded = ZipcodeConfig::load_from_path(&config_path).expect("load should succeed");
+        assert_eq!(loaded.permission_mode, "read-only");
+        assert_eq!(loaded.gpu_layers, Some(10));
+        assert!(!loaded.flash_attention);
+        assert_eq!(loaded.generation.temperature, Some(0.7));
+        assert_eq!(loaded.generation.top_p, Some(0.9));
+        assert_eq!(loaded.generation.max_tokens, Some(2048));
+        assert_eq!(loaded.model_file, Some("test-model.gguf".to_string()));
+        assert_eq!(loaded.context_size, Some(8192));
+    }
+
+    #[test]
+    fn test_save_global_creates_parent_directories() {
+        let (_global_dir, _global_guard) = with_isolated_global_config();
+        // Use a nested path where the parent directory does not exist yet
+        let nested = _global_dir.path().join("nested/sub/dir/config.json");
+        std::env::set_var("ZIPCODE_GLOBAL_CONFIG", &nested);
+
+        let config = ZipcodeConfig::default();
+        let returned_path = config
+            .save_global()
+            .expect("save_global should create parent dirs");
+        assert!(returned_path.exists(), "config file should be created");
+        assert!(nested.exists(), "nested config file should exist");
+    }
+
+    #[test]
+    fn test_save_global_writes_pretty_json() {
+        let (_global_dir, _global_guard) = with_isolated_global_config();
+        let config_path = _global_dir.path().join("pretty.json");
+        std::env::set_var("ZIPCODE_GLOBAL_CONFIG", &config_path);
+
+        let config = ZipcodeConfig {
+            permission_mode: "workspace-write".to_string(),
+            ..Default::default()
+        };
+        config.save_global().expect("save should succeed");
+
+        let content = std::fs::read_to_string(&config_path).expect("should be readable");
+        // Pretty-printed JSON should have newlines and indentation
+        assert!(
+            content.contains('\n'),
+            "should be pretty-printed with newlines"
+        );
+        assert!(
+            content.contains("  "),
+            "should be pretty-printed with indentation"
+        );
+    }
+
+    // ── find_project_root comprehensive tests ───────────────────────
+
+    #[test]
+    fn test_find_project_root_zipcode_md_marker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("deep/nested/dir");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.path().join(".zipcode.md"), "# project instructions").unwrap();
+
+        assert_eq!(
+            find_project_root(&nested),
+            dir.path(),
+            "should find .zipcode.md marker in ancestor"
+        );
+    }
+
+    #[test]
+    fn test_find_project_root_git_marker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("src/lib");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+
+        assert_eq!(
+            find_project_root(&nested),
+            dir.path(),
+            "should find .git directory marker in ancestor"
+        );
+    }
+
+    #[test]
+    fn test_find_project_root_no_marker_returns_start() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("isolated");
+        std::fs::create_dir_all(&nested).unwrap();
+        // No .zipcode.json, .zipcode.md, or .git markers anywhere
+
+        assert_eq!(
+            find_project_root(&nested),
+            nested,
+            "should return start dir when no marker found"
+        );
+    }
+
+    #[test]
+    fn test_find_project_root_zipcode_json_takes_precedence_at_same_level() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("sub");
+        std::fs::create_dir_all(&nested).unwrap();
+        // Both markers present
+        std::fs::write(dir.path().join(".zipcode.json"), "{}").unwrap();
+        std::fs::write(dir.path().join(".zipcode.md"), "# alt").unwrap();
+
+        assert_eq!(
+            find_project_root(&nested),
+            dir.path(),
+            "should find root regardless of which marker is checked first"
+        );
+    }
+
+    #[test]
+    fn test_find_project_root_at_root_level() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Marker is in the start directory itself
+        std::fs::write(dir.path().join(".zipcode.json"), "{}").unwrap();
+
+        assert_eq!(
+            find_project_root(dir.path()),
+            dir.path(),
+            "should return start dir when marker is right there"
+        );
+    }
+
+    // ── global_config_path tests ────────────────────────────────────
+
+    #[test]
+    fn test_global_config_path_respects_env_var() {
+        // Use the GLOBAL_CONFIG_LOCK to serialize env var mutations
+        let guard = GLOBAL_CONFIG_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let custom = "/tmp/zipcode-test-custom-config.json";
+        std::env::set_var("ZIPCODE_GLOBAL_CONFIG", custom);
+        let result = global_config_path();
+        assert_eq!(
+            result,
+            std::path::PathBuf::from(custom),
+            "should use ZIPCODE_GLOBAL_CONFIG env var"
+        );
+
+        // Clean up
+        std::env::remove_var("ZIPCODE_GLOBAL_CONFIG");
+        drop(guard);
+    }
+
+    #[test]
+    fn test_global_config_path_default_without_env_var() {
+        // This test verifies the default behavior when ZIPCODE_GLOBAL_CONFIG is not set.
+        let guard = GLOBAL_CONFIG_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        std::env::remove_var("ZIPCODE_GLOBAL_CONFIG");
+        let result = global_config_path();
+
+        // Should end with .zipcode/config.json
+        assert!(
+            result.to_str().unwrap().contains(".zipcode"),
+            "default path should contain .zipcode directory, got: {}",
+            result.display()
+        );
+        assert!(
+            result.file_name().unwrap() == "config.json",
+            "default path should end with config.json, got: {}",
+            result.display()
+        );
+
+        drop(guard);
+    }
 }
