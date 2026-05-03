@@ -1020,15 +1020,21 @@ mod tests {
 
     #[test]
     fn test_find_project_root_no_marker_returns_start() {
+        // Place a .zipcode.json in the TempDir root to act as a boundary:
+        // this prevents the search from escaping into system directories
+        // (e.g. /tmp/.git) that may exist outside the TempDir.
         let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".zipcode.json"), "{}").unwrap();
+
         let nested = dir.path().join("isolated");
         std::fs::create_dir_all(&nested).unwrap();
-        // No .zipcode.json, .zipcode.md, or .git markers anywhere
+        // No .zipcode.json, .zipcode.md, or .git markers in `nested` itself
+        // or between `nested` and `dir.path()` — but dir.path() has one.
 
         assert_eq!(
             find_project_root(&nested),
-            nested,
-            "should return start dir when no marker found"
+            dir.path(),
+            "should find boundary marker at TempDir root, not escape to system dirs"
         );
     }
 
