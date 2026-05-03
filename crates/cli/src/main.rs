@@ -135,9 +135,7 @@ fn resolve_permission_mode_str(
     permission_mode: Option<CliPermissionMode>,
 ) -> Result<Option<&'static str>> {
     if yolo && permission_mode.is_some() {
-        anyhow::bail!(
-            "--yolo and --permission-mode are mutually exclusive (use one or the other)"
-        );
+        anyhow::bail!("--yolo and --permission-mode are mutually exclusive (use one or the other)");
     }
     Ok(if yolo {
         Some("full-access")
@@ -318,8 +316,8 @@ mod tests {
 
     #[test]
     fn clap_accepts_yolo_flag() {
-        let cli = Cli::try_parse_from(["zipcode", "--yolo", "doctor"])
-            .expect("--yolo should parse");
+        let cli =
+            Cli::try_parse_from(["zipcode", "--yolo", "doctor"]).expect("--yolo should parse");
         assert!(cli.yolo);
         assert!(cli.permission_mode.is_none());
     }

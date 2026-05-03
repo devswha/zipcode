@@ -103,11 +103,8 @@ fn run_interactive_fullscreen(
 
     loop {
         match event::read().context("failed to read terminal input")? {
-            Event::Key(key) => {
-                if !ui.handle_key_event(key, &mut conv)? {
-                    break;
-                }
-            }
+            Event::Key(key) if !ui.handle_key_event(key, &mut conv)? => break,
+            Event::Key(_) => {}
             Event::Mouse(mouse) => ui.handle_mouse_event(mouse)?,
             Event::Resize(_, _) => ui.draw()?,
             _ => {}
