@@ -2049,6 +2049,8 @@ import socketserver
 import sys
 
 args = sys.argv[1:]
+slot_counts = {}
+scenario_active = False
 if "--list-devices" in args:
     print("Available devices:\n  CUDA0")
     sys.exit(0)
@@ -2068,15 +2070,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        global scenario_active
         if self.path != "/v1/chat/completions":
             self.send_response(404)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length) if length else b"{}"
+        request = json.loads(body or b"{}")
+        prompt_text = "\n".join(str(m.get("content", "")) for m in request.get("messages", []))
+        if "exercise yolo install e2e" in prompt_text:
+            scenario_active = True
+        if not scenario_active:
+            return self.write_text("READY")
+
+        slot = int(request.get("id_slot", 0))
+        slot_counts[slot] = slot_counts.get(slot, 0) + 1
+        if slot == 0 and slot_counts[slot] == 1:
+            return self.write_tool_calls([
+                ("call_parent_read", "read_file", {"path": "README.md", "limit": 1}),
+                ("call_parent_agent", "agent", {
+                    "task": "read the README heading and summarize it",
+                    "tool_allowlist": ["read_file"],
+                    "max_tokens": 128,
+                }),
+            ])
+        if slot == 0:
+            return self.write_text("parent finished yolo-e2e")
+        if slot_counts[slot] == 1:
+            return self.write_tool_calls([
+                ("call_child_read", "read_file", {"path": "README.md", "limit": 1}),
+            ])
+        return self.write_text("child summary yolo-e2e")
+
+    def write_text(self, text):
         payload = json.dumps({
             "choices": [
                 {
-                    "delta": {"content": "READY"},
+                    "delta": {"content": text},
                     "finish_reason": "stop",
                 }
             ]
@@ -2085,6 +2117,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         self.wfile.write(b"data: " + payload + b"\n\n")
+        self.wfile.write(b"data: [DONE]\n\n")
+
+    def write_tool_calls(self, calls):
+        payload = json.dumps({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": i,
+                            "id": call_id,
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(arguments),
+                            },
+                        }
+                        for i, (call_id, name, arguments) in enumerate(calls)
+                    ]
+                }
+            }]
+        }).encode()
+        finish_payload = json.dumps({"choices": [{"finish_reason": "tool_calls"}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b"data: " + payload + b"\n\n")
+        self.wfile.write(b"data: " + finish_payload + b"\n\n")
         self.wfile.write(b"data: [DONE]\n\n")
 
     def log_message(self, format, *args):
@@ -2179,6 +2237,34 @@ echo "fake helper builder installed llama-server into $install_dir/bin/llama-ser
             && !bare_stdout.contains("Setup needed")
             && !bare_stdout.contains("Repair needed"),
         "bare installed zipcode should reach the REPL path once ready, got: {bare:?}"
+    );
+
+    let mut yolo_cmd = Command::new(home.join(".local/bin/zipcode"));
+    strip_inherited_zipcode_env(&mut yolo_cmd);
+    let yolo = yolo_cmd
+        .args(["--yolo", "prompt", "exercise yolo install e2e"])
+        .current_dir(repo_root())
+        .env("HOME", &home)
+        .output()
+        .expect("run installed zipcode --yolo prompt");
+    assert!(
+        yolo.status.success(),
+        "installed --yolo prompt should succeed, got: {yolo:?}"
+    );
+    let yolo_combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&yolo.stdout),
+        String::from_utf8_lossy(&yolo.stderr)
+    );
+    assert!(
+        yolo_combined.contains("parent finished yolo-e2e")
+            && yolo_combined.contains("Child agent complete.")
+            && yolo_combined.contains("Tool calls: 1"),
+        "installed --yolo prompt should execute parent tools and a child-agent tool, got: {yolo_combined}"
+    );
+    assert!(
+        !yolo_combined.contains("[permission]"),
+        "--yolo should not ask for approval, got: {yolo_combined}"
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");

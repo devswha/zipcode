@@ -2,6 +2,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ use crate::{InferenceProvider, Role};
 const DEFAULT_ALIAS: &str = "zipcode";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+static NEXT_CHILD_SLOT_ID: AtomicUsize = AtomicUsize::new(1);
 /// Default context size for llama-server.
 ///
 /// Gemma 4 E2B/E4B support up to 128K native context; 26B/31B support
@@ -101,6 +103,7 @@ pub struct LlamaServerProvider {
     port: u16,
     model_alias: String,
     config: GenerationConfig,
+    slot_id: usize,
     /// Number of prompt tokens evaluated in the most recent request, as
     /// reported by llama-server in `usage.prompt_tokens` / `timings.prompt_n`
     /// / `prompt_eval_count`.  Written by the streaming thread; read by
@@ -169,6 +172,7 @@ impl LlamaServerProvider {
             port,
             model_alias,
             config: GenerationConfig::default(),
+            slot_id: 0,
             last_eval_count: Arc::new(Mutex::new(None)),
             // Remote mode: no model path available, default to GemmaTemplate.
             template: Box::new(GemmaTemplate),
@@ -237,6 +241,7 @@ impl LlamaServerProvider {
             port,
             model_alias,
             config: GenerationConfig::default(),
+            slot_id: 0,
             last_eval_count: Arc::new(Mutex::new(None)),
             // Auto-select template from model filename via registry.
             // User-supplied overrides live in `~/.zipcode/models/registry.json`;
@@ -300,7 +305,13 @@ impl LlamaServerProvider {
     ) -> mpsc::Receiver<TokenEvent> {
         let (tx, rx) = mpsc::channel();
 
-        let request = build_chat_request(messages, tools, &self.config, &self.model_alias);
+        let request = build_chat_request(
+            messages,
+            tools,
+            &self.config,
+            &self.model_alias,
+            self.slot_id,
+        );
         let host = self.host.clone();
         let port = self.port;
         // Share the eval-count slot with the spawned thread so the count is
@@ -356,6 +367,23 @@ impl InferenceProvider for LlamaServerProvider {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .copied()
+    }
+
+    fn clone_for_child(&self) -> Option<Box<dyn crate::InferenceProvider>> {
+        Some(Box::new(Self {
+            child: None,
+            host: self.host.clone(),
+            port: self.port,
+            model_alias: self.model_alias.clone(),
+            config: self.config.clone(),
+            slot_id: NEXT_CHILD_SLOT_ID.fetch_add(1, Ordering::Relaxed),
+            last_eval_count: Arc::new(Mutex::new(None)),
+            // The production llama-server path delegates prompt rendering and
+            // native tool-call parsing to the server. This template is only a
+            // metadata/fallback label for this provider, so a Gemma default is
+            // sufficient for child client clones.
+            template: Box::new(GemmaTemplate),
+        }))
     }
 }
 
@@ -568,6 +596,7 @@ fn build_chat_request(
     tools: &[ToolSpec],
     config: &GenerationConfig,
     model_alias: &str,
+    slot_id: usize,
 ) -> Value {
     let mut request = json!({
         "model": model_alias,
@@ -579,7 +608,7 @@ fn build_chat_request(
         "stream": true,
         "repeat_penalty": config.repeat_penalty,
         "repeat_last_n": config.repeat_last_n,
-        "id_slot": 0,
+        "id_slot": slot_id,
         // Gemma 4's thinking channel is gated at the Jinja template via the
         // `enable_thinking` kwarg. When enabled, llama-server emits the thought
         // process on `delta.reasoning_content`, which `parse_sse_events` routes
@@ -1221,6 +1250,7 @@ mod tests {
             }],
             &GenerationConfig::default(),
             DEFAULT_ALIAS,
+            0,
         );
 
         assert_eq!(request["messages"][0]["role"], "system");
@@ -1241,6 +1271,7 @@ mod tests {
             &[],
             &GenerationConfig::default(),
             DEFAULT_ALIAS,
+            0,
         );
 
         assert_eq!(
@@ -1260,7 +1291,8 @@ mod tests {
             ..GenerationConfig::default()
         };
 
-        let request = build_chat_request(&[ChatMessage::user("hi")], &[], &config, DEFAULT_ALIAS);
+        let request =
+            build_chat_request(&[ChatMessage::user("hi")], &[], &config, DEFAULT_ALIAS, 0);
 
         assert_eq!(
             request["chat_template_kwargs"]["enable_thinking"],
@@ -1953,6 +1985,7 @@ mod tests {
             &[],
             &GenerationConfig::default(),
             "test-model",
+            0,
         );
         assert_eq!(request["model"], "test-model");
         assert!(request.get("tools").is_none());
@@ -1971,8 +2004,13 @@ mod tests {
             repeat_last_n: 32,
             enable_thinking: false,
         };
-        let request =
-            build_chat_request(&[ChatMessage::user("test")], &[], &config, "custom-alias");
+        let request = build_chat_request(
+            &[ChatMessage::user("test")],
+            &[],
+            &config,
+            "custom-alias",
+            0,
+        );
         assert_eq!(request["max_tokens"], 512);
         assert_eq!(request["temperature"], 0.5);
         assert_eq!(request["top_p"], 0.8);
@@ -2007,6 +2045,7 @@ mod tests {
             &tools,
             &GenerationConfig::default(),
             DEFAULT_ALIAS,
+            0,
         );
         let tools_array = request["tools"].as_array().unwrap();
         assert_eq!(tools_array.len(), 2);
