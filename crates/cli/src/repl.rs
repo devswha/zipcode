@@ -17,10 +17,10 @@ use zipcode_runtime::{
     Session, SkillRegistry, SkillTool, ZipcodeConfig,
 };
 use zipcode_tools::{
-    agent::AgentTool, bash::BashTool, edit_file::EditFileTool, glob_search::GlobSearchTool,
-    grep_search::GrepSearchTool, read_file::ReadFileTool, repl::ReplTool,
-    todo_write::TodoWriteTool, tool_search::ToolSearchTool, write_file::WriteFileTool,
-    ToolRegistry,
+    agent::AgentTool, bash::BashTool, edit_file::EditFileTool, fetch_repo::FetchRepoTool,
+    glob_search::GlobSearchTool, grep_search::GrepSearchTool, read_file::ReadFileTool,
+    repl::ReplTool, todo_write::TodoWriteTool, tool_search::ToolSearchTool,
+    write_file::WriteFileTool, ToolRegistry,
 };
 
 use crate::render::{print_tool_result, print_tool_start, Spinner};
@@ -215,15 +215,16 @@ impl zipcode_runtime::StreamCallback for CliCallback {
     }
 }
 
-/// Build a `ToolRegistry` with all 10 tools registered.
+/// Build a `ToolRegistry` with all 11 tools registered.
 pub fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
-    // Register the 9 tools that don't need special construction
+    // Register the tools that don't need special construction.
     registry.register(Box::new(BashTool));
     registry.register(Box::new(ReadFileTool));
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(EditFileTool));
+    registry.register(Box::new(FetchRepoTool));
     registry.register(Box::new(GlobSearchTool));
     registry.register(Box::new(GrepSearchTool));
     registry.register(Box::new(TodoWriteTool));

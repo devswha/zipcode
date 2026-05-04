@@ -79,7 +79,7 @@ fn prepend_path(dir: &std::path::Path) -> String {
 fn write_fake_git(path: &std::path::Path) {
     write_executable(
         path,
-        r#"#!/usr/bin/python3
+        r##"#!/usr/bin/python3
 import os
 import pathlib
 import sys
@@ -109,7 +109,7 @@ if args == ["fetch", "origin"]:
 
 print(f"unexpected fake git invocation: {args}", file=sys.stderr)
 sys.exit(99)
-"#,
+"##,
     );
 }
 
@@ -3240,4 +3240,185 @@ fn interactive_plain_repl_approves_bash_tool_when_user_says_yes() {
     );
 
     std::fs::remove_dir_all(home).expect("cleanup temp dir");
+}
+
+fn write_fetch_repo_tool_call_llama_server(path: &std::path::Path) {
+    write_executable(
+        path,
+        r#"#!/usr/bin/python3
+import http.server
+import json
+import socketserver
+import sys
+
+args = sys.argv[1:]
+port = int(args[args.index("--port") + 1]) if "--port" in args else 8080
+request_count = 0
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"status":"ok"}' if self.path == "/health" else b"ok"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        global request_count
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        request_count += 1
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        if request_count == 1:
+            tool_call_payload = json.dumps({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_fetch_1",
+                            "function": {
+                                "name": "fetch_repo",
+                                "arguments": "{\"url\":\"https://github.com/devswha/patina\"}"
+                            }
+                        }]
+                    }
+                }]
+            }).encode()
+            finish_payload = json.dumps({
+                "choices": [{"finish_reason": "tool_calls"}]
+            }).encode()
+            self.wfile.write(b"data: " + tool_call_payload + b"\n\n")
+            self.wfile.write(b"data: " + finish_payload + b"\n\n")
+        else:
+            done_payload = json.dumps({
+                "choices": [{
+                    "delta": {"content": "분석 완료"},
+                    "finish_reason": "stop"
+                }]
+            }).encode()
+            self.wfile.write(b"data: " + done_payload + b"\n\n")
+        self.wfile.write(b"data: [DONE]\n\n")
+
+    def log_message(self, format, *args):
+        return
+
+class Server(socketserver.TCPServer):
+    allow_reuse_address = True
+
+server = Server(("127.0.0.1", port), Handler)
+server.serve_forever()
+"#,
+    );
+}
+
+fn write_clone_capable_fake_git(path: &std::path::Path) {
+    write_executable(
+        path,
+        r##"#!/usr/bin/python3
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+log_path = pathlib.Path(os.environ["ZIPCODE_FAKE_GIT_LOG"])
+with log_path.open("a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\n")
+
+if args == ["status", "--short"]:
+    sys.exit(0)
+
+if len(args) == 6 and args[:4] == ["clone", "--depth", "1", "--"]:
+    dest = pathlib.Path(args[5])
+    dest.mkdir(parents=True, exist_ok=False)
+    (dest / "README.md").write_text("# Patina\n\nFake cloned repository for smoke testing.\n", encoding="utf-8")
+    (dest / "Cargo.toml").write_text("[package]\nname = \"patina\"\nversion = \"0.1.0\"\n", encoding="utf-8")
+    sys.exit(0)
+
+print(f"unexpected fake git invocation: {args}", file=sys.stderr)
+sys.exit(99)
+"##,
+    );
+}
+
+#[test]
+fn noninteractive_prompt_executes_fetch_repo_without_bash_approval() {
+    let home = make_temp_dir("fetch-repo-smoke-home");
+    let workspace = make_temp_dir("fetch-repo-smoke-workspace");
+    let model_dir = home.join(".zipcode/models");
+    let helper_dir = home.join(".zipcode/bin");
+    let fake_git_dir = home.join("fake-git-bin");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    std::fs::create_dir_all(&helper_dir).expect("create helper dir");
+    std::fs::create_dir_all(&fake_git_dir).expect("create fake git dir");
+    std::fs::write(model_dir.join("fake.gguf"), b"GGUF").expect("write fake model");
+
+    let helper_path = helper_dir.join("llama-server");
+    write_fetch_repo_tool_call_llama_server(&helper_path);
+    let git_log = home.join("fake-git.log");
+    write_clone_capable_fake_git(&fake_git_dir.join("git"));
+
+    let output = zipcode_bin()
+        .args([
+            "--backend",
+            "llama-server",
+            "--model",
+            model_dir
+                .join("fake.gguf")
+                .to_str()
+                .expect("utf-8 model path"),
+            "prompt",
+            "https://github.com/devswha/patina 분석해줘",
+        ])
+        .current_dir(&workspace)
+        .env("HOME", &home)
+        .env("PATH", prepend_path(&fake_git_dir))
+        .env("ZIPCODE_LLAMA_SERVER_BIN", &helper_path)
+        .env("ZIPCODE_FAKE_GIT_LOG", &git_log)
+        .env_remove("ZIPCODE_LLAMA_SERVER_URL")
+        .env_remove("ZIPCODE_LLAMA_SERVER_ALIAS")
+        .env_remove("LLAMA_SERVER_BIN")
+        .output()
+        .expect("failed to run zipcode prompt with fetch_repo tool-call server");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "fetch_repo prompt should exit 0, got: {combined}"
+    );
+    assert!(
+        !combined.contains("[permission]"),
+        "fetch_repo should not require bash/repl approval, got: {combined}"
+    );
+    assert!(
+        combined.contains("Fetched GitHub repository devswha/patina"),
+        "tool result should report the fetched repo, got: {combined}"
+    );
+    assert!(
+        combined.contains("분석 완료"),
+        "final response should preserve the Korean answer path, got: {combined}"
+    );
+    assert!(
+        workspace
+            .join(".zipcode-remote/devswha__patina/README.md")
+            .is_file(),
+        "fetch_repo should create the cloned README in .zipcode-remote"
+    );
+
+    let git_log = std::fs::read_to_string(git_log).expect("read fake git log");
+    assert!(
+        git_log.contains("clone --depth 1 -- https://github.com/devswha/patina"),
+        "fetch_repo should invoke a shallow clone, got: {git_log}"
+    );
+
+    std::fs::remove_dir_all(home).expect("cleanup temp home");
+    std::fs::remove_dir_all(workspace).expect("cleanup temp workspace");
 }
