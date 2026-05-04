@@ -291,6 +291,7 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> bool {
 pub mod agent;
 pub mod bash;
 pub mod edit_file;
+pub mod fetch_repo;
 pub mod glob_search;
 pub mod grep_search;
 pub mod read_file;
