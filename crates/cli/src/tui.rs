@@ -33,8 +33,8 @@ use crate::UiMode;
 /// Whether the TUI panic hook is currently installed.
 static TUI_PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-const HEADER_LINES: u16 = 2;
-const STATUS_LINES: u16 = 2;
+const HEADER_LINES: u16 = 1;
+const STATUS_LINES: u16 = 3;
 const HINT_LINES: u16 = 1;
 const MAX_COMPOSER_LINES: usize = 5;
 const STREAM_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
@@ -164,6 +164,28 @@ struct Overlay {
     body: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverlayGeometry {
+    box_width: u16,
+    box_height: u16,
+    box_left: u16,
+    box_top: u16,
+    body_width: usize,
+    available_body: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TuiLayout {
+    transcript_top: u16,
+    status_y: u16,
+    status_line_y: u16,
+    composer_label_y: u16,
+    composer_top: u16,
+    hint_y: u16,
+    transcript_height: usize,
+    composer_height: u16,
+}
+
 struct FullscreenUi {
     stdout: Stdout,
     transcript: Vec<TranscriptEntry>,
@@ -174,9 +196,9 @@ struct FullscreenUi {
     backend: String,
     session_id: String,
     tool_count: usize,
-    cwd: String,
     raw_enabled: bool,
     overlay: Option<Overlay>,
+    overlay_scroll: usize,
     draw_drops: usize,
     esc_armed: bool,
     /// Bytes of Gemma 4 reasoning streamed during the current turn.
@@ -227,18 +249,22 @@ impl FullscreenUi {
             backend,
             session_id: conv.session.id.clone(),
             tool_count: conv.tools.names().len(),
-            cwd: conv.cwd.display().to_string(),
             raw_enabled: true,
             overlay: None,
+            overlay_scroll: 0,
             draw_drops: 0,
             esc_armed: false,
             thinking_bytes: 0,
         };
-        for notice in startup_notices {
-            ui.push_entry(EntryKind::Info, format!("[notice] {notice}"));
-        }
-        if !startup_notices.is_empty() {
-            ui.status = "Check startup notices".to_string();
+        if let Some(first_notice) = startup_notices.first() {
+            ui.status = if startup_notices.len() == 1 {
+                format!("Startup: {first_notice}")
+            } else {
+                format!(
+                    "Startup: {first_notice} (+{} more)",
+                    startup_notices.len() - 1
+                )
+            };
         }
         ui.draw()?;
         Ok(ui)
@@ -262,8 +288,32 @@ impl FullscreenUi {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                 self.overlay = None;
+                self.overlay_scroll = 0;
                 self.status = "Ready".to_string();
                 Some(self.draw().and(Ok(true)))
+            }
+            KeyCode::Up => Some(
+                self.scroll_overlay_by(1, ScrollDirection::Older)
+                    .and(Ok(true)),
+            ),
+            KeyCode::Down => Some(
+                self.scroll_overlay_by(1, ScrollDirection::Newer)
+                    .and(Ok(true)),
+            ),
+            KeyCode::PageUp => Some(
+                self.scroll_overlay_by_page(ScrollDirection::Older)
+                    .and(Ok(true)),
+            ),
+            KeyCode::PageDown => Some(
+                self.scroll_overlay_by_page(ScrollDirection::Newer)
+                    .and(Ok(true)),
+            ),
+            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.overlay_scroll = 0;
+                Some(self.draw().and(Ok(true)))
+            }
+            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(self.jump_to_overlay_end().and(Ok(true)))
             }
             _ => Some(Ok(true)),
         }
@@ -553,6 +603,9 @@ impl FullscreenUi {
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<()> {
         if self.overlay.is_some() {
+            if let Some(direction) = mouse_scroll_direction(mouse.kind) {
+                self.scroll_overlay_by(MOUSE_WHEEL_SCROLL_LINES, direction)?;
+            }
             return Ok(());
         }
 
@@ -606,6 +659,7 @@ impl FullscreenUi {
         match command {
             SlashCommand::Help => self.open_help_overlay(),
             SlashCommand::Status => {
+                self.overlay_scroll = 0;
                 self.overlay = Some(Overlay {
                     title: "Session Status".to_string(),
                     body: vec![
@@ -710,6 +764,7 @@ impl FullscreenUi {
             title: "Help".to_string(),
             body,
         });
+        self.overlay_scroll = 0;
         self.status = "Help opened".to_string();
     }
 
@@ -799,12 +854,10 @@ impl FullscreenUi {
         let composer_width = width.saturating_sub(4) as usize;
         let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
         let composer_visible = composer_lines.len().clamp(1, MAX_COMPOSER_LINES);
-        let composer_height = as_u16(composer_visible);
-        let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
-        let transcript_height = status_y.saturating_sub(HEADER_LINES) as usize;
+        let layout = layout_for_terminal(height, composer_visible);
         let viewport = TranscriptViewport {
             width: usable_width.max(8),
-            height: transcript_height.max(1),
+            height: layout.transcript_height.max(1),
         };
         self.ensure_transcript_cache(viewport.width);
         Ok(viewport)
@@ -872,27 +925,26 @@ impl FullscreenUi {
 
     fn draw(&mut self) -> Result<()> {
         let (width, height) = terminal::size()?;
-        let transcript_top = HEADER_LINES;
         let composer_width = width.saturating_sub(4) as usize;
         let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
         let composer_visible = composer_lines.len().clamp(1, MAX_COMPOSER_LINES);
-        let composer_height = as_u16(composer_visible);
-        let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
-        let composer_label_y = status_y + 1;
-        let composer_top = composer_label_y + 1;
-        let hint_y = height.saturating_sub(1);
-        let transcript_height = status_y.saturating_sub(transcript_top) as usize;
+        let layout = layout_for_terminal(height, composer_visible);
 
         self.begin_sync_output();
 
         execute!(self.stdout, MoveTo(0, 0), Clear(ClearType::All))?;
         self.draw_header(width)?;
-        self.draw_transcript(width, transcript_top, transcript_height)?;
-        self.draw_footer(width, status_y, composer_top, composer_height, hint_y)?;
+        self.draw_transcript(width, layout.transcript_top, layout.transcript_height)?;
+        self.draw_footer(width, layout)?;
         if self.overlay.is_some() {
             self.draw_overlay(width, height)?;
         } else {
-            self.position_cursor(width, composer_top, composer_lines.len(), composer_visible)?;
+            self.position_cursor(
+                width,
+                layout.composer_top,
+                composer_lines.len(),
+                composer_visible,
+            )?;
         }
 
         self.end_sync_output()?;
@@ -905,23 +957,22 @@ impl FullscreenUi {
         }
 
         let (width, height) = terminal::size()?;
-        let transcript_top = HEADER_LINES;
         let composer_width = width.saturating_sub(4) as usize;
         let composer_lines = self.composer.wrapped_lines(composer_width.max(1));
         let composer_visible = composer_lines.len().clamp(1, MAX_COMPOSER_LINES);
-        let composer_height = as_u16(composer_visible);
-        let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
-        let composer_label_y = status_y + 1;
-        let composer_top = composer_label_y + 1;
-        let hint_y = height.saturating_sub(1);
-        let transcript_height = status_y.saturating_sub(transcript_top) as usize;
+        let layout = layout_for_terminal(height, composer_visible);
 
         self.begin_sync_output();
-        self.clear_region(transcript_top, as_u16(transcript_height))?;
-        self.clear_region(status_y, height.saturating_sub(status_y))?;
-        self.draw_transcript(width, transcript_top, transcript_height)?;
-        self.draw_footer(width, status_y, composer_top, composer_height, hint_y)?;
-        self.position_cursor(width, composer_top, composer_lines.len(), composer_visible)?;
+        self.clear_region(layout.transcript_top, as_u16(layout.transcript_height))?;
+        self.clear_region(layout.status_y, height.saturating_sub(layout.status_y))?;
+        self.draw_transcript(width, layout.transcript_top, layout.transcript_height)?;
+        self.draw_footer(width, layout)?;
+        self.position_cursor(
+            width,
+            layout.composer_top,
+            composer_lines.len(),
+            composer_visible,
+        )?;
         self.end_sync_output()?;
         Ok(())
     }
@@ -955,22 +1006,15 @@ impl FullscreenUi {
             SetAttribute(Attribute::Bold),
             Print(truncate_to_width(
                 &format!(
-                    " zipcode  [{}]  fullscreen  session:{}  tools:{} ",
+                    " zipcode  {}  session:{}  tools:{} ",
                     self.backend,
-                    truncate_to_width(&self.session_id, 12),
+                    truncate_to_width(&self.session_id, 8),
                     self.tool_count
                 ),
                 width as usize
             )),
             ResetColor,
             SetAttribute(Attribute::Reset),
-            MoveTo(0, 1),
-            SetForegroundColor(Color::DarkGrey),
-            Print(truncate_to_width(
-                &format!(" cwd: {}", self.cwd),
-                width as usize
-            )),
-            ResetColor,
         )?;
         Ok(())
     }
@@ -1009,38 +1053,28 @@ impl FullscreenUi {
         self.transcript_cache.replace_last_entry(entry);
     }
 
-    fn draw_footer(
-        &mut self,
-        width: u16,
-        status_y: u16,
-        composer_top: u16,
-        composer_height: u16,
-        hint_y: u16,
-    ) -> Result<()> {
+    fn draw_footer(&mut self, width: u16, layout: TuiLayout) -> Result<()> {
         execute!(
             self.stdout,
-            MoveTo(0, status_y),
+            MoveTo(0, layout.status_y),
             SetForegroundColor(Color::DarkGrey),
             Print("─".repeat(width as usize)),
             ResetColor,
-            MoveTo(0, status_y + 1),
+            MoveTo(0, layout.status_line_y),
             SetForegroundColor(Color::Yellow),
             Print(truncate_to_width(
                 &format!(
-                    " {}  •  {}  •  composer:{} line(s)",
+                    " {}  ·  {}",
                     self.status,
                     scroll_status_label(self.transcript_scroll),
-                    self.composer
-                        .wrapped_lines(width.saturating_sub(4) as usize)
-                        .len()
                 ),
                 width as usize
             )),
             ResetColor,
-            MoveTo(0, composer_top - 1),
+            MoveTo(0, layout.composer_label_y),
             SetForegroundColor(Color::DarkGrey),
             Print(truncate_to_width(
-                " Compose (Enter submit • Ctrl+J newline • F1 help) ",
+                " Message  Enter send · Ctrl+J newline · F1 help ",
                 width as usize,
             )),
             ResetColor,
@@ -1051,15 +1085,15 @@ impl FullscreenUi {
             .wrapped_lines(width.saturating_sub(4) as usize);
         let visible_start = composer_lines
             .len()
-            .saturating_sub(composer_height as usize);
-        for row in 0..composer_height {
+            .saturating_sub(layout.composer_height as usize);
+        for row in 0..layout.composer_height {
             let line = composer_lines
                 .get(visible_start + row as usize)
                 .cloned()
                 .unwrap_or_default();
             execute!(
                 self.stdout,
-                MoveTo(0, composer_top + row),
+                MoveTo(0, layout.composer_top + row),
                 SetForegroundColor(Color::Green),
                 Print(if row == 0 { "> " } else { "· " }),
                 ResetColor,
@@ -1069,10 +1103,10 @@ impl FullscreenUi {
 
         execute!(
             self.stdout,
-            MoveTo(0, hint_y),
+            MoveTo(0, layout.hint_y),
             SetForegroundColor(Color::DarkGrey),
             Print(truncate_to_width(
-                " /help • /status • /session • /compact • /clear • /quit (/exit) • Ctrl+D exit • PgUp/PgDn page • Ctrl+Home/End top/latest ",
+                " /help /status /clear /quit · PgUp/PgDn scroll · Shift+Tab permissions ",
                 width as usize,
             )),
             ResetColor,
@@ -1084,58 +1118,102 @@ impl FullscreenUi {
         let Some(overlay) = &self.overlay else {
             return Ok(());
         };
-        let box_width = width.saturating_sub(8).max(20);
-        let box_left = (width.saturating_sub(box_width)) / 2;
-        let body_width = box_width.saturating_sub(4) as usize;
-        let mut body_lines = Vec::new();
-        for line in &overlay.body {
-            body_lines.extend(wrap_plain(line, body_width.max(1)));
-        }
-        let box_height = (as_u16(body_lines.len()) + 4)
-            .min(height.saturating_sub(2))
-            .max(6);
-        let box_top = (height.saturating_sub(box_height)) / 2;
+        let initial_geometry = overlay_geometry(width, height, overlay.body.len());
+        let body_lines = wrapped_overlay_body(overlay, initial_geometry.body_width.max(1));
+        let geometry = overlay_geometry(width, height, body_lines.len());
+        let max_scroll = body_lines.len().saturating_sub(geometry.available_body);
+        self.overlay_scroll = self.overlay_scroll.min(max_scroll);
 
-        for row in 0..box_height {
+        for row in 0..geometry.box_height {
             execute!(
                 self.stdout,
-                MoveTo(box_left, box_top + row),
+                MoveTo(0, geometry.box_top + row),
                 SetForegroundColor(Color::DarkGrey),
-                Print(" ".repeat(box_width as usize)),
+                Print(" ".repeat(width.max(geometry.box_width) as usize)),
                 ResetColor,
             )?;
         }
 
         execute!(
             self.stdout,
-            MoveTo(box_left, box_top),
+            MoveTo(geometry.box_left, geometry.box_top),
             SetForegroundColor(Color::Cyan),
             SetAttribute(Attribute::Bold),
             Print(truncate_to_width(
                 &format!(" {} ", overlay.title),
-                box_width as usize
+                geometry.box_width as usize
             )),
             ResetColor,
             SetAttribute(Attribute::Reset),
         )?;
 
-        let available_body = box_height.saturating_sub(3) as usize;
-        for (idx, line) in body_lines.into_iter().take(available_body).enumerate() {
+        for (idx, line) in body_lines
+            .into_iter()
+            .skip(self.overlay_scroll)
+            .take(geometry.available_body)
+            .enumerate()
+        {
             execute!(
                 self.stdout,
-                MoveTo(box_left + 2, box_top + 1 + as_u16(idx)),
-                Print(truncate_to_width(&line, body_width)),
+                MoveTo(geometry.box_left + 2, geometry.box_top + 1 + as_u16(idx)),
+                Print(truncate_to_width(&line, geometry.body_width)),
             )?;
         }
 
+        let footer = if max_scroll == 0 {
+            "Esc / Enter / q to close".to_string()
+        } else {
+            format!(
+                "Up/Down scroll {}/{} · Esc / Enter / q",
+                self.overlay_scroll + 1,
+                max_scroll + 1
+            )
+        };
         execute!(
             self.stdout,
-            MoveTo(box_left + 2, box_top + box_height - 1),
+            MoveTo(
+                geometry.box_left + 2,
+                geometry.box_top + geometry.box_height - 1
+            ),
             SetForegroundColor(Color::DarkGrey),
-            Print("Esc / Enter / q to close"),
+            Print(truncate_to_width(&footer, geometry.body_width)),
             ResetColor,
         )?;
         Ok(())
+    }
+
+    fn scroll_overlay_by(&mut self, lines: usize, direction: ScrollDirection) -> Result<()> {
+        let max_scroll = self.max_overlay_scroll()?;
+        self.overlay_scroll =
+            overlay_scroll_offset_after_delta(self.overlay_scroll, max_scroll, lines, direction);
+        self.draw()
+    }
+
+    fn scroll_overlay_by_page(&mut self, direction: ScrollDirection) -> Result<()> {
+        let (width, height) = terminal::size()?;
+        let Some(overlay) = &self.overlay else {
+            return Ok(());
+        };
+        let initial_geometry = overlay_geometry(width, height, overlay.body.len());
+        let body_lines = wrapped_overlay_body(overlay, initial_geometry.body_width.max(1));
+        let geometry = overlay_geometry(width, height, body_lines.len());
+        self.scroll_overlay_by(geometry.available_body.saturating_sub(1).max(1), direction)
+    }
+
+    fn jump_to_overlay_end(&mut self) -> Result<()> {
+        self.overlay_scroll = self.max_overlay_scroll()?;
+        self.draw()
+    }
+
+    fn max_overlay_scroll(&self) -> Result<usize> {
+        let (width, height) = terminal::size()?;
+        let Some(overlay) = &self.overlay else {
+            return Ok(0);
+        };
+        let initial_geometry = overlay_geometry(width, height, overlay.body.len());
+        let body_lines = wrapped_overlay_body(overlay, initial_geometry.body_width.max(1));
+        let geometry = overlay_geometry(width, height, body_lines.len());
+        Ok(body_lines.len().saturating_sub(geometry.available_body))
     }
 
     fn position_cursor(
@@ -1793,6 +1871,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn overlay_scroll_uses_top_to_bottom_offsets() {
+        assert_eq!(
+            overlay_scroll_offset_after_delta(0, 10, 4, ScrollDirection::Older),
+            0
+        );
+        assert_eq!(
+            overlay_scroll_offset_after_delta(0, 10, 4, ScrollDirection::Newer),
+            4
+        );
+        assert_eq!(
+            overlay_scroll_offset_after_delta(9, 10, 4, ScrollDirection::Newer),
+            10
+        );
+        assert_eq!(
+            overlay_scroll_offset_after_delta(3, 10, 4, ScrollDirection::Older),
+            0
+        );
+    }
+
     // ── should_draw_stream_update additional cases ─────────────────────
 
     #[test]
@@ -1843,6 +1941,12 @@ mod tests {
         let session = Session::new();
         let entries = transcript_entries_from_session(&session);
         assert!(entries.is_empty(), "empty session should yield no entries");
+    }
+
+    #[test]
+    fn initial_transcript_from_empty_session_has_no_chrome_noise() {
+        let session = Session::new();
+        assert!(initial_transcript_entries(&session).is_empty());
     }
 
     #[test]
@@ -1940,6 +2044,55 @@ mod tests {
     #[test]
     fn mouse_non_scroll_events_return_none() {
         assert_eq!(mouse_scroll_direction(MouseEventKind::Moved), None);
+    }
+
+    #[test]
+    fn layout_keeps_status_composer_and_hint_on_distinct_rows() {
+        let layout = layout_for_terminal(24, 1);
+
+        assert_eq!(layout.transcript_top, 1);
+        assert_eq!(layout.status_y, 19);
+        assert_eq!(layout.status_line_y, 20);
+        assert_eq!(layout.composer_label_y, 21);
+        assert_eq!(layout.composer_top, 22);
+        assert_eq!(layout.hint_y, 23);
+        assert_eq!(layout.transcript_height, 18);
+        assert_eq!(layout.composer_height, 1);
+    }
+
+    #[test]
+    fn layout_clamps_composer_height_to_visible_limit() {
+        let layout = layout_for_terminal(30, MAX_COMPOSER_LINES + 3);
+
+        assert_eq!(layout.status_y, 21);
+        assert_eq!(layout.status_line_y, 22);
+        assert_eq!(layout.composer_label_y, 23);
+        assert_eq!(layout.composer_top, 24);
+        assert_eq!(layout.hint_y, 29);
+        assert_eq!(layout.transcript_height, 20);
+        assert_eq!(layout.composer_height, MAX_COMPOSER_LINES as u16);
+    }
+
+    #[test]
+    fn overlay_geometry_preserves_footer_space_on_short_terminals() {
+        let geometry = overlay_geometry(80, 12, 30);
+
+        assert_eq!(geometry.box_width, 72);
+        assert_eq!(geometry.box_height, 10);
+        assert_eq!(geometry.box_left, 4);
+        assert_eq!(geometry.box_top, 1);
+        assert_eq!(geometry.available_body, 7);
+    }
+
+    #[test]
+    fn overlay_geometry_defaults_zero_sized_pty_to_renderable_area() {
+        let geometry = overlay_geometry(0, 0, 6);
+
+        assert_eq!(geometry.box_width, 72);
+        assert_eq!(geometry.box_height, 10);
+        assert_eq!(geometry.box_left, 4);
+        assert_eq!(geometry.box_top, 7);
+        assert_eq!(geometry.available_body, 7);
     }
 }
 
@@ -2050,6 +2203,18 @@ fn scroll_offset_after_delta(
     }
 }
 
+fn overlay_scroll_offset_after_delta(
+    previous: usize,
+    max_scroll: usize,
+    amount: usize,
+    direction: ScrollDirection,
+) -> usize {
+    match direction {
+        ScrollDirection::Older => previous.saturating_sub(amount),
+        ScrollDirection::Newer => previous.saturating_add(amount).min(max_scroll),
+    }
+}
+
 fn scroll_status_label(offset: usize) -> String {
     match offset {
         0 => "latest".to_string(),
@@ -2058,16 +2223,54 @@ fn scroll_status_label(offset: usize) -> String {
     }
 }
 
+fn overlay_geometry(width: u16, height: u16, body_line_count: usize) -> OverlayGeometry {
+    let terminal_width = if width == 0 { 80 } else { width };
+    let terminal_height = if height == 0 { 24 } else { height };
+    let box_width = terminal_width.saturating_sub(8).max(20).min(terminal_width);
+    let max_box_height = terminal_height
+        .saturating_sub(2)
+        .max(6)
+        .min(terminal_height);
+    let box_height = as_u16(body_line_count)
+        .saturating_add(4)
+        .min(max_box_height)
+        .max(1);
+    OverlayGeometry {
+        box_width,
+        box_height,
+        box_left: (terminal_width.saturating_sub(box_width)) / 2,
+        box_top: (terminal_height.saturating_sub(box_height)) / 2,
+        body_width: box_width.saturating_sub(4) as usize,
+        available_body: box_height.saturating_sub(3) as usize,
+    }
+}
+
+fn wrapped_overlay_body(overlay: &Overlay, body_width: usize) -> Vec<String> {
+    let mut body_lines = Vec::new();
+    for line in &overlay.body {
+        body_lines.extend(wrap_plain(line, body_width.max(1)));
+    }
+    body_lines
+}
+
+fn layout_for_terminal(height: u16, composer_visible: usize) -> TuiLayout {
+    let composer_height = as_u16(composer_visible.clamp(1, MAX_COMPOSER_LINES));
+    let status_y = height.saturating_sub(HINT_LINES + STATUS_LINES + composer_height);
+    let transcript_top = HEADER_LINES;
+    TuiLayout {
+        transcript_top,
+        status_y,
+        status_line_y: status_y + 1,
+        composer_label_y: status_y + 2,
+        composer_top: status_y + STATUS_LINES,
+        hint_y: height.saturating_sub(1),
+        transcript_height: status_y.saturating_sub(transcript_top) as usize,
+        composer_height,
+    }
+}
+
 fn initial_transcript_entries(session: &Session) -> Vec<TranscriptEntry> {
-    let mut entries = vec![TranscriptEntry {
-        kind: EntryKind::Info,
-        content: format!(
-            "zipcode v{} — fullscreen TUI (Codex-style MVP+) ready",
-            env!("CARGO_PKG_VERSION")
-        ),
-    }];
-    entries.extend(transcript_entries_from_session(session));
-    entries
+    transcript_entries_from_session(session)
 }
 
 fn transcript_entries_from_session(session: &Session) -> Vec<TranscriptEntry> {
