@@ -28,6 +28,7 @@ use crate::repl::{
     SlashCommand,
 };
 use crate::tui_composer::Composer;
+use crate::width::display_width;
 use crate::UiMode;
 
 /// Whether the TUI panic hook is currently installed.
@@ -40,6 +41,15 @@ const MAX_COMPOSER_LINES: usize = 5;
 const STREAM_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
 const STREAM_REDRAW_MIN_BYTES: usize = 24;
 const MOUSE_WHEEL_SCROLL_LINES: usize = 4;
+const BRAND_WORDMARK_MIN_WIDTH: usize = 64;
+const BRAND_WORDMARK: &[&str] = &[
+    "███████╗██╗██████╗  ██████╗ ██████╗ ██████╗ ███████╗",
+    "╚══███╔╝██║██╔══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝",
+    "  ███╔╝ ██║██████╔╝██║     ██║   ██║██║  ██║█████╗  ",
+    " ███╔╝  ██║██╔═══╝ ██║     ██║   ██║██║  ██║██╔══╝  ",
+    "███████╗██║██║     ╚██████╗╚██████╔╝██████╔╝███████╗",
+    "╚══════╝╚═╝╚═╝      ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝",
+];
 
 /// Saturating cast from `usize` to `u16`, clamping at `u16::MAX`.
 /// Used throughout the TUI for terminal coordinates which are inherently
@@ -137,6 +147,7 @@ fn run_automation_script_from_env(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EntryKind {
+    Brand,
     User,
     Assistant,
     /// Gemma 4 private reasoning channel. Rendered dimmed so users can
@@ -795,7 +806,10 @@ impl FullscreenUi {
         // Auto-insert a separator on major role transitions so the
         // transcript visually groups related entries (e.g. User question,
         // then Tool+Out block, then Zip answer).
-        if !matches!(kind, EntryKind::Separator | EntryKind::Info) {
+        if !matches!(
+            kind,
+            EntryKind::Separator | EntryKind::Info | EntryKind::Brand
+        ) {
             if let Some(prev) = self.transcript.last() {
                 let dominated = matches!(
                     (prev.kind, kind),
@@ -1006,7 +1020,8 @@ impl FullscreenUi {
             SetAttribute(Attribute::Bold),
             Print(truncate_to_width(
                 &format!(
-                    " zipcode  {}  session:{}  tools:{} ",
+                    " ◆ zipcode v{}  {}  session:{}  tools:{} ",
+                    env!("CARGO_PKG_VERSION"),
                     self.backend,
                     truncate_to_width(&self.session_id, 8),
                     self.tool_count
@@ -1946,7 +1961,43 @@ mod tests {
     #[test]
     fn initial_transcript_from_empty_session_has_no_chrome_noise() {
         let session = Session::new();
-        assert!(initial_transcript_entries(&session).is_empty());
+        let entries = initial_transcript_entries(&session);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, EntryKind::Brand);
+    }
+
+    #[test]
+    fn brand_entry_renders_logo_and_version_without_role_prefix() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Brand,
+            content: String::new(),
+        };
+
+        let lines = format_entry(&entry, 80);
+
+        assert!(lines
+            .iter()
+            .any(|line| line.text.contains("zipcode")
+                && line.text.contains(env!("CARGO_PKG_VERSION"))));
+        assert!(lines.iter().all(|line| !line.text.starts_with("Info:")));
+        assert!(lines.iter().any(|line| line.text.contains("███████")));
+        assert!(lines
+            .iter()
+            .any(|line| line.text.contains("local-only coding agent")));
+    }
+
+    #[test]
+    fn brand_entry_uses_compact_wordmark_on_narrow_terminals() {
+        let entry = TranscriptEntry {
+            kind: EntryKind::Brand,
+            content: String::new(),
+        };
+
+        let lines = format_entry(&entry, 40);
+
+        assert!(lines.iter().any(|line| line.text.contains("ZIPCODE")));
+        assert!(lines.iter().all(|line| !line.text.contains("███████")));
     }
 
     #[test]
@@ -2103,6 +2154,10 @@ struct StyledLine {
 }
 
 fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
+    if matches!(entry.kind, EntryKind::Brand) {
+        return format_brand_entry(width);
+    }
+
     // Separator: thin dotted line spanning the width
     if matches!(entry.kind, EntryKind::Separator) {
         let line = "╌".repeat(width.min(60));
@@ -2123,6 +2178,7 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
         EntryKind::Info => ("Info", Color::Cyan),
         EntryKind::Error => ("Err", Color::Red),
         EntryKind::Permission => ("Perm", Color::Magenta),
+        EntryKind::Brand => unreachable!(),
         EntryKind::Separator => unreachable!(),
     };
     let indent = " ".repeat(prefix.len() + 2);
@@ -2171,6 +2227,51 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
         });
     }
     out
+}
+
+fn format_brand_entry(width: usize) -> Vec<StyledLine> {
+    let card_width = width.clamp(36, 76);
+    let inner_width = card_width.saturating_sub(2);
+    let title = format!(" zipcode v{} ", env!("CARGO_PKG_VERSION"));
+    let top = if title.len() + 1 >= inner_width {
+        format!("╭{}╮", truncate_to_width(&title, inner_width))
+    } else {
+        let right = inner_width.saturating_sub(title.len());
+        format!("╭{title}{}╮", "─".repeat(right))
+    };
+    let mut lines = vec![top];
+    if width >= BRAND_WORDMARK_MIN_WIDTH {
+        lines.extend(
+            BRAND_WORDMARK
+                .iter()
+                .map(|line| centered_brand_line(line, inner_width)),
+        );
+    } else {
+        lines.push(centered_brand_line("ZIPCODE", inner_width));
+    }
+    lines.push(centered_brand_line("local-only coding agent", inner_width));
+    lines.push(centered_brand_line(
+        "/help commands · Enter send",
+        inner_width,
+    ));
+    let bottom = format!("╰{}╯", "─".repeat(inner_width));
+    lines.push(bottom);
+
+    lines
+        .into_iter()
+        .map(|text| StyledLine {
+            color: Color::Cyan,
+            text,
+        })
+        .collect()
+}
+
+fn centered_brand_line(text: &str, inner_width: usize) -> String {
+    let text = truncate_to_width(text, inner_width.saturating_sub(2));
+    let padding = inner_width.saturating_sub(display_width(&text));
+    let left = padding / 2;
+    let right = padding.saturating_sub(left);
+    format!("│{}{}{}│", " ".repeat(left), text, " ".repeat(right))
 }
 
 fn wrap_plain(text: &str, width: usize) -> Vec<String> {
@@ -2270,7 +2371,15 @@ fn layout_for_terminal(height: u16, composer_visible: usize) -> TuiLayout {
 }
 
 fn initial_transcript_entries(session: &Session) -> Vec<TranscriptEntry> {
-    transcript_entries_from_session(session)
+    let entries = transcript_entries_from_session(session);
+    if entries.is_empty() {
+        vec![TranscriptEntry {
+            kind: EntryKind::Brand,
+            content: String::new(),
+        }]
+    } else {
+        entries
+    }
 }
 
 fn transcript_entries_from_session(session: &Session) -> Vec<TranscriptEntry> {
