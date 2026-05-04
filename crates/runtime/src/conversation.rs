@@ -1457,6 +1457,147 @@ mod tests {
     // `recent_tool_results_contain_errors` above, but direct unit tests
     // provide faster failure localisation and regression isolation.
 
+    // ── content_contains_error ────────────────────────────────────
+
+    #[test]
+    fn content_contains_error_detects_failed_keyword() {
+        assert!(content_contains_error("test FAILED at line 42"));
+    }
+
+    #[test]
+    fn content_contains_error_detects_panicked_keyword() {
+        assert!(content_contains_error(
+            "thread 'main' panicked at 'assertion failed'"
+        ));
+    }
+
+    #[test]
+    fn content_contains_error_detects_error_prefix_with_nonzero_count() {
+        assert!(content_contains_error("error: 3 issues found"));
+    }
+
+    #[test]
+    fn content_contains_error_detects_error_prefix_with_message() {
+        assert!(content_contains_error("error: expected `;`"));
+    }
+
+    #[test]
+    fn content_contains_error_detects_error_bracket_code() {
+        // Rust compiler-style error: error[E0308]: mismatched types
+        assert!(content_contains_error("error[E0308]: mismatched types"));
+    }
+
+    #[test]
+    fn content_contains_error_error_prefix_zero_is_benign() {
+        assert!(!content_contains_error("error: 0 issues detected"));
+    }
+
+    #[test]
+    fn content_contains_error_error_prefix_zero_with_dot_zero() {
+        // "error: 0" is benign; "error: 0.5" should also be treated as zero-ish
+        assert!(!content_contains_error("error: 0 issues"));
+    }
+
+    #[test]
+    fn content_contains_error_no_errors_is_benign() {
+        assert!(!content_contains_error("no errors found"));
+    }
+
+    #[test]
+    fn content_contains_error_zero_errors_is_benign() {
+        assert!(!content_contains_error("0 errors, 0 warnings"));
+    }
+
+    #[test]
+    fn content_contains_error_fixed_is_benign() {
+        assert!(!content_contains_error("fixed the error in main.rs"));
+    }
+
+    #[test]
+    fn content_contains_error_fix_word_is_benign() {
+        assert!(!content_contains_error("I will fix the error"));
+    }
+
+    #[test]
+    fn content_contains_error_error_handling_is_benign() {
+        assert!(!content_contains_error("error handling improved"));
+    }
+
+    #[test]
+    fn content_contains_error_error_recovery_is_benign() {
+        assert!(!content_contains_error("error recovery completed"));
+    }
+
+    #[test]
+    fn content_contains_error_empty_string_is_false() {
+        assert!(!content_contains_error(""));
+    }
+
+    #[test]
+    fn content_contains_error_plain_text_is_false() {
+        assert!(!content_contains_error("all systems nominal"));
+    }
+
+    #[test]
+    fn content_contains_error_multiline_with_error_on_second_line() {
+        assert!(content_contains_error(
+            "build started...
+compilation error in main.rs
+build failed"
+        ));
+    }
+
+    #[test]
+    fn content_contains_error_multiline_all_benign() {
+        assert!(!content_contains_error(
+            "no errors found
+0 errors, 0 warnings
+ran without error"
+        ));
+    }
+
+    #[test]
+    fn content_contains_error_without_error_is_benign() {
+        assert!(!content_contains_error("ran without error"));
+    }
+
+    #[test]
+    fn content_contains_error_successfully_fixed_is_benign() {
+        assert!(!content_contains_error("successfully fixed the error"));
+    }
+
+    #[test]
+    fn content_contains_error_resolved_is_benign() {
+        assert!(!content_contains_error("resolved the error"));
+    }
+
+    #[test]
+    fn content_contains_error_cleared_is_benign() {
+        assert!(!content_contains_error("cleared the error"));
+    }
+
+    #[test]
+    fn content_contains_error_failed_on_its_own() {
+        assert!(content_contains_error("FAILED"));
+    }
+
+    #[test]
+    fn content_contains_error_lowercase_failed_not_detected() {
+        // "FAILED" is case-sensitive — lowercase "failed" should NOT be detected
+        // by the first check (it relies on the word-boundary scan for "error")
+        assert!(!content_contains_error("failed to compile")); // no "error" word
+    }
+
+    #[test]
+    fn content_contains_error_uppercase_error_prefix() {
+        assert!(content_contains_error("Error: something went wrong"));
+    }
+
+    #[test]
+    fn content_contains_error_uppercase_error_prefix_zero_benign() {
+        assert!(!content_contains_error("Error: 0 problems detected"));
+    }
+
     // ── contains_error_word ──────────────────────────────────────
 
     #[test]
