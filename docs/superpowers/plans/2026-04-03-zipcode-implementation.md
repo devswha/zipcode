@@ -4,7 +4,7 @@
 
 **Goal:** Build a Rust-based local-only coding agent powered by Gemma 4 via candle, deployable as a ZIP to air-gapped environments.
 
-**Architecture:** 4-crate Rust workspace — `inference` (candle GGUF + Gemma 4), `tools` (10 built-in tools), `runtime` (agentic conversation loop), `cli` (REPL + one-shot). No network calls. Models loaded from local disk.
+**Architecture:** 4-crate Rust workspace — `inference` (candle GGUF + Gemma 4), `tools` (11 built-in tools), `runtime` (agentic conversation loop), `cli` (REPL + one-shot). No cloud calls by default; explicit GitHub repo fetch uses `git clone`. Models loaded from local disk.
 
 **Tech Stack:** Rust 2021, candle (candle-core, candle-nn, candle-transformers), tokio, serde/serde_json, clap, rustyline, termimad, glob, grep-regex
 

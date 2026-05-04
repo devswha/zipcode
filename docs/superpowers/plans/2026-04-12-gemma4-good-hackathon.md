@@ -12,14 +12,14 @@
 
 ### Positioning
 
-> zipcode: a local-only AI coding agent that runs Gemma 4 entirely offline,
+> zipcode: a local-only AI coding agent that runs Gemma 4 offline by default,
 > enabling coding education in environments with no internet access.
 
 Target users: students in developing regions, rural schools, military/restricted facilities, disaster relief zones.
 
 Key differentiators vs other submissions:
 1. **Rust single binary** — zero install, zero runtime dependencies
-2. **True offline** — no network calls, ever. USB stick deployment.
+2. **Offline by default** — no cloud calls; explicit user-requested GitHub repository fetching is the network exception. USB stick deployment.
 3. **Agentic, not chatbot** — file editing, code execution, search. Students learn by doing.
 4. **Gemma 4 edge models** — E2B/E4B run on consumer hardware without GPU
 

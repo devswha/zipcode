@@ -4,7 +4,7 @@ Date: 2026-04-03
 
 ## Overview
 
-**zipcode** is a Rust-based coding agent that runs entirely offline using local LLM inference. It provides Claude Code-like functionality (file editing, shell execution, code search) powered by Gemma 4 via the candle ML framework, packaged as a single ZIP for deployment in air-gapped environments.
+**zipcode** is a Rust-based coding agent that runs offline by default using local LLM inference, with explicit user-requested GitHub repository fetching as the network exception. It provides Claude Code-like functionality (file editing, shell execution, code search) powered by Gemma 4 via the candle ML framework, packaged as a single ZIP for deployment in air-gapped environments.
 
 ## Requirements
 
@@ -92,7 +92,7 @@ zipcode/
 │   │       ├── permission.rs     # tool execution permission policy
 │   │       └── prompt.rs         # system prompt assembly
 │   │
-│   ├── tools/                    # 10 tool implementations
+│   ├── tools/                    # 11 tool implementations
 │   │   └── src/
 │   │       ├── lib.rs            # Tool trait + ToolRegistry
 │   │       ├── bash.rs
