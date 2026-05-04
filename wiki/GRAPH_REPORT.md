@@ -14,7 +14,7 @@ Ranked by how many other concepts route through them.
 |------|------|----------|------------------|
 | 1 | `InferenceProvider` trait | `crates/inference/src/lib.rs:47` | 4 implementors; single point where `runtime` talks to inference. Swapping backends = implement one trait. |
 | 2 | `ConversationLoop` | `crates/runtime/src/conversation.rs:58` | Holds `Box<dyn InferenceProvider>` + `ToolRegistry` + `PermissionPolicy` + `Session` + `system_prompt`. Every turn flows through `run_turn()`. |
-| 3 | `Tool` trait + `ToolRegistry` | `crates/tools/src/lib.rs:431,445` | 10 implementors; `execute_tool()` (`:509`) is the single entry point from `runtime`. |
+| 3 | `Tool` trait + `ToolRegistry` | `crates/tools/src/lib.rs:431,445` | 11 implementors; `execute_tool()` (`:509`) is the single entry point from `runtime`. |
 | 4 | `ChatMessage` | `crates/inference/src/types.rs:36` | Wire format carried by every component: REPL → conversation loop → inference → chat template → back. |
 | 5 | `PermissionMode` | `crates/tools/src/lib.rs:305` | Referenced by `ToolContext`, `PermissionPolicy`, CLI args, config. Gates every tool call. |
 | 6 | Gemma chat template | `crates/inference/src/chat_template.rs:11` | Every prompt is formatted through `format_conversation()` before reaching any backend. |
@@ -26,7 +26,7 @@ See [`pages/`](pages/) for detail on each.
 
 ## Cross-crate connections (surprising edges)
 
-1. **`runtime` never imports `tools::*` for tool logic — only the trait interface.** `ConversationLoop` holds `tools: ToolRegistry` but only ever calls `execute_tool()`. The 10 concrete tool types stay behind the `Box<dyn Tool>` wall. **Why it matters:** adding a tool doesn't require changes in `runtime`.
+1. **`runtime` never imports `tools::*` for tool logic — only the trait interface.** `ConversationLoop` holds `tools: ToolRegistry` but only ever calls `execute_tool()`. The 11 concrete tool types stay behind the `Box<dyn Tool>` wall. **Why it matters:** adding a tool doesn't require changes in `runtime`.
 
 2. **The conversation loop's iteration cap lives in `runtime`, but the tool-result truncation cap lives in `tools`.** `MAX_TOOL_ITERATIONS = 25` (`crates/runtime/src/conversation.rs:94`) and `MAX_TOOL_OUTPUT_BYTES = 8192` (`crates/tools/src/lib.rs:502`). Two independent safety limits, two independent crates. **Why it matters:** a runaway agent is bounded by both — model iterations AND per-tool output size.
 

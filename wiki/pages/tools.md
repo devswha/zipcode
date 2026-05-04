@@ -1,4 +1,4 @@
-# tools — `Tool` trait, registry, 10 implementations
+# tools — `Tool` trait, registry, 11 implementations
 
 The `zipcode-tools` crate. Home of the `Tool` + `ToolRegistry` god node.
 
@@ -18,6 +18,7 @@ The `zipcode-tools` crate. Home of the `Tool` + `ToolRegistry` god node.
 | `read_file.rs` | `ReadFileTool` |
 | `write_file.rs` | `WriteFileTool` |
 | `edit_file.rs` | `EditFileTool` |
+| `fetch_repo.rs` | `FetchRepoTool` |
 | `glob_search.rs` | `GlobSearchTool` |
 | `grep_search.rs` | `GrepSearchTool` |
 | `repl.rs` | `ReplTool` (python3 / node) |
@@ -102,7 +103,7 @@ Method `truncate(max_bytes)` (`lib.rs:391-418`) finds a safe UTF-8 char boundary
 
 ---
 
-## The 10 tools
+## The 11 tools
 
 **EXTRACTED** — one line per impl, with absolute file reference.
 
@@ -112,17 +113,19 @@ Method `truncate(max_bytes)` (`lib.rs:391-418`) finds a safe UTF-8 char boundary
 | 2 | `ReadFileTool` | `read_file.rs` | Offset/limit, line numbering, 10 MB `MAX_READ_SIZE`, binary detection |
 | 3 | `WriteFileTool` | `write_file.rs` | Creates parent dirs; path traversal blocked |
 | 4 | `EditFileTool` | `edit_file.rs` | Exact string replacement; **fails if 0 or >1 match** (enforced uniqueness) |
-| 5 | `GlobSearchTool` | `glob_search.rs` | `glob::glob()` sorted, filters to files, rejects absolute / `..` escape patterns, and re-validates each match against workspace boundaries |
-| 6 | `GrepSearchTool` | `grep_search.rs` | `grep-regex` + `grep-searcher`, optional glob filter, rejects absolute / `..` traversal globs, re-validates matched files against the workspace, `file:line` output |
-| 7 | `ReplTool` | `repl.rs` | Spawns `python3 -c` or `node -e`; captures stdout/stderr concurrently so large output does not false-timeout; timeout cleanup kills descendant interpreters/processes too |
-| 8 | `TodoWriteTool` | `todo_write.rs` | Writes JSON to `.zipcode-todos.json` in cwd; validates each item before writing: rejects empty/whitespace `id` or `content`, enforces `status` enum (`pending`, `in_progress`, `completed`, `cancelled`); entire batch is rejected on first validation failure |
-| 9 | `ToolSearchTool` | `tool_search.rs` | Case-insensitive search over registered `ToolSpec`s |
-| 10 | `AgentTool` | `agent.rs` | **STUB** — returns "not yet implemented" |
+| 5 | `FetchRepoTool` | `fetch_repo.rs` | Shallow-clones repository-root `https://github.com/<owner>/<repo>` URLs into `.zipcode-remote/<owner>__<repo>`; reuses an existing scratch clone; rejects nested/non-GitHub URLs |
+| 6 | `GlobSearchTool` | `glob_search.rs` | `glob::glob()` sorted, filters to files, rejects absolute / `..` escape patterns, and re-validates each match against workspace boundaries |
+| 7 | `GrepSearchTool` | `grep_search.rs` | `grep-regex` + `grep-searcher`, optional glob filter, rejects absolute / `..` traversal globs, re-validates matched files against the workspace, `file:line` output |
+| 8 | `ReplTool` | `repl.rs` | Spawns `python3 -c` or `node -e`; captures stdout/stderr concurrently so large output does not false-timeout; timeout cleanup kills descendant interpreters/processes too |
+| 9 | `TodoWriteTool` | `todo_write.rs` | Writes JSON to `.zipcode-todos.json` in cwd; validates each item before writing: rejects empty/whitespace `id` or `content`, enforces `status` enum (`pending`, `in_progress`, `completed`, `cancelled`); entire batch is rejected on first validation failure |
+| 10 | `ToolSearchTool` | `tool_search.rs` | Case-insensitive search over registered `ToolSpec`s |
+| 11 | `AgentTool` | `agent.rs` | **STUB** — returns "not yet implemented" |
 
 **Permission-gated subset** (per [permissions](permissions.md)):
 - Read-only: `read_file`, `glob_search`, `grep_search`, `tool_search`
+- Workspace-write allowed without approval: `write_file`, `edit_file`, `todo_write`, `fetch_repo`
 - Workspace-write requires approval: `bash`, `repl`
-- Full-access: everything including `bash`, `repl`, `agent` (if it existed)
+- Full-access: everything including `bash`, `repl`, `fetch_repo`, `agent` (if it existed)
 
 ---
 

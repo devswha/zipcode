@@ -21,7 +21,7 @@ cli ──▶ runtime ──▶ inference
 | Crate | Role | Cargo | Path |
 |-------|------|-------|------|
 | `zipcode-inference` | GGUF loading, sampling, chat template, backend trait | `crates/inference/Cargo.toml` | [`crates/inference/`](../crates/inference/) |
-| `zipcode-tools` | `Tool` trait + 10 tool implementations + path safety | `crates/tools/Cargo.toml` | [`crates/tools/`](../crates/tools/) |
+| `zipcode-tools` | `Tool` trait + 11 tool implementations + path safety | `crates/tools/Cargo.toml` | [`crates/tools/`](../crates/tools/) |
 | `zipcode-runtime` | Conversation loop, permissions, config, sessions, system prompt | `crates/runtime/Cargo.toml` | [`crates/runtime/`](../crates/runtime/) |
 | `zipcode` (cli) | clap entrypoint, REPL, fullscreen TUI, doctor, setup | `crates/cli/Cargo.toml` | [`crates/cli/`](../crates/cli/) |
 
@@ -34,7 +34,7 @@ cli ──▶ runtime ──▶ inference
 | [inference](pages/inference.md) | `InferenceProvider` trait, 4 backends (candle, llama-cpp, llama-server, mock), sampling, `GenerationConfig` |
 | [chat-template](pages/chat-template.md) | Current implementation — labelled "Gemma 4" but actually Gemma 3 tokens; `<tool_call>` JSON parsing; single-model coupling |
 | [gemma4-format-spec](pages/gemma4-format-spec.md) | **Phase 0 spec** — real Gemma 4 chat template extracted from the GGUF: `<\|turn>` tokens, custom tool-call mini-language, thinking channel, stop tokens, implementation deltas |
-| [tools](pages/tools.md) | `Tool` trait, `ToolRegistry`, all 10 tools, path safety, 8 KB truncation |
+| [tools](pages/tools.md) | `Tool` trait, `ToolRegistry`, all 11 tools, path safety, 8 KB truncation |
 | [conversation-loop](pages/conversation-loop.md) | `ConversationLoop`, 25-iteration cap, `StreamCallback`, agentic loop flow |
 | [permissions](pages/permissions.md) | `PermissionMode`, 3-tier matrix, approval-gated tools |
 | [config](pages/config.md) | `ZipcodeConfig`, global + project override, path expansion |
@@ -52,7 +52,7 @@ cli ──▶ runtime ──▶ inference
 The highest-degree concepts — almost every code path touches one of these. Read these pages first.
 
 1. **[`InferenceProvider`](pages/inference.md#inferenceprovider-trait)** — abstracts all inference backends. `crates/inference/src/lib.rs:47`. 4 implementors: `LlamaCppProvider`, `LlamaServerProvider`, `InferenceEngine` (candle), `MockInferenceProvider`.
-2. **[`Tool` + `ToolRegistry`](pages/tools.md#tool-trait)** — abstracts every tool invocation. `crates/tools/src/lib.rs:431` (trait) + `:445` (registry). 10 implementors.
+2. **[`Tool` + `ToolRegistry`](pages/tools.md#tool-trait)** — abstracts every tool invocation. `crates/tools/src/lib.rs:431` (trait) + `:445` (registry). 11 implementors.
 3. **[`ConversationLoop`](pages/conversation-loop.md)** — drives the agentic loop. Holds both god nodes above plus `PermissionPolicy` and `Session`. `crates/runtime/src/conversation.rs:58`.
 4. **[`ChatMessage`](pages/inference.md#core-types)** — the wire format that crosses every crate. `crates/inference/src/types.rs:36`.
 5. **[`PermissionMode`](pages/permissions.md)** — gates every tool invocation. `crates/tools/src/lib.rs:305` (enum) + `crates/runtime/src/permission.rs:5` (policy).
