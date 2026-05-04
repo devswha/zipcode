@@ -42,7 +42,7 @@ impl PermissionPolicy {
             },
             PermissionMode::WorkspaceWrite => match tool_name {
                 "read_file" | "glob_search" | "grep_search" | "tool_search" | "write_file"
-                | "edit_file" | "todo_write" | "skill" => PermissionCheck::Allowed,
+                | "edit_file" | "todo_write" | "skill" | "fetch_repo" => PermissionCheck::Allowed,
                 "bash" | "repl" => PermissionCheck::NeedsApproval(format!(
                     "Tool '{tool_name}' requires approval in workspace-write mode"
                 )),
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn test_workspace_write_allows_all_write_tools() {
         let policy = PermissionPolicy::new(PermissionMode::WorkspaceWrite);
-        for tool in &["write_file", "edit_file", "todo_write"] {
+        for tool in &["write_file", "edit_file", "todo_write", "fetch_repo"] {
             assert_eq!(
                 policy.check(tool, &serde_json::json!({})),
                 PermissionCheck::Allowed,

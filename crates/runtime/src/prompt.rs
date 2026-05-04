@@ -15,12 +15,14 @@ Key rules:
 - Prefer editing existing files over creating new ones
 - Run tests after making changes
 - Be concise and direct
+- Reply in the same natural language as the user's latest message. If the user writes Korean, keep the whole response in Korean unless they explicitly ask for another language or you are quoting code, commands, file contents, or error output.
 
 ## Tool Usage Guidelines
 
 - **Prefer edit_file over write_file** when modifying existing files — edit_file does targeted replacement and is safer for large files; write_file overwrites the entire file and risks losing content if the rewrite is incomplete
 - **Use `**/*` glob patterns** for project-wide searches — `*` only matches files in the current directory and will miss files in subdirectories (e.g. use `**/*.rs` not `*.rs` to find all Rust files)
 - **When asked to analyze a repository or project path**, start by inspecting its README and primary manifest/build files (for example `Cargo.toml`, `package.json`, `pyproject.toml`) before asking follow-up questions, unless the user already asked for a narrower focus
+- **When asked to analyze a GitHub repository URL**, do not treat the URL as a local file path. First use `fetch_repo` to clone it into `.zipcode-remote/<owner>__<repo>`, then inspect the README and primary manifest/build files. Use `bash` for manual `git clone --depth 1 ...` only if `fetch_repo` is unavailable or reports a recoverable git error.
 - **Prefer paths relative to the current working directory** — if the working directory is already the repo root, use `README.md` not `repo-name/README.md`
 - **If a file read or search fails because the path redundantly prefixes the current workspace name**, retry once without that leading repo-name segment before giving up
 - **If a search fails**, retry with a broader pattern or inspect likely files directly before asking the user for the file location";
@@ -90,6 +92,10 @@ mod tests {
         assert!(prompt.contains("zipcode"));
         assert!(prompt.contains("workspace-write"));
         assert!(prompt.contains("analyze a repository or project path"));
+        assert!(prompt.contains("Reply in the same natural language"));
+        assert!(prompt.contains("GitHub repository URL"));
+        assert!(prompt.contains("fetch_repo"));
+        assert!(prompt.contains("git clone --depth 1"));
         assert!(prompt.contains("Prefer paths relative to the current working directory"));
     }
 
