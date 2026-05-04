@@ -21,7 +21,7 @@ use zipcode_inference::Role;
 use zipcode_runtime::{ConversationLoop, Session, StreamCallback};
 use zipcode_tools::PermissionMode;
 
-use crate::render::{terminal_width, truncate_to_width};
+use crate::render::{summarize_tool_args, terminal_width, truncate_to_width};
 use crate::repl::{
     clear_session, compact_session, help_text, load_session_into_loop, parse_slash_command,
     prepare_loop, run_interactive, session_status_lines, CompactFeedback, ParsedSlashCommand,
@@ -1311,13 +1311,8 @@ impl StreamCallback for TuiCallback<'_> {
     }
 
     fn on_tool_start(&mut self, name: &str, args: &Value) {
-        self.ui.push_entry(
-            EntryKind::ToolStart,
-            format!(
-                "{name}({})",
-                truncate_to_width(&args.to_string(), terminal_width().min(120))
-            ),
-        );
+        self.ui
+            .push_entry(EntryKind::ToolStart, format_tool_start_content(name, args));
         self.ui.status = format!("Running {name}…");
         self.pending_stream_bytes = 0;
         self.last_stream_draw = Some(Instant::now());
@@ -1327,10 +1322,7 @@ impl StreamCallback for TuiCallback<'_> {
     fn on_tool_result(&mut self, name: &str, result: &str) {
         self.ui.push_entry(
             EntryKind::ToolResult,
-            format!(
-                "{name}: {}",
-                truncate_to_width(result.trim(), terminal_width().min(120))
-            ),
+            format_tool_result_content(name, result),
         );
         self.ui.status = "Thinking…".to_string();
         self.pending_stream_bytes = 0;
@@ -1705,11 +1697,12 @@ mod tests {
     fn format_entry_tool_start_has_yellow_color() {
         let entry = TranscriptEntry {
             kind: EntryKind::ToolStart,
-            content: "bash(ls)".to_string(),
+            content: "bash\nls".to_string(),
         };
         let lines = format_entry(&entry, 80);
         assert!(!lines.is_empty());
-        assert!(lines[0].text.starts_with("Tool: "));
+        assert!(lines[0].text.starts_with("╭─ Running bash"));
+        assert!(lines.iter().any(|l| l.text.contains("ls")));
         assert!(lines.iter().all(|l| l.color == Color::Yellow));
     }
 
@@ -1721,8 +1714,47 @@ mod tests {
         };
         let lines = format_entry(&entry, 80);
         assert!(!lines.is_empty());
-        assert!(lines[0].text.starts_with("Out: "));
+        assert!(lines[0].text.starts_with("╭─ Done"));
+        assert!(lines.iter().any(|l| l.text.contains("file contents here")));
         assert!(lines.iter().all(|l| l.color == Color::Blue));
+    }
+
+    #[test]
+    fn format_tool_start_content_summarizes_agent_spawn() {
+        let args = serde_json::json!({
+            "task": "read the README heading and summarize it",
+            "tool_allowlist": ["read_file", "grep_search"],
+            "max_tokens": 128,
+        });
+
+        let content = format_tool_start_content("agent", &args);
+
+        assert!(content.contains("agent"));
+        assert!(content.contains("read the README heading"));
+        assert!(content.contains("tools: read_file, grep_search"));
+        assert!(content.contains("budget: 128 tokens"));
+        assert!(!content.contains("tool_allowlist"));
+    }
+
+    #[test]
+    fn format_tool_result_content_summarizes_child_agent_result() {
+        let content = format_tool_result_content(
+            "agent",
+            "Child agent complete.\nSummary: checked the README\nTool calls: 1",
+        );
+        let lines = format_entry(
+            &TranscriptEntry {
+                kind: EntryKind::ToolResult,
+                content,
+            },
+            80,
+        );
+
+        assert!(lines[0].text.contains("Agent complete"));
+        assert!(lines
+            .iter()
+            .any(|line| line.text.contains("checked the README")));
+        assert!(lines.iter().any(|line| line.text.contains("1 tool call")));
     }
 
     #[test]
@@ -2158,6 +2190,10 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
         return format_brand_entry(width);
     }
 
+    if matches!(entry.kind, EntryKind::ToolStart | EntryKind::ToolResult) {
+        return format_tool_entry(entry, width);
+    }
+
     // Separator: thin dotted line spanning the width
     if matches!(entry.kind, EntryKind::Separator) {
         let line = "╌".repeat(width.min(60));
@@ -2272,6 +2308,202 @@ fn centered_brand_line(text: &str, inner_width: usize) -> String {
     let left = padding / 2;
     let right = padding.saturating_sub(left);
     format!("│{}{}{}│", " ".repeat(left), text, " ".repeat(right))
+}
+
+fn format_tool_start_content(name: &str, args: &Value) -> String {
+    if name == "agent" {
+        return format_agent_start_content(args);
+    }
+
+    let summary_width = terminal_width().saturating_sub(12).clamp(24, 96);
+    let summary = summarize_tool_args(name, args, summary_width);
+    if summary.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}\n{summary}")
+    }
+}
+
+fn format_agent_start_content(args: &Value) -> String {
+    let task = args["task"].as_str().unwrap_or("(missing task)").trim();
+    let mut lines = vec!["agent".to_string(), task.to_string()];
+
+    let mut meta = Vec::new();
+    if let Some(tools) = args["tool_allowlist"].as_array() {
+        let names = tools
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !names.is_empty() {
+            meta.push(format!("tools: {names}"));
+        }
+    }
+    if let Some(max_tokens) = args["max_tokens"].as_u64() {
+        meta.push(format!("budget: {max_tokens} tokens"));
+    }
+    if !meta.is_empty() {
+        lines.push(meta.join(" · "));
+    }
+
+    lines.join("\n")
+}
+
+fn format_tool_result_content(name: &str, result: &str) -> String {
+    if name == "agent" {
+        return format_agent_result_content(result);
+    }
+
+    let preview_width = terminal_width().saturating_sub(12).clamp(24, 96);
+    let preview = result
+        .trim()
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("(no output)");
+    format!(
+        "{name}\n{}\nstats: {}",
+        truncate_to_width(preview, preview_width),
+        tool_result_stats(result)
+    )
+}
+
+fn format_agent_result_content(result: &str) -> String {
+    let summary = result.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("Summary:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    });
+    let tool_calls = result.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("Tool calls:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    });
+    let body = summary.unwrap_or_else(|| {
+        result
+            .trim()
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("(no child response)")
+    });
+    let mut lines = vec!["agent".to_string(), body.to_string()];
+    if let Some(count) = tool_calls {
+        let label = if count == "1" {
+            "1 tool call".to_string()
+        } else {
+            format!("{count} tool calls")
+        };
+        lines.push(format!("stats: {label}"));
+    }
+    lines.join("\n")
+}
+
+fn tool_result_stats(result: &str) -> String {
+    let lines = result.lines().count().max(1);
+    let bytes = result.len();
+    format!("{lines} lines · {bytes} B")
+}
+
+fn format_tool_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
+    let color = match entry.kind {
+        EntryKind::ToolStart => Color::Yellow,
+        EntryKind::ToolResult => Color::Blue,
+        _ => unreachable!(),
+    };
+    let mut lines = entry.content.lines();
+    let first = lines.next().unwrap_or_default().trim();
+    let mut details = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+
+    let has_structured_name = !details.is_empty();
+    let name = has_structured_name
+        .then_some(first)
+        .filter(|value| !value.is_empty());
+    let body = if has_structured_name {
+        std::mem::take(&mut details)
+    } else if first.is_empty() {
+        Vec::new()
+    } else {
+        vec![first]
+    };
+
+    let stats = body
+        .last()
+        .and_then(|line| line.strip_prefix("stats: "))
+        .map(str::to_string);
+    let body = if stats.is_some() {
+        body[..body.len().saturating_sub(1)].to_vec()
+    } else {
+        body
+    };
+
+    let title = match (entry.kind, name) {
+        (EntryKind::ToolStart, Some("agent")) => "Spawning agent".to_string(),
+        (EntryKind::ToolStart, Some(name)) => format!("Running {name}"),
+        (EntryKind::ToolStart, None) => "Running tool".to_string(),
+        (EntryKind::ToolResult, Some("agent")) => "Agent complete".to_string(),
+        (EntryKind::ToolResult, Some(name)) => format!("Done {name}"),
+        (EntryKind::ToolResult, None) => "Done".to_string(),
+        _ => unreachable!(),
+    };
+    let footer = match entry.kind {
+        EntryKind::ToolStart => Some("started".to_string()),
+        EntryKind::ToolResult => stats,
+        _ => unreachable!(),
+    };
+
+    format_tool_card(&title, &body, footer.as_deref(), width, color)
+}
+
+fn format_tool_card(
+    title: &str,
+    body: &[&str],
+    footer: Option<&str>,
+    width: usize,
+    color: Color,
+) -> Vec<StyledLine> {
+    let text_width = width.saturating_sub(2).max(1);
+    let mut out = vec![StyledLine {
+        color,
+        text: format!(
+            "╭─ {}",
+            truncate_to_width(title, text_width.saturating_sub(3))
+        ),
+    }];
+
+    for raw_line in body {
+        let wrapped = wrap_plain(raw_line, text_width);
+        if wrapped.is_empty() {
+            out.push(StyledLine {
+                color,
+                text: "│".to_string(),
+            });
+        } else {
+            for line in wrapped {
+                out.push(StyledLine {
+                    color,
+                    text: format!("│ {line}"),
+                });
+            }
+        }
+    }
+
+    if let Some(footer) = footer.filter(|line| !line.is_empty()) {
+        out.push(StyledLine {
+            color,
+            text: format!(
+                "╰─ {}",
+                truncate_to_width(footer, text_width.saturating_sub(3))
+            ),
+        });
+    }
+
+    out
 }
 
 fn wrap_plain(text: &str, width: usize) -> Vec<String> {
