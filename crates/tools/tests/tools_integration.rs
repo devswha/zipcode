@@ -15,6 +15,7 @@ use tempfile::TempDir;
 use zipcode_tools::agent::AgentTool;
 use zipcode_tools::bash::BashTool;
 use zipcode_tools::edit_file::EditFileTool;
+use zipcode_tools::fetch_repo::FetchRepoTool;
 use zipcode_tools::glob_search::GlobSearchTool;
 use zipcode_tools::grep_search::GrepSearchTool;
 use zipcode_tools::read_file::ReadFileTool;
@@ -45,13 +46,14 @@ fn test_ctx(cwd: &std::path::Path) -> ToolContext {
     }
 }
 
-/// Build a registry with all 10 built-in tools registered.
+/// Build a registry with all 11 built-in tools registered.
 fn full_registry() -> ToolRegistry {
     let mut r = ToolRegistry::new();
     r.register(Box::new(BashTool));
     r.register(Box::new(ReadFileTool));
     r.register(Box::new(WriteFileTool));
     r.register(Box::new(EditFileTool));
+    r.register(Box::new(FetchRepoTool));
     r.register(Box::new(GlobSearchTool));
     r.register(Box::new(GrepSearchTool));
     r.register(Box::new(TodoWriteTool));
@@ -706,17 +708,18 @@ fn make_relative_deeply_nested() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn full_registry_has_10_tools() {
+fn full_registry_has_11_tools() {
     let registry = full_registry();
     let mut names = registry.names();
     names.sort_unstable();
-    assert_eq!(names.len(), 10, "should have exactly 10 registered tools");
+    assert_eq!(names.len(), 11, "should have exactly 11 registered tools");
     assert_eq!(
         names,
         vec![
             "agent",
             "bash",
             "edit_file",
+            "fetch_repo",
             "glob_search",
             "grep_search",
             "read_file",
@@ -732,7 +735,7 @@ fn full_registry_has_10_tools() {
 fn all_tools_have_valid_specs() {
     let registry = full_registry();
     let specs = registry.specs();
-    assert_eq!(specs.len(), 10);
+    assert_eq!(specs.len(), 11);
 
     for spec in &specs {
         assert!(!spec.name.is_empty(), "tool name should not be empty");
@@ -764,6 +767,7 @@ fn each_tool_name_matches_impl() {
         "read_file",
         "write_file",
         "edit_file",
+        "fetch_repo",
         "glob_search",
         "grep_search",
         "todo_write",
@@ -801,8 +805,13 @@ fn tool_search_finds_bash_by_name() {
         result.content
     );
     assert!(
-        result.content.contains("Execute a shell command"),
+        result.content.contains("Execute an approved shell command"),
         "should include bash description, got: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("fetch_repo"),
+        "should guide GitHub repository URL fetching to fetch_repo, got: {}",
         result.content
     );
     assert!(

@@ -20,7 +20,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command and return its output"
+        "Execute an approved shell command in the workspace and return its output. Use for tests, builds, and shell-based inspection; use fetch_repo instead of bash when analyzing GitHub repository URLs."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -287,6 +287,14 @@ mod tests {
             !required.contains(&"timeout"),
             "timeout should be optional (has default), got required: {required:?}"
         );
+    }
+
+    #[test]
+    fn test_bash_description_points_github_repo_urls_to_fetch_repo() {
+        let description = BashTool.description();
+        assert!(description.contains("fetch_repo"));
+        assert!(description.contains("repository URLs"));
+        assert!(!description.contains("git clone"));
     }
 
     #[test]
