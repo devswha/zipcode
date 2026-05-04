@@ -25,7 +25,7 @@ cli
 | Crate | Path | Responsibility | Key Types |
 |-------|------|-----------------|-----------|
 | **inference** | `inference/` | GGUF model loading, tokenization, streaming generation, KV cache, sampler | `InferenceProvider` trait, `CandeInferenceProvider`, `LlamaCppProvider`, `MockInferenceProvider` |
-| **tools** | `tools/` | 10 tool implementations, `Tool` trait, `ToolRegistry`, result truncation | `Tool`, `ToolRegistry`, `ToolResult`, `Bash`, `ReadFile`, `WriteFile`, `EditFile`, `GlobSearch`, `GrepSearch`, `TodoWrite`, `REPL`, `Agent`, `ToolSearch` |
+| **tools** | `tools/` | 11 tool implementations, `Tool` trait, `ToolRegistry`, result truncation | `Tool`, `ToolRegistry`, `ToolResult`, `Bash`, `ReadFile`, `WriteFile`, `EditFile`, `FetchRepo`, `GlobSearch`, `GrepSearch`, `TodoWrite`, `REPL`, `Agent`, `ToolSearch` |
 | **runtime** | `runtime/` | Agentic conversation loop, config hierarchy, permission policy, session persistence | `ConversationLoop`, `ConversationConfig`, `PermissionMode`, `SessionManager` |
 | **cli** | `cli/` | Binary entry point, REPL (rustyline), slash commands, doctor command, ANSI rendering (termimad) | `main()`, `CliArgs`, `ReplHandler`, `DoctorCommand` |
 
@@ -82,18 +82,21 @@ RUST_LOG=debug cargo test -p zipcode-inference -- --nocapture
 
 ### 2. tools/
 
-**Purpose:** Tool implementations — 10 autonomous tools (Bash, ReadFile, WriteFile, EditFile, GlobSearch, GrepSearch, TodoWrite, REPL, Agent, ToolSearch) with permission gating and output truncation.
+**Purpose:** Tool implementations — 11 autonomous tools (Bash, ReadFile, WriteFile, EditFile, FetchRepo, GlobSearch, GrepSearch, TodoWrite, REPL, Agent, ToolSearch) with permission gating and output truncation.
 
 **Key Files:**
 - `src/lib.rs` — `Tool` trait, `ToolRegistry` router, `ToolResult`
 - `src/bash.rs` — Shell execution via `bash -c`
-- `src/file_ops.rs` — ReadFile, WriteFile, EditFile with path validation
-- `src/search.rs` — GlobSearch, GrepSearch
-- `src/todo.rs` — TodoWrite (JSON persistence)
+- `src/read_file.rs` — ReadFile with path validation
+- `src/write_file.rs` — WriteFile with path validation
+- `src/edit_file.rs` — EditFile with path validation
+- `src/fetch_repo.rs` — GitHub repository fetch into `.zipcode-remote/`
+- `src/glob_search.rs` — GlobSearch file discovery
+- `src/grep_search.rs` — GrepSearch content search
+- `src/todo_write.rs` — TodoWrite (JSON persistence)
 - `src/repl.rs` — Python/Node.js REPL (subprocess)
 - `src/agent.rs` — Agent stub (not yet implemented)
 - `src/tool_search.rs` — ToolSearch by keyword
-- `src/permissions.rs` — `PermissionMode` enforcement
 
 **Key Types:**
 ```rust
@@ -120,11 +123,12 @@ pub enum PermissionMode { ReadOnly, WorkspaceWrite, FullAccess }
 | ReadFile | Always | Read file with offset/limit |
 | WriteFile | workspace-write | Create/overwrite files |
 | EditFile | workspace-write | Targeted string replacement |
+| FetchRepo | workspace-write | Fetch GitHub repository-root URLs into `.zipcode-remote/` |
 | GlobSearch | Always | Find files by pattern |
 | GrepSearch | Always | Search contents (regex) |
 | TodoWrite | workspace-write | JSON todo persistence |
-| REPL | workspace-write | Python/Node.js snippets |
-| Agent | workspace-write | Delegated tasks (stub) |
+| REPL | workspace-write approval | Python/Node.js snippets |
+| Agent | full-access | Delegated tasks (stub) |
 | ToolSearch | Always | Search available tools |
 
 **Safety Features:**
@@ -132,6 +136,7 @@ pub enum PermissionMode { ReadOnly, WorkspaceWrite, FullAccess }
 - Output truncation at 8 KB max
 - Permission gating on write/execution tools
 - Subprocess timeout on Bash/REPL
+- `fetch_repo` only accepts repository-root GitHub HTTPS URLs and shallow-clones with `git`
 
 **Dependencies:**
 - glob, regex, grep-regex, grep-searcher (search)

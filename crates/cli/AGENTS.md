@@ -71,7 +71,7 @@ The CLI handles:
 **Behavior:**
 - Prints welcome message with version
 - Loads `.zipcode.json` project config or uses defaults
-- Builds tool registry (9 standard tools + ToolSearchTool)
+- Builds tool registry (10 standard tools + ToolSearchTool)
 - Initializes ConversationLoop with inference engine
 - Loops on user input with line editing
 
@@ -126,20 +126,21 @@ Entered as `/command` in interactive mode. All slash commands are processed befo
 
 **Function:** `repl::build_registry()` (repl.rs, lines 56-75)
 
-Registers **10 tools** in order:
+Registers **11 tools** in order:
 
 1. BashTool — Shell execution
 2. ReadFileTool — File reading
 3. WriteFileTool — File creation/overwrite
 4. EditFileTool — Line-based file editing
-5. GlobSearchTool — Filename pattern matching
-6. GrepSearchTool — Content text search
-7. TodoWriteTool — Task/todo tracking
-8. ReplTool — Python REPL for data analysis
-9. AgentTool — Multi-agent task delegation (stub)
-10. ToolSearchTool — Tool discovery (built from registry)
+5. FetchRepoTool — GitHub repository-root URL fetch into `.zipcode-remote/`
+6. GlobSearchTool — Filename pattern matching
+7. GrepSearchTool — Content text search
+8. TodoWriteTool — Task/todo tracking
+9. ReplTool — Python REPL for data analysis
+10. AgentTool — Multi-agent task delegation (stub)
+11. ToolSearchTool — Tool discovery (built from registry)
 
-ToolSearchTool is constructed last using specs from the first 9 tools.
+ToolSearchTool is constructed last using specs from the previously registered tools.
 
 ---
 
@@ -400,7 +401,7 @@ cli (binary)
  ├── runtime (ConversationLoop, PermissionPolicy, build_system_prompt)
  │   ├── inference (InferenceProvider, GenerationConfig)
  │   └── tools (Tool trait, ToolRegistry)
- ├── tools (9 tool implementations)
+ ├── tools (11 tool implementations)
  ├── clap (CLI parsing)
  ├── rustyline (REPL editing)
  ├── termimad (Markdown rendering)

@@ -1,14 +1,14 @@
 # AGENTS.md - zipcode-tools
 
 **Generated:** 2026-04-03  
-**Purpose:** 10 built-in tool implementations behind the Tool trait  
+**Purpose:** 11 built-in tool implementations behind the Tool trait  
 **Parent:** ../AGENTS.md
 
 ---
 
 ## Crate Purpose
 
-`zipcode-tools` provides the core tool system for the zipcode agent. It implements 10 built-in tools for file manipulation, shell execution, code search, and REPL interaction. Every tool conforms to the `Tool` trait and operates within a permission-based security boundary.
+`zipcode-tools` provides the core tool system for the zipcode agent. It implements 11 built-in tools for file manipulation, shell execution, GitHub repository fetching, code search, and REPL interaction. Every tool conforms to the `Tool` trait and operates within a permission-based security boundary.
 
 **Key Design:**
 - Trait-based tool interface for extensibility
@@ -70,17 +70,18 @@ pub struct ToolResult {
 
 ---
 
-## Built-In Tools (10 Total)
+## Built-In Tools (11 Total)
 
 | Tool Name | File | Description | Permission Required | Key Feature |
 |-----------|------|-------------|---------------------|-------------|
-| `bash` | bash.rs | Execute shell commands | FullAccess | Timeout support (120s default), captures stderr |
+| `bash` | bash.rs | Execute shell commands | WorkspaceWrite approval / FullAccess | Timeout support (120s default), captures stderr |
 | `read_file` | read_file.rs | Read file with line numbers | ReadOnly | Offset/limit for partial reads, line-numbered output |
 | `write_file` | write_file.rs | Write content, creates dirs | WorkspaceWrite | Auto-creates parent directories |
 | `edit_file` | edit_file.rs | Replace unique string | WorkspaceWrite | Fails if target appears 0 or 2+ times |
+| `fetch_repo` | fetch_repo.rs | Clone GitHub repository-root URLs | WorkspaceWrite | Shallow clone into `.zipcode-remote/` |
 | `glob_search` | glob_search.rs | Find files by pattern | ReadOnly | Sorted results, supports recursive patterns |
 | `grep_search` | grep_search.rs | Search file contents | ReadOnly | Regex matching, skips binary files, line-numbered |
-| `repl` | repl.rs | Execute code (python/node) | FullAccess | Python 3 or Node.js only |
+| `repl` | repl.rs | Execute code (python/node) | WorkspaceWrite approval / FullAccess | Python 3 or Node.js only |
 | `todo_write` | todo_write.rs | Write todos to JSON | WorkspaceWrite | Persists to `.zipcode-todos.json` |
 | `tool_search` | tool_search.rs | Search tool registry | ReadOnly | Keyword search by name/description |
 | `agent` | agent.rs | Delegate to sub-agent | FullAccess | Stub; not yet implemented |
@@ -96,6 +97,7 @@ pub struct ToolResult {
 | `read_file.rs` | File reading with line numbers | `ReadFileTool` struct |
 | `write_file.rs` | File writing | `WriteFileTool` struct |
 | `edit_file.rs` | String replacement in files | `EditFileTool` struct |
+| `fetch_repo.rs` | GitHub repository-root URL fetch | `FetchRepoTool` struct |
 | `glob_search.rs` | Glob-based file search | `GlobSearchTool` struct |
 | `grep_search.rs` | Regex-based content search | `GrepSearchTool` struct |
 | `repl.rs` | Python/Node REPL execution | `ReplTool` struct |
@@ -174,7 +176,7 @@ resolve_and_validate_path("./nested/file.txt", cwd)?
 | Mode | Tools Allowed | Use Case |
 |------|---------------|----------|
 | `ReadOnly` | read_file, glob_search, grep_search, tool_search | Safe browsing, no modifications |
-| `WorkspaceWrite` | + write_file, edit_file, todo_write | Edit files within workspace |
+| `WorkspaceWrite` | + write_file, edit_file, todo_write, fetch_repo | Edit files within workspace and explicitly fetch GitHub repos |
 | `FullAccess` | + bash, repl, agent | Execute arbitrary commands |
 
 Permission enforcement is implemented at the runtime/inference layer (not in this crate).
@@ -290,6 +292,27 @@ Test coverage: 3 tests
 - Replace unique string
 - Error on not found
 - Error on duplicate
+
+---
+
+### fetch_repo.rs
+
+**Fetch a GitHub repository-root URL into workspace-local scratch storage.**
+
+Parameters:
+- `url` (required): `https://github.com/<owner>/<repo>` URL, optional `.git` suffix
+- `dest` (optional): Destination under `.zipcode-remote/`
+- `timeout` (optional): Milliseconds, clamped between 100 and 300,000
+
+Behavior:
+- Rejects non-GitHub URLs, query strings, fragments, and nested paths such as `/tree/main`
+- Resolves destinations through `resolve_and_validate_path()` and requires `.zipcode-remote/`
+- Runs `git clone --depth 1 -- <url> <dest>` without shell expansion
+- Reuses an existing destination directory and reports primary files to inspect next
+- Rejects an existing destination file
+- Removes partial clone directories on failure or timeout
+
+Test coverage: URL parsing, URL rejection, destination validation, existing-directory reuse, existing-file rejection
 
 ---
 
@@ -421,7 +444,7 @@ Planned feature: Multi-agent orchestration for complex tasks
 
 ## Testing
 
-**Total test count:** 37 tests (unit + integration)
+**Test coverage:** Unit and integration tests cover every built-in tool plus registry behavior.
 
 **Testing patterns:**
 - Use `tempfile` crate for file operations
@@ -687,7 +710,7 @@ crate::resolve_and_validate_path(path_str, &ctx.cwd)?  // Returns error if escap
 
 The `zipcode-runtime` crate:
 1. Creates a `ToolRegistry` instance
-2. Registers all 10 tools
+2. Registers all 11 tools
 3. Injects tool specs into the LLM system prompt
 4. Calls `execute_tool()` when the model generates tool calls
 5. Applies permission checks (enforced at runtime level)

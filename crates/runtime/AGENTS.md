@@ -196,8 +196,8 @@ Three permission levels:
 | Mode | Allowed | Requires Approval | Blocked |
 |------|---------|-------------------|---------|
 | **FullAccess** | All tools | None | None |
-| **WorkspaceWrite** | Read + write ops | bash, repl | None (with approval) |
-| **ReadOnly** | read_file, glob_search, grep_search, tool_search | None (denied instead) | bash, write_file, edit_file, repl |
+| **WorkspaceWrite** | Read + write ops, fetch_repo | bash, repl | agent, unknown tools |
+| **ReadOnly** | read_file, glob_search, grep_search, tool_search | None (denied instead) | bash, write_file, edit_file, fetch_repo, repl |
 
 ### PermissionCheck Enum
 
