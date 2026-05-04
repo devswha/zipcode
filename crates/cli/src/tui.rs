@@ -102,6 +102,10 @@ fn run_interactive_fullscreen(
     }
 
     loop {
+        // Each arm has a distinct semantic purpose even though two bodies are
+        // identical `{}` — handled keys are consumed silently, unknown events
+        // are also ignored — so suppress the pedantic identical-bodies lint.
+        #[allow(clippy::match_same_arms)]
         match event::read().context("failed to read terminal input")? {
             Event::Key(key) if !ui.handle_key_event(key, &mut conv)? => break,
             Event::Key(_) => {}

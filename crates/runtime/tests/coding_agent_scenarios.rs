@@ -170,7 +170,7 @@ edition = "2021"
     );
     write_file(
         &dir.path().join("src/lib.rs"),
-        r#"pub fn add(a: i32, b: i32) -> i32 {
+        r"pub fn add(a: i32, b: i32) -> i32 {
     a - b
 }
 
@@ -183,7 +183,7 @@ mod tests {
         assert_eq!(add(2, 3), 5);
     }
 }
-"#,
+",
     );
 
     let mock = MockInferenceProvider::new(vec![

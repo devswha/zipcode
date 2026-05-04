@@ -893,8 +893,8 @@ mod tests {
 
     #[test]
     fn test_save_global_creates_file_and_dirs() {
-        let (_global_dir, _global_guard) = with_isolated_global_config();
-        let config_path = _global_dir.path().join("saved-config.json");
+        let (global_dir, _global_guard) = with_isolated_global_config();
+        let config_path = global_dir.path().join("saved-config.json");
         std::env::set_var("ZIPCODE_GLOBAL_CONFIG", &config_path);
 
         let config = ZipcodeConfig {
@@ -918,8 +918,8 @@ mod tests {
 
     #[test]
     fn test_save_global_roundtrip_with_load() {
-        let (_global_dir, _global_guard) = with_isolated_global_config();
-        let config_path = _global_dir.path().join("roundtrip.json");
+        let (global_dir, _global_guard) = with_isolated_global_config();
+        let config_path = global_dir.path().join("roundtrip.json");
         std::env::set_var("ZIPCODE_GLOBAL_CONFIG", &config_path);
 
         let original = ZipcodeConfig {
@@ -951,9 +951,9 @@ mod tests {
 
     #[test]
     fn test_save_global_creates_parent_directories() {
-        let (_global_dir, _global_guard) = with_isolated_global_config();
+        let (global_dir, _global_guard) = with_isolated_global_config();
         // Use a nested path where the parent directory does not exist yet
-        let nested = _global_dir.path().join("nested/sub/dir/config.json");
+        let nested = global_dir.path().join("nested/sub/dir/config.json");
         std::env::set_var("ZIPCODE_GLOBAL_CONFIG", &nested);
 
         let config = ZipcodeConfig::default();
@@ -966,8 +966,8 @@ mod tests {
 
     #[test]
     fn test_save_global_writes_pretty_json() {
-        let (_global_dir, _global_guard) = with_isolated_global_config();
-        let config_path = _global_dir.path().join("pretty.json");
+        let (global_dir, _global_guard) = with_isolated_global_config();
+        let config_path = global_dir.path().join("pretty.json");
         std::env::set_var("ZIPCODE_GLOBAL_CONFIG", &config_path);
 
         let config = ZipcodeConfig {
