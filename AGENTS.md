@@ -8,13 +8,13 @@
 
 ## Project Purpose
 
-zipcode is a Rust-based **local-only AI coding agent** designed for air-gapped environments. It runs Gemma 4 models via GGUF inference using either candle or llama-cpp backends, providing Claude Code-like functionality (file editing, shell execution, code search) entirely offline. Deployable as a single binary or packaged ZIP for USB-based transfer.
+zipcode is a Rust-based **local-only AI coding agent** designed for air-gapped environments. It runs Gemma 4 models via GGUF inference using either candle or llama-cpp backends, providing Claude Code-like functionality (file editing, shell execution, code search) offline by default. The explicit exception is user-requested GitHub repository fetching via `fetch_repo`. Deployable as a single binary or packaged ZIP for USB-based transfer.
 
 **Key Characteristics:**
-- No API keys. No network dependencies.
+- No API keys. No cloud dependency; GitHub repo fetch is an explicit user-requested network action.
 - Supports CUDA acceleration for GPU inference.
 - Single static binary with embedded models.
-- 10 built-in tools with permission-based access control.
+- 11 built-in tools with permission-based access control.
 - Agentic conversation loop with streaming generation.
 
 ---

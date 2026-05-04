@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-zipcode is a Rust-based local-only AI coding agent. It runs GGUF models via llama.cpp (Rust bindings) or candle, providing Claude Code-like functionality (file editing, shell execution, code search) entirely offline. Designed for air-gapped environments — ships as a single ZIP.
+zipcode is a Rust-based local-only AI coding agent. It runs GGUF models via llama.cpp (Rust bindings) or candle, providing Claude Code-like functionality (file editing, shell execution, code search) offline by default, with explicit user-requested GitHub repository fetching as the network exception. Designed for air-gapped environments — ships as a single ZIP.
 
 ## Wiki
 
@@ -48,7 +48,7 @@ cli → runtime → inference
 ```
 
 - `inference` — GGUF model loading, tokenization, streaming generation, Gemma chat template
-- `tools` — 10 tool implementations behind `Tool` trait + `ToolRegistry`
+- `tools` — 11 tool implementations behind `Tool` trait + `ToolRegistry`
 - `runtime` — Agentic conversation loop, config, permissions, sessions
 - `cli` — REPL, one-shot mode, doctor command
 

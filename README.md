@@ -8,7 +8,7 @@
 <h1 align="center">zipcode</h1>
 
 <p align="center">
-  <strong>Local-only AI coding agent. No API keys. No network. Just code.</strong>
+  <strong>Local-only AI coding agent. No API keys. No cloud dependency. Just code.</strong>
 </p>
 
 <p align="center">
@@ -54,7 +54,7 @@ Type /help for commands, Ctrl+D to exit
 | Problem | zipcode Solution |
 |---------|-----------------|
 | API keys expire, leak, or get rate-limited | No API. Model runs locally. |
-| Corporate networks block LLM endpoints | No network needed after setup. |
+| Corporate networks block LLM endpoints | No network needed after setup unless you explicitly ask zipcode to fetch a GitHub repo URL. |
 | Sensitive code can't leave the machine | Everything stays on disk. |
 | Cloud LLMs add latency | GPU inference on your hardware. |
 | Setup requires `npm`, `pip`, Docker... | Single static binary. |
@@ -227,7 +227,7 @@ zipcode-v0.1.0-linux-x86_64-cuda.zip
 
 ## Tools
 
-zipcode comes with **10 built-in tools** that the model can invoke autonomously:
+zipcode comes with **11 built-in tools** that the model can invoke autonomously:
 
 | Tool | Description | Permission |
 |------|-------------|------------|
@@ -235,6 +235,7 @@ zipcode comes with **10 built-in tools** that the model can invoke autonomously:
 | **ReadFile** | Read file contents with line numbers, offset/limit | Always allowed |
 | **WriteFile** | Create or overwrite files, auto-creates parent dirs | Blocked in `read-only` |
 | **EditFile** | Targeted string replacement in existing files | Blocked in `read-only` |
+| **FetchRepo** | Clone a public GitHub repo into `.zipcode-remote/` for analysis | Blocked in `read-only` |
 | **GlobSearch** | Find files by glob pattern (`**/*.rs`, `src/*.py`) | Always allowed |
 | **GrepSearch** | Search file contents with regex, returns `file:line:` | Always allowed |
 | **TodoWrite** | Structured todo list persistence (`.zipcode-todos.json`) | Blocked in `read-only` |
@@ -243,6 +244,8 @@ zipcode comes with **10 built-in tools** that the model can invoke autonomously:
 | **ToolSearch** | Search available tools by keyword | Always allowed |
 
 All tool output is automatically truncated at **8 KB** with a byte-count summary.
+
+`FetchRepo` is the explicit network exception: it only handles repository-root `https://github.com/<owner>/<repo>` URLs, clones them with `git clone --depth 1` into `.zipcode-remote/`, and is unavailable in `read-only` mode. Air-gapped deployments should pre-copy repositories into the workspace instead.
 
 ### Permission Modes
 
@@ -280,7 +283,7 @@ All tool output is automatically truncated at **8 KB** with a byte-count summary
 |          +--+---------+----+                     |
 |             |         |                          |
 |       +-----+    +----+----+                     |
-|       |Bash |    |FileOps  |  ...10 tools        |
+|       |Bash |    |FileOps  |  ...11 tools        |
 |       +-----+    +---------+                     |
 +-------------------------------------------------+
 |             Inference Engine                     |
@@ -298,7 +301,7 @@ All tool output is automatically truncated at **8 KB** with a byte-count summary
 zipcode/
  |- crates/
  |   |- inference/    Candle GGUF engine, Gemma 4 chat template, sampler
- |   |- tools/        10 tool implementations + Tool trait + registry
+ |   |- tools/        11 tool implementations + Tool trait + registry
  |   |- runtime/      Agentic loop, config, permissions, sessions
  |   '- cli/          REPL, one-shot, doctor, slash commands
  |- scripts/          install.sh, download_model.sh, package.sh
@@ -317,7 +320,7 @@ cli --> runtime --> inference
 | Crate | Responsibility |
 |-------|---------------|
 | **inference** | GGUF loading, tokenization, KV cache, SSE streaming, GPU offload. Supports candle, llama-cpp, and llama-server backends. |
-| **tools** | 10 tool implementations. `Tool` trait, `ToolRegistry`, `ToolResult` truncation. |
+| **tools** | 11 tool implementations. `Tool` trait, `ToolRegistry`, `ToolResult` truncation. |
 | **runtime** | Agentic conversation loop. Config hierarchy, permission policy, session persistence. |
 | **cli** | Binary entry point. REPL (rustyline), ANSI rendering (termimad), clap argument parsing. |
 
