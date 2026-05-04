@@ -304,6 +304,201 @@ fn grep_driven_rename_edits_code_and_docs() {
 }
 
 #[test]
+fn test_first_repair_loop_uses_failure_output_before_patch() {
+    let dir = TempDir::new().unwrap();
+    write_file(
+        &dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "agent_test_first_fixture"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    write_file(
+        &dir.path().join("src/lib.rs"),
+        r#"pub fn discount_cents(price_cents: u32, percent: u32) -> u32 {
+    price_cents * percent / 100
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn applies_discount() {
+        assert_eq!(discount_cents(2000, 25), 1500);
+    }
+}
+"#,
+    );
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "cargo test --offline --quiet" }),
+        },
+        MockResponse::ToolCall {
+            name: "read_file".to_string(),
+            args: serde_json::json!({ "path": "src/lib.rs" }),
+        },
+        MockResponse::ToolCall {
+            name: "edit_file".to_string(),
+            args: serde_json::json!({
+                "path": "src/lib.rs",
+                "old_string": "    price_cents * percent / 100",
+                "new_string": "    price_cents - (price_cents * percent / 100)"
+            }),
+        },
+        MockResponse::ToolCall {
+            name: "bash".to_string(),
+            args: serde_json::json!({ "command": "cargo test --offline --quiet" }),
+        },
+        MockResponse::Text(
+            "Reproduced the failure, patched the calculation, and reran tests.".to_string(),
+        ),
+    ]);
+
+    let mut conv = build_scenario_loop(dir.path(), mock);
+    let mut cb = ScenarioCallback::new();
+    conv.run_turn("Run tests first, then fix the discount bug", &mut cb)
+        .unwrap();
+
+    let lib = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    let bash_results: Vec<&str> = cb
+        .tool_results
+        .iter()
+        .filter(|(tool, _)| tool == "bash")
+        .map(|(_, result)| result.as_str())
+        .collect();
+
+    assert_eq!(cb.tool_calls, ["bash", "read_file", "edit_file", "bash"]);
+    assert_eq!(bash_results.len(), 2);
+    assert!(
+        bash_results[0].contains("Exit code"),
+        "first test run should fail: {}",
+        bash_results[0]
+    );
+    assert!(
+        !bash_results[1].contains("Exit code"),
+        "second test run should pass: {}",
+        bash_results[1]
+    );
+    assert!(lib.contains("price_cents - (price_cents * percent / 100)"));
+    assert!(cb.all_tokens().contains("reran tests"));
+}
+
+#[test]
+fn glob_driven_discovery_reads_routes_and_writes_inventory() {
+    let dir = TempDir::new().unwrap();
+    write_file(
+        &dir.path().join("src/routes/admin.rs"),
+        "pub const ROUTE: &str = \"/admin\";\n",
+    );
+    write_file(
+        &dir.path().join("src/routes/users.rs"),
+        "pub const ROUTE: &str = \"/users\";\n",
+    );
+    write_file(&dir.path().join("src/main.rs"), "fn main() {}\n");
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "glob_search".to_string(),
+            args: serde_json::json!({ "pattern": "src/routes/*.rs" }),
+        },
+        MockResponse::ToolCall {
+            name: "read_file".to_string(),
+            args: serde_json::json!({ "path": "src/routes/admin.rs" }),
+        },
+        MockResponse::ToolCall {
+            name: "read_file".to_string(),
+            args: serde_json::json!({ "path": "src/routes/users.rs" }),
+        },
+        MockResponse::ToolCall {
+            name: "write_file".to_string(),
+            args: serde_json::json!({
+                "path": "docs/routes.md",
+                "content": "# Route Inventory\n\n- /admin from src/routes/admin.rs\n- /users from src/routes/users.rs\n"
+            }),
+        },
+        MockResponse::Text("Discovered route files and wrote the inventory.".to_string()),
+    ]);
+
+    let mut conv = build_scenario_loop(dir.path(), mock);
+    let mut cb = ScenarioCallback::new();
+    conv.run_turn("Find route modules and document their routes", &mut cb)
+        .unwrap();
+
+    let inventory = std::fs::read_to_string(dir.path().join("docs/routes.md")).unwrap();
+
+    assert_eq!(
+        cb.tool_calls,
+        ["glob_search", "read_file", "read_file", "write_file"]
+    );
+    assert!(cb.result_for("glob_search").contains("src/routes/admin.rs"));
+    assert!(cb.result_for("glob_search").contains("src/routes/users.rs"));
+    assert!(inventory.contains("/admin"));
+    assert!(inventory.contains("/users"));
+    assert!(cb.all_tokens().contains("inventory"));
+}
+
+#[test]
+fn tool_search_guides_agent_to_grep_then_patch_todo() {
+    let dir = TempDir::new().unwrap();
+    write_file(
+        &dir.path().join("src/lib.rs"),
+        r#"pub fn greeting() -> &'static str {
+    "TODO: choose greeting"
+}
+"#,
+    );
+
+    let mock = MockInferenceProvider::new(vec![
+        MockResponse::ToolCall {
+            name: "tool_search".to_string(),
+            args: serde_json::json!({ "query": "search" }),
+        },
+        MockResponse::ToolCall {
+            name: "grep_search".to_string(),
+            args: serde_json::json!({ "pattern": "TODO", "path": "src" }),
+        },
+        MockResponse::ToolCall {
+            name: "read_file".to_string(),
+            args: serde_json::json!({ "path": "src/lib.rs" }),
+        },
+        MockResponse::ToolCall {
+            name: "edit_file".to_string(),
+            args: serde_json::json!({
+                "path": "src/lib.rs",
+                "old_string": "TODO: choose greeting",
+                "new_string": "hello from zipcode"
+            }),
+        },
+        MockResponse::Text("Found the right search tool and replaced the TODO.".to_string()),
+    ]);
+
+    let mut conv = build_scenario_loop(dir.path(), mock);
+    let mut cb = ScenarioCallback::new();
+    conv.run_turn(
+        "Find TODOs even if you need to discover the right tool",
+        &mut cb,
+    )
+    .unwrap();
+
+    let lib = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+
+    assert_eq!(
+        cb.tool_calls,
+        ["tool_search", "grep_search", "read_file", "edit_file"]
+    );
+    assert!(cb.result_for("tool_search").contains("grep_search"));
+    assert!(cb
+        .result_for("grep_search")
+        .contains("TODO: choose greeting"));
+    assert!(lib.contains("hello from zipcode"));
+    assert!(!lib.contains("TODO: choose greeting"));
+}
+
+#[test]
 fn todo_write_file_and_repl_loop_creates_feature() {
     let dir = TempDir::new().unwrap();
     let slug_module = r#"import re
