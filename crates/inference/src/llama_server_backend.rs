@@ -279,8 +279,8 @@ impl LlamaServerProvider {
     /// Override the chat template associated with this provider.
     ///
     /// By default the template is auto-selected from the model path via
-    /// [`TemplateRegistry::for_model_path`] (local mode) or set to
-    /// [`GemmaTemplate`] (remote mode). Call this after [`Self::load`] to
+    /// [`crate::template_registry::TemplateRegistry::template_for_model`] (local mode) or set to
+    /// [`crate::chat_template::GemmaTemplate`] (remote mode). Call this after [`Self::load`] to
     /// force a specific template, for example in tests or when auto-detection
     /// is wrong for a non-standard filename.
     ///
