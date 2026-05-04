@@ -2153,7 +2153,7 @@ mod tests {
         assert_eq!(layout.composer_top, 24);
         assert_eq!(layout.hint_y, 29);
         assert_eq!(layout.transcript_height, 20);
-        assert_eq!(layout.composer_height, MAX_COMPOSER_LINES as u16);
+        assert_eq!(layout.composer_height, as_u16(MAX_COMPOSER_LINES));
     }
 
     #[test]
@@ -2214,8 +2214,9 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
         EntryKind::Info => ("Info", Color::Cyan),
         EntryKind::Error => ("Err", Color::Red),
         EntryKind::Permission => ("Perm", Color::Magenta),
-        EntryKind::Brand => unreachable!(),
-        EntryKind::Separator => unreachable!(),
+        // Brand and Separator are handled by early returns above; these arms
+        // exist solely to satisfy exhaustiveness.
+        EntryKind::Brand | EntryKind::Separator => unreachable!(),
     };
     let indent = " ".repeat(prefix.len() + 2);
     let mut out = Vec::new();

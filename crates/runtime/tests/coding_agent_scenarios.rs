@@ -316,7 +316,7 @@ edition = "2021"
     );
     write_file(
         &dir.path().join("src/lib.rs"),
-        r#"pub fn discount_cents(price_cents: u32, percent: u32) -> u32 {
+        r"pub fn discount_cents(price_cents: u32, percent: u32) -> u32 {
     price_cents * percent / 100
 }
 
@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(discount_cents(2000, 25), 1500);
     }
 }
-"#,
+",
     );
 
     let mock = MockInferenceProvider::new(vec![
