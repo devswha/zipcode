@@ -438,7 +438,7 @@ This second fix is the "Claude-Code-like experience" path — it gives users vis
 
 **EXTRACTED** from live probes against `gemma-4-e2b-it-Q8_0.gguf` and
 `gemma-4-E4B-it-Q4_K_M.gguf` on 2026-04-15. Both models served through
-zipcode's bundled `llama-server` with the full 10-tool registry and the
+zipcode's bundled `llama-server` with the full 11-tool registry and the
 real `BASE_SYSTEM_PROMPT` from `crates/runtime/src/prompt.rs`.
 
 Each row is one request. Reasoning / tool-call delta counts are taken
@@ -455,9 +455,9 @@ directly from the SSE stream.
 
 ### Takeaways
 
-1. **10-tool production shape does not break either model.** Both E2B
+1. **11-tool production shape does not break either model.** Both E2B
    and E4B emit well-formed tool calls under the full
-   `BASE_SYSTEM_PROMPT` + 10-tool schema load. This closes the Phase A
+   `BASE_SYSTEM_PROMPT` + 11-tool schema load. This closes the Phase A
    prerequisite — the `enable_thinking` wire contract holds at scale.
 2. **Neither model is broken; the differentiator is reasoning
    efficiency and tool-selection nuance.** E4B consistently burns
@@ -510,7 +510,7 @@ respective GGUFs and replaying the JSON requests.
 
 ## Open questions still unresolved
 
-1. ~~**Does E2B behave under zipcode's real load** — 10 tools + the long `BASE_SYSTEM_PROMPT` + optional `.zipcode.md` + multi-turn history?~~ **Resolved above** — both E2B and E4B emit valid tool calls under the full load.
+1. ~~**Does E2B behave under zipcode's real load** — 11 tools + the long `BASE_SYSTEM_PROMPT` + optional `.zipcode.md` + multi-turn history?~~ **Resolved above** — both E2B and E4B emit valid tool calls under the full load.
 2. ~~**Is `chat_template_caps` consistent across E2B / E4B?**~~ **Resolved above** — the SSE delta shape and `reasoning_content` wire contract are identical; zipcode's `TokenEvent::Thinking` lane handles both without code changes.
 3. **Does the real Gemma 4 function-calling-tuned model accept Gemma-3-style `<tool_call>{json}</tool_call>` prompts at inference time as a lenient fallback?** Less urgent now that we know the llama-server path bypasses `chat_template.rs` entirely — but still relevant if candle/llama-cpp-rs backends come back online.
 4. **Edge case: does `<|"|>` require escaping of an inner literal `<|"|>` sequence?** The Jinja template does not show any escape mechanism, which implies tool call argument strings cannot contain the delimiter token verbatim. Relevant for Phase C grammar definition but not for the llama-server path (llama-server handles escaping internally).

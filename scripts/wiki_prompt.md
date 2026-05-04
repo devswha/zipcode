@@ -15,7 +15,7 @@ wiki/
 └── pages/
     ├── inference.md            # InferenceProvider trait + 4 backends + core types + sampler
     ├── chat-template.md        # hardcoded Gemma 4 format, <tool_call> parsing
-    ├── tools.md                # Tool trait + ToolRegistry + 10 tools + path safety + truncation
+    ├── tools.md                # Tool trait + ToolRegistry + 11 tools + path safety + truncation
     ├── conversation-loop.md    # ConversationLoop + 25-iter cap + StreamCallback
     ├── permissions.md          # PermissionMode + policy + 3-tier matrix
     ├── config.md               # ZipcodeConfig + global/project layering + env precedence

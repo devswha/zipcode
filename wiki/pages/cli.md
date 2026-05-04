@@ -116,7 +116,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 4. Detect Gemma 4 by filename pattern.
 5. Build `ServerOptions` from env vars + config (`ZIPCODE_GPU_LAYERS`, `ZIPCODE_FLASH_ATTENTION`, `DEFAULT_CONTEXT_SIZE = 131_072`).
 6. Call `create_engine(backend, model_path, tokenizer_path, config, server_options)` — returns `Box<dyn InferenceProvider>`.
-7. Build `ToolRegistry` with all 10 tools from `zipcode-tools`.
+7. Build `ToolRegistry` with all 11 tools from `zipcode-tools`.
 8. Build system prompt via `prompt::build(...)` — see [conversation-loop › run_turn](conversation-loop.md#run_turn-flow) for how it's consumed.
 9. Create `Session::new()` — the session is NOT persisted to disk at startup. It is saved after the first model turn completes, or immediately when `/clear` is run (`crates/cli/src/repl.rs:1069-1071`).
 10. Construct [`ConversationLoop`](conversation-loop.md).
