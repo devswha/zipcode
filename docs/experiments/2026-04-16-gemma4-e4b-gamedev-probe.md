@@ -219,7 +219,7 @@ mechanically but misses the underlying model.
    without hallucinating success. Round 3 ran under `full-access`
    deliberately so the model could run `cargo test`, and it did.
 
-6. **Tool-selection quality on the 10-tool registry is acceptable but
+6. **Tool-selection quality on the 11-tool registry is acceptable but
    not stellar.** The model picks the right tool on explicit asks
    (`write_file`, `bash`, `edit_file`) but it never reached for
    `tool_search` or `grep_search` to explore its own generated code

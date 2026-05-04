@@ -58,7 +58,7 @@ Goose (block/goose, Apache-2.0) is the closest production-grade reference: Rust,
 
 | Component | Location | Status |
 |---|---|---|
-| `Tool` trait + `ToolRegistry` | `crates/tools/src/lib.rs:365-398` | HashMap-backed, 10 tools, clean registration |
+| `Tool` trait + `ToolRegistry` | `crates/tools/src/lib.rs:365-398` | HashMap-backed, 11 tools, clean registration |
 | `InferenceProvider` trait | `crates/inference/src/lib.rs` | Generic abstraction; feature-gated candle/llama-cpp/llama-server |
 | `ConversationLoop` | `crates/runtime/src/conversation.rs` (328 lines) | Generic over provider; 25-iter cap; session auto-save |
 | `MockInferenceProvider` | `crates/inference/src/mock.rs` | Queue-based; sufficient for harness tests |
@@ -241,7 +241,7 @@ Now and only now, hit the Windows PC remote llama-server.
 
 ## What This Plan Does Not Cover
 
-- Full MCP server integration (goose's biggest feature; deferred — our 10 built-in tools are sufficient for now)
+- Full MCP server integration (goose's biggest feature; deferred — our 11 built-in tools are sufficient for now)
 - Parallel sub-agent dispatch (blocked on single llama-server slot; revisit if we add a slot-pool abstraction)
 - `on_message` streaming callback for sub-agent progress to UI (Phase 1 returns only the final summary; add later if TUI demands it)
 - Security scanning of skill files for prompt-injection payloads (goose's `check_for_security_warnings()` — add in a later hardening phase)
