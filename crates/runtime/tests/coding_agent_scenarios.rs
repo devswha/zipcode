@@ -65,10 +65,10 @@ impl StreamCallback for ScenarioCallback {
 
 fn build_scenario_loop(cwd: &Path, engine: MockInferenceProvider) -> ConversationLoop {
     use zipcode_tools::{
-        bash::BashTool, edit_file::EditFileTool, glob_search::GlobSearchTool,
-        grep_search::GrepSearchTool, read_file::ReadFileTool, repl::ReplTool,
-        todo_write::TodoWriteTool, tool_search::ToolSearchTool, write_file::WriteFileTool,
-        ToolRegistry,
+        bash::BashTool, edit_file::EditFileTool, fetch_repo::FetchRepoTool,
+        glob_search::GlobSearchTool, grep_search::GrepSearchTool, read_file::ReadFileTool,
+        repl::ReplTool, todo_write::TodoWriteTool, tool_search::ToolSearchTool,
+        write_file::WriteFileTool, ToolRegistry,
     };
 
     let mut registry = ToolRegistry::new();
@@ -76,6 +76,7 @@ fn build_scenario_loop(cwd: &Path, engine: MockInferenceProvider) -> Conversatio
     registry.register(Box::new(ReadFileTool));
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(EditFileTool));
+    registry.register(Box::new(FetchRepoTool));
     registry.register(Box::new(GlobSearchTool));
     registry.register(Box::new(GrepSearchTool));
     registry.register(Box::new(TodoWriteTool));

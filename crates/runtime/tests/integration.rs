@@ -101,9 +101,9 @@ fn build_test_loop_with_engine(
     permission: PermissionMode,
 ) -> ConversationLoop {
     use zipcode_tools::{
-        bash::BashTool, edit_file::EditFileTool, glob_search::GlobSearchTool,
-        grep_search::GrepSearchTool, read_file::ReadFileTool, repl::ReplTool,
-        write_file::WriteFileTool, ToolRegistry,
+        bash::BashTool, edit_file::EditFileTool, fetch_repo::FetchRepoTool,
+        glob_search::GlobSearchTool, grep_search::GrepSearchTool, read_file::ReadFileTool,
+        repl::ReplTool, write_file::WriteFileTool, ToolRegistry,
     };
 
     let mut registry = ToolRegistry::new();
@@ -111,6 +111,7 @@ fn build_test_loop_with_engine(
     registry.register(Box::new(ReadFileTool));
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(EditFileTool));
+    registry.register(Box::new(FetchRepoTool));
     registry.register(Box::new(GlobSearchTool));
     registry.register(Box::new(GrepSearchTool));
     registry.register(Box::new(ReplTool));
