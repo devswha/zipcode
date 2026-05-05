@@ -1141,6 +1141,7 @@ pub const fn help_text() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::time::{SystemTime, UNIX_EPOCH};
     use zipcode_runtime::config::GenerationOverrides;
 
@@ -1710,6 +1711,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn server_options_env_overrides_gpu_layers() {
         let config = ZipcodeConfig {
             gpu_layers: Some(10),
@@ -1725,6 +1727,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn server_options_env_overrides_flash_attention() {
         let config = ZipcodeConfig {
             flash_attention: false,
@@ -1742,6 +1745,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn server_options_env_overrides_context_size() {
         let config = ZipcodeConfig::default();
 
@@ -1753,6 +1757,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn server_options_uses_config_context_size_when_no_env() {
         std::env::remove_var("ZIPCODE_LLAMA_SERVER_CTX");
         let config = ZipcodeConfig {
@@ -1768,6 +1773,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn server_options_env_beats_config_context_size() {
         let config = ZipcodeConfig {
             context_size: Some(32768),
@@ -1785,6 +1791,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn server_options_config_values_when_no_env() {
         // Ensure no leftover env vars
         std::env::remove_var("ZIPCODE_GPU_LAYERS");
@@ -1803,6 +1810,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn server_options_env_flash_attention_all_variants() {
         // Test all true-ish values
         for val in &["1", "true", "True", "TRUE"] {
@@ -1826,6 +1834,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn server_options_invalid_env_falls_back_to_config() {
         std::env::set_var("ZIPCODE_GPU_LAYERS", "not_a_number");
         let config = ZipcodeConfig {

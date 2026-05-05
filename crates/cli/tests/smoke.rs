@@ -79,7 +79,7 @@ fn prepend_path(dir: &std::path::Path) -> String {
 fn write_fake_git(path: &std::path::Path) {
     write_executable(
         path,
-        r##"#!/usr/bin/python3
+        r#"#!/usr/bin/python3
 import os
 import pathlib
 import sys
@@ -109,7 +109,7 @@ if args == ["fetch", "origin"]:
 
 print(f"unexpected fake git invocation: {args}", file=sys.stderr)
 sys.exit(99)
-"##,
+"#,
     );
 }
 
