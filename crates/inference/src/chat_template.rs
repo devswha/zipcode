@@ -913,6 +913,182 @@ mod tests {
         assert_eq!(formatted.matches("<start_of_turn>").count(), 4); // 3 messages + 1 model prefix
     }
 
+    // ── format_message + format_conversation extended coverage ────────────
+
+    #[test]
+    fn test_format_message_system_role_maps_to_user_turn() {
+        let msg = ChatMessage::system("You are a helpful assistant.");
+        let formatted = format_message(&msg, &[]);
+        assert!(
+            formatted.contains("<start_of_turn>user"),
+            "system messages should render as user turn, got: {formatted}"
+        );
+        assert!(formatted.contains("You are a helpful assistant."));
+        assert!(formatted.contains("<end_of_turn>"));
+    }
+
+    #[test]
+    fn test_format_message_model_role() {
+        let msg = ChatMessage::assistant("I can help with that.");
+        let formatted = format_message(&msg, &[]);
+        assert!(
+            formatted.contains("<start_of_turn>model"),
+            "model messages should use model turn marker, got: {formatted}"
+        );
+        assert!(formatted.contains("I can help with that."));
+        assert!(formatted.contains("<end_of_turn>"));
+    }
+
+    #[test]
+    fn test_format_message_empty_content() {
+        // System role with empty content
+        let sys = ChatMessage::system("");
+        let sys_fmt = format_message(&sys, &[]);
+        assert!(sys_fmt.contains("<start_of_turn>user"));
+        assert!(sys_fmt.contains("<end_of_turn>"));
+
+        // User role with empty content
+        let user = ChatMessage::user("");
+        let user_fmt = format_message(&user, &[]);
+        assert!(user_fmt.contains("<start_of_turn>user"));
+        assert!(user_fmt.contains("<end_of_turn>"));
+
+        // Model role with empty content
+        let model = ChatMessage::assistant("");
+        let model_fmt = format_message(&model, &[]);
+        assert!(model_fmt.contains("<start_of_turn>model"));
+        assert!(model_fmt.contains("<end_of_turn>"));
+
+        // Tool role with empty content
+        let tool = ChatMessage::tool_result("call_0", "");
+        let tool_fmt = format_message(&tool, &[]);
+        assert!(tool_fmt.contains("<start_of_turn>tool"));
+        assert!(tool_fmt.contains("<end_of_turn>"));
+    }
+
+    #[test]
+    fn test_format_message_user_without_tools_has_no_tools_section() {
+        let msg = ChatMessage::user("just a question");
+        let formatted = format_message(&msg, &[]);
+        assert!(
+            !formatted.contains("You have access to the following tools"),
+            "user message with no tools should not mention tools section, got: {formatted}"
+        );
+        assert!(formatted.contains("just a question"));
+    }
+
+    #[test]
+    fn test_format_message_tool_role_with_tools_param_ignored() {
+        let tools = vec![ToolSpec {
+            name: "bash".to_string(),
+            description: "Execute shell commands".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let msg = ChatMessage::tool_result("call_1", "file contents here");
+        let formatted = format_message(&msg, &tools);
+        assert!(
+            !formatted.contains("You have access to the following tools"),
+            "tool result should ignore tools parameter, got: {formatted}"
+        );
+        assert!(formatted.contains("file contents here"));
+        assert!(formatted.contains("<start_of_turn>tool"));
+    }
+
+    #[test]
+    fn test_format_conversation_empty_messages() {
+        let formatted = format_conversation(&[], &[]);
+        assert_eq!(
+            formatted, "<start_of_turn>model\n",
+            "empty messages should produce only the model turn prefix"
+        );
+    }
+
+    #[test]
+    fn test_format_conversation_tools_injected_only_in_first_user_turn() {
+        let tools = vec![ToolSpec {
+            name: "bash".to_string(),
+            description: "Execute shell commands".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let messages = vec![
+            ChatMessage::user("first question"),
+            ChatMessage::assistant("answer"),
+            ChatMessage::user("second question"),
+        ];
+        let formatted = format_conversation(&messages, &tools);
+
+        // First user turn should have tools injected
+        let first_user_start = formatted.find("<start_of_turn>user").unwrap();
+        let first_user_end = formatted.find("<end_of_turn>").unwrap();
+        let first_turn = &formatted[first_user_start..first_user_end];
+        assert!(
+            first_turn.contains("You have access to the following tools"),
+            "first user turn should contain tools injection"
+        );
+        assert!(first_turn.contains("bash"));
+
+        // Count total tool injection occurrences — should be exactly 1
+        let injection_count = formatted
+            .matches("You have access to the following tools")
+            .count();
+        assert_eq!(
+            injection_count, 1,
+            "tools should be injected exactly once, found {injection_count} times"
+        );
+
+        // Should end with model turn prefix
+        assert!(formatted.ends_with("<start_of_turn>model\n"));
+    }
+
+    #[test]
+    fn test_format_conversation_single_system_message() {
+        let messages = vec![ChatMessage::system("Be concise.")];
+        let formatted = format_conversation(&messages, &[]);
+        assert!(formatted.contains("Be concise."));
+        assert!(formatted.contains("<start_of_turn>user")); // system maps to user
+        assert!(formatted.ends_with("<start_of_turn>model\n"));
+    }
+
+    #[test]
+    fn test_format_conversation_model_turn_suffix() {
+        // With various message combos, always ends with model prefix
+        let cases: Vec<Vec<ChatMessage>> = vec![
+            vec![ChatMessage::user("hi")],
+            vec![ChatMessage::assistant("hello")],
+            vec![ChatMessage::system("sys"), ChatMessage::user("ask")],
+            vec![
+                ChatMessage::user("q1"),
+                ChatMessage::assistant("a1"),
+                ChatMessage::user("q2"),
+                ChatMessage::assistant("a2"),
+            ],
+        ];
+        for (i, messages) in cases.into_iter().enumerate() {
+            let formatted = format_conversation(&messages, &[]);
+            assert!(
+                formatted.ends_with("<start_of_turn>model\n"),
+                "case {i}: should end with model turn prefix, got suffix: {:?}",
+                formatted.chars().rev().take(30).collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_conversation_tools_with_no_user_messages() {
+        let tools = vec![ToolSpec {
+            name: "bash".to_string(),
+            description: "Execute shell commands".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let messages = vec![ChatMessage::system("You are helpful.")];
+        let formatted = format_conversation(&messages, &tools);
+        // No user messages → tools never get injected
+        assert!(
+            !formatted.contains("You have access to the following tools"),
+            "tools should NOT be injected when there are no user messages, got: {formatted}"
+        );
+    }
+
     #[test]
     fn test_parse_multiple_tool_calls() {
         let output = "<tool_call>\n{\"name\": \"bash\", \"arguments\": {\"command\": \"ls\"}}\n</tool_call>\nsome text\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"file_path\": \"a.rs\"}}\n</tool_call>";
