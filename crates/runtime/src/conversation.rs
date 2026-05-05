@@ -1794,4 +1794,62 @@ ran without error"
     fn not_benign_plain_string_without_error() {
         assert!(!is_benign_error_line("all systems nominal"));
     }
+
+    // ── compute_child_budget ──────────────────────────────────────
+
+    #[test]
+    fn compute_child_budget_typical_value() {
+        // 10_000 / 2 = 5_000, within [4096, 32768]
+        assert_eq!(compute_child_budget(10_000), 5_000);
+    }
+
+    #[test]
+    fn compute_child_budget_clamps_to_minimum() {
+        // Very small parent budget → floor at 4096
+        assert_eq!(compute_child_budget(0), 4096);
+        assert_eq!(compute_child_budget(1), 4096);
+        assert_eq!(compute_child_budget(100), 4096);
+        assert_eq!(compute_child_budget(4095), 4096);
+        assert_eq!(compute_child_budget(8191), 4096);
+        assert_eq!(compute_child_budget(8192), 4096);
+    }
+
+    #[test]
+    fn compute_child_budget_exactly_at_minimum_boundary() {
+        // (8193 / 2) = 4096 (integer division rounds down), still clamped to 4096
+        assert_eq!(compute_child_budget(8193), 4096);
+        // (8194 / 2) = 4097 → just above minimum, not clamped
+        assert_eq!(compute_child_budget(8194), 4097);
+    }
+
+    #[test]
+    fn compute_child_budget_clamps_to_maximum() {
+        // 65536 / 2 = 32768, exactly at max
+        assert_eq!(compute_child_budget(65_536), 32_768);
+        // 65534 / 2 = 32767, below max
+        assert_eq!(compute_child_budget(65_534), 32_767);
+        // 100_000 / 2 = 50_000, clamped to 32768
+        assert_eq!(compute_child_budget(100_000), 32_768);
+        // Very large value
+        assert_eq!(compute_child_budget(1_000_000), 32_768);
+    }
+
+    #[test]
+    fn compute_child_budget_unclamped_range() {
+        // Values where half falls within (4096, 32768)
+        assert_eq!(compute_child_budget(12_000), 6_000);
+        assert_eq!(compute_child_budget(20_000), 10_000);
+        assert_eq!(compute_child_budget(40_000), 20_000);
+        assert_eq!(compute_child_budget(65_534), 32_767);
+    }
+
+    #[test]
+    fn compute_child_budget_maximum_boundary() {
+        // 65536 / 2 = 32768 (exactly max, not clamped)
+        assert_eq!(compute_child_budget(65_536), 32_768);
+        // 65537 / 2 = 32768 (integer division), exactly max
+        assert_eq!(compute_child_budget(65_537), 32_768);
+        // 65538 / 2 = 32769 → just above max, clamped to 32768
+        assert_eq!(compute_child_budget(65_538), 32_768);
+    }
 }
