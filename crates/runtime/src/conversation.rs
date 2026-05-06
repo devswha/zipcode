@@ -632,8 +632,53 @@ fn contains_fix_word(line_lower: &str) -> bool {
     false
 }
 
+/// Returns true if the lowered line contains a negation that should cancel
+/// a benign classification. Matches patterns like "not", "could not",
+/// "unsuccessfully", "wasn't", "cannot", "failed to", etc.
+fn contains_negation(line_lower: &str) -> bool {
+    // "not " before a keyword (e.g. "not fixed", "not resolved", "not cleared")
+    if line_lower.contains(" not ") || line_lower.starts_with("not ") {
+        return true;
+    }
+    // "could not"
+    if line_lower.contains("could not") {
+        return true;
+    }
+    // "unsuccessfully"
+    if line_lower.contains("unsuccessfully") {
+        return true;
+    }
+    // "wasn't" / "was not"
+    if line_lower.contains("wasn't") || line_lower.contains("was not") {
+        return true;
+    }
+    // "cannot" / "can't"
+    if line_lower.contains("cannot") || line_lower.contains("can't") {
+        return true;
+    }
+    // "failed to"
+    if line_lower.contains("failed to") {
+        return true;
+    }
+    // "did not" / "didn't"
+    if line_lower.contains("did not") || line_lower.contains("didn't") {
+        return true;
+    }
+    // "has not" / "hasn't"
+    if line_lower.contains("has not") || line_lower.contains("hasn't") {
+        return true;
+    }
+    false
+}
+
 /// Benign patterns that mention "error" but do NOT indicate a failure.
 fn is_benign_error_line(line_lower: &str) -> bool {
+    // If the line contains a negation, it's not benign — a real error is being
+    // described (e.g. "could not be fixed, error persists", "error was not resolved").
+    if contains_negation(line_lower) {
+        return false;
+    }
+
     // Order matters: check more specific patterns first.
 
     // "no error", "no errors"
@@ -1015,6 +1060,80 @@ mod tests {
         assert!(
             recent_tool_results_contain_errors(&messages),
             "'fixture error' should be detected as a real error, not benign"
+        );
+    }
+
+    // ── False-negative edge cases (negation should cancel benign) ────
+
+    #[test]
+    fn negation_not_fixed_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("build"),
+            ChatMessage::tool_result("c1", "could not be fixed, error persists"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'could not be fixed, error persists' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_unsuccessfully_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("deploy"),
+            ChatMessage::tool_result("c1", "unsuccessfully resolved the error"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'unsuccessfully resolved the error' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_not_resolved_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("debug"),
+            ChatMessage::tool_result("c1", "error was not resolved after retry"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'error was not resolved' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_not_cleared_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("fix"),
+            ChatMessage::tool_result("c1", "error was not cleared, still present"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'error was not cleared' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_could_not_fix_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("compile"),
+            ChatMessage::tool_result("c1", "could not fix the error in main.rs"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'could not fix the error' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_failed_to_resolve_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("debug"),
+            ChatMessage::tool_result("c1", "failed to resolve error in module"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'failed to resolve error' should be detected as a real error"
         );
     }
 
