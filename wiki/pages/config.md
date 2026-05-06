@@ -6,7 +6,7 @@
 
 ## Hierarchy
 
-**EXTRACTED** `config.rs:140-186`
+**EXTRACTED** `config.rs:6-24`
 
 ```
 defaults (hardcoded)
@@ -18,7 +18,7 @@ defaults (hardcoded)
 
 ### Project root detection
 
-**EXTRACTED** `find_project_root()` at `config.rs:238`
+**EXTRACTED** `find_project_root()` at `config.rs:248`
 
 Walks ancestors from cwd looking for one of:
 1. `.zipcode.json`

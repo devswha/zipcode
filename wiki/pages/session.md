@@ -6,7 +6,7 @@
 
 ## Storage layout
 
-**EXTRACTED** `session.rs:432` (`session_path()` helper)
+**EXTRACTED** `session.rs:438` (`session_path()` helper)
 
 ```
 ~/.zipcode/sessions/{uuid}.json

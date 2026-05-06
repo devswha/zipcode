@@ -162,7 +162,7 @@ Chain: `top_k → top_p → temperature → sample`. Used by `InferenceEngine`. 
 - `llama_server_backend.rs` — 109 tests covering SSE parsing, streaming behavior, request building, flash-attention flag compatibility, thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options
 - `sampler.rs` — 21 tests covering top-k / top-p / temperature scaling and numerical-stability edge cases
 - `template_registry.rs` — 23 tests covering glob resolution, override merging, malformed-JSON fallback, and deterministic specificity sort (#140 regression coverage)
-- `device.rs` / `mock.rs` / `engine.rs` round out the rest; crate total: **271 passing + 2 ignored** plus 7 in `tests/template_integration.rs`
+- `device.rs` / `mock.rs` / `engine.rs` round out the rest; crate total: **328 tests**
 
 ---
 

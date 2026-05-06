@@ -54,7 +54,7 @@ Generic over inference backend via the trait object. Owns everything needed to d
 │     │     │     Allowed              → run
 │     │     │     NeedsApproval(msg)   → StreamCallback::on_permission_prompt → if false, skip
 │     │     │     Denied(msg)          → append denial message, skip
-│     │     ├─ execute_tool(&registry, name, args, &ctx)       (tools/lib.rs:419)
+│     │     ├─ execute_tool(&registry, name, args, &ctx)       (tools/lib.rs:510)
 │     │     │     ↑ auto-truncated to MAX_TOOL_OUTPUT_BYTES (= 8192)
 │     │     ├─ push tool-result message to session
 │     │     └─ StreamCallback::on_tool_result
@@ -92,7 +92,7 @@ Implemented by the CLI's REPL / TUI to pipe events to the terminal. `on_permissi
 | Bound | Constant | Location | What happens at the limit |
 |-------|----------|----------|--------------------------|
 | Max tool iterations per turn | `MAX_TOOL_ITERATIONS = 25` | `conversation.rs:94` | Returns `Err`; turn does not resume gracefully |
-| Max tool output per call | `MAX_TOOL_OUTPUT_BYTES = 8192` | `tools/lib.rs:502` | Output silently trimmed with `[truncated: ...]` note — see [tools](tools.md#output-truncation) |
+| Max tool output per call | `MAX_TOOL_OUTPUT_BYTES = 8192` | `tools/lib.rs:503` | Output silently trimmed with `[truncated: ...]` note — see [tools](tools.md#output-truncation) |
 | Session file size | none | `session.rs` | Grows unbounded per message |
 
 **GOTCHA:** hitting the 25-iteration cap throws an `Err` but the session is still saved, so the partial conversation is persisted. The next turn starts with a model that saw its own loop getting killed mid-thought, which can produce confused output.
@@ -134,7 +134,7 @@ Current named coverage includes:
 25. `workspace_write_permission_prompt_executes_repl_when_approved` — approval prompt is emitted and `repl` executes only after acceptance. `crates/runtime/tests/integration.rs:397`
 26. `workspace_write_permission_prompt_records_denial_when_rejected_for_repl` — rejected approval for `repl` leaves a denial tool-result message in session history without executing the tool. `crates/runtime/tests/integration.rs:430`
 
-26 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-05-03).
+26 integration tests total (**EXTRACTED** — `cargo test -p zipcode-runtime --test integration -- --list` on 2026-05-06).
 
 ---
 

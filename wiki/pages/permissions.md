@@ -4,7 +4,7 @@ Permission state is **split across two crates** — GOTCHA flagged in [`GRAPH_RE
 
 | Concept | Where | File |
 |---------|-------|------|
-| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:305` |
+| `PermissionMode` enum | `zipcode-tools` | `crates/tools/src/lib.rs:306` |
 | `PermissionPolicy` + `check()` | `zipcode-runtime` | `crates/runtime/src/permission.rs:5` |
 | CLI flag `--permission-mode` | `zipcode` (cli) | `crates/cli/src/main.rs` |
 | Config field `permission_mode` | `zipcode-runtime` | `crates/runtime/src/config.rs` (default: `workspace-write`) |
@@ -13,7 +13,7 @@ Permission state is **split across two crates** — GOTCHA flagged in [`GRAPH_RE
 
 ## `PermissionMode`
 
-**EXTRACTED** `crates/tools/src/lib.rs:305-309`
+**EXTRACTED** `crates/tools/src/lib.rs:306-310`
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

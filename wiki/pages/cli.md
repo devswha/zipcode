@@ -145,7 +145,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 
 ## Tests
 
-**EXTRACTED** — `crates/cli/tests/smoke.rs` currently exposes 47 smoke tests (`cargo test -p zipcode --test smoke -- --list` on 2026-05-03).
+**EXTRACTED** — `crates/cli/tests/smoke.rs` currently exposes smoke tests as part of 301 total tests in `zipcode` (cli) (`cargo test -p zipcode --test smoke -- --list` on 2026-05-06).
 
 Notable newer regression guards added since the earlier snapshot include:
 

@@ -113,7 +113,7 @@ This one is an actual refactor, not a drop-in.
 **Goal:** let longer tool chains run, or let tools return more data.
 
 - **Tool iterations:** change `MAX_TOOL_ITERATIONS` in `crates/runtime/src/conversation.rs:94`. Tests in `crates/runtime/tests/integration.rs` assert the cap; update or parameterize.
-- **Tool output size:** change `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:502`. Tests in `crates/tools/src/lib.rs` assert truncation at 8 KB; update.
+- **Tool output size:** change `MAX_TOOL_OUTPUT_BYTES` in `crates/tools/src/lib.rs:503`. Tests in `crates/tools/src/lib.rs` assert truncation at 8 KB; update.
 
 **Gotcha:** raising the output size directly inflates the model's working context. On 8192-token models this will cause context overflow sooner.
 
