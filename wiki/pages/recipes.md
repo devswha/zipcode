@@ -168,7 +168,7 @@ See [llama-server › GPU offload](llama-server.md#gpu-offload) and [config](con
    - Permission mode (line 34)
    - Working directory (line 35)
    - `.zipcode.md` content if present (lines 37-44)
-   - `.zipcode.md` content from the detected project root if present (`crates/runtime/src/prompt.rs:49-56`)
+   - `.zipcode.md` content from the detected project root if present (`crates/runtime/src/prompt.rs:51-63`)
 3. Update the matching test in `prompt.rs` — there are 3.
 
 ---

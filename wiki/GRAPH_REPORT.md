@@ -73,16 +73,16 @@ Drop these into a code search or walk the links — the wiki is pre-wired for th
 
 ---
 
-## Test surface (1,150 tests across the workspace)
+## Test surface (1,368 tests across the workspace)
 
 | Crate | Tests | Notable |
 |-------|-------|---------|
-| `inference` | 328 | `chat_template.rs` alone carries 50+ parsing/formatting robustness tests; `llama_server_backend.rs` has parser/streaming tests covering thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options |
-| `tools` | 211 | Every tool has focused unit coverage; workspace-escape regressions exist for both glob and grep search |
-| `runtime` | 310 | `MockInferenceProvider` drives loop tests including read-only denial, workspace-write approval accept/reject, traversal blocking, persistence, and compaction resume |
-| `cli` | 301 | Unit tests live across `commands`, `repl`, `render`, `tui`, `tui_composer`, and `width`; smoke tests spawn the real binary in temp `HOME` |
+| `inference` | 349 | `chat_template.rs` alone carries 111 parsing/formatting robustness tests; `llama_server_backend.rs` has 109 parser/streaming tests covering thinking-mode request defaults, `reasoning_content` SSE handling, reasoning/tool-call stream separation, block-array content extraction, and default server options |
+| `tools` | 285 | Every tool has focused unit coverage; 62 integration tests in `tools_integration.rs`; workspace-escape regressions exist for both glob and grep search |
+| `runtime` | 382 | `MockInferenceProvider` drives loop tests including read-only denial, workspace-write approval accept/reject, traversal blocking, persistence, and compaction resume; 115 conversation tests, 76 session tests, 55 config tests |
+| `cli` | 352 | Unit tests live across `commands`, `repl`, `render`, `tui`, `tui_composer`, and `width`; 51 smoke tests spawn the real binary in temp `HOME` |
 
-**EXTRACTED** from `cargo test --workspace` on 2026-05-06 plus per-file test inventories in the source tree.
+**EXTRACTED** from `cargo test --workspace` on 2026-05-08 plus per-file test inventories in the source tree.
 
 ---
 
