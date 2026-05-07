@@ -308,4 +308,237 @@ mod tests {
             "empty catalog should not add skill section"
         );
     }
+
+    // ── Edge-case tests for build_system_prompt ──────────────────────
+
+    #[test]
+    fn test_all_features_combined() {
+        use zipcode_tools::{bash::BashTool, read_file::ReadFileTool, write_file::WriteFileTool};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(".zipcode.md"),
+            "# Rules
+- Always use cargo fmt
+- Run clippy before committing",
+        )
+        .unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(BashTool));
+        registry.register(Box::new(ReadFileTool));
+        registry.register(Box::new(WriteFileTool));
+
+        let catalog = "review: Review recently changed code
+search: Search the codebase";
+        let (prompt, specs) =
+            build_system_prompt(dir.path(), &registry, "read-only", Some(catalog));
+
+        // All sections should be present
+        assert!(prompt.contains("zipcode"), "base prompt missing");
+        assert!(
+            prompt.contains("Permission mode: read-only"),
+            "permission mode missing"
+        );
+        assert!(
+            prompt.contains(&dir.path().display().to_string()),
+            "working directory missing"
+        );
+        assert!(
+            prompt.contains("## Available Skills"),
+            "skill catalog section missing"
+        );
+        assert!(
+            prompt.contains("review: Review recently changed code"),
+            "skill entry missing"
+        );
+        assert!(
+            prompt.contains("# Project Instructions"),
+            "project instructions section missing"
+        );
+        assert!(
+            prompt.contains("Always use cargo fmt"),
+            "project instruction content missing"
+        );
+
+        // Correct ordering: skills before project instructions
+        let skills_pos = prompt.find("## Available Skills").unwrap();
+        let project_pos = prompt.find("# Project Instructions").unwrap();
+        assert!(
+            skills_pos < project_pos,
+            "skills section should appear before project instructions"
+        );
+
+        // Tool specs should contain 3 entries
+        assert_eq!(specs.len(), 3, "expected 3 tool specs");
+    }
+
+    #[test]
+    fn test_permission_mode_read_only() {
+        let registry = ToolRegistry::new();
+        let dir = tempfile::TempDir::new().unwrap();
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "read-only", None);
+
+        assert!(
+            prompt.contains("Permission mode: read-only"),
+            "prompt should contain 'Permission mode: read-only'"
+        );
+    }
+
+    #[test]
+    fn test_working_directory_with_spaces() {
+        let parent = tempfile::TempDir::new().unwrap();
+        let dir_with_spaces = parent.path().join("my project dir");
+        std::fs::create_dir_all(&dir_with_spaces).unwrap();
+
+        let registry = ToolRegistry::new();
+        let (prompt, _) = build_system_prompt(&dir_with_spaces, &registry, "full-access", None);
+
+        let expected = dir_with_spaces.display().to_string();
+        assert!(
+            prompt.contains(&expected),
+            "prompt should contain working directory with spaces: '{expected}'"
+        );
+    }
+
+    #[test]
+    fn test_zipcode_md_multiline_markdown() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let md_content = "# Rules
+- Always use cargo fmt
+- Run clippy before committing
+## Naming
+Use snake_case";
+        std::fs::write(dir.path().join(".zipcode.md"), md_content).unwrap();
+
+        let registry = ToolRegistry::new();
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access", None);
+
+        assert!(
+            prompt.contains("# Project Instructions"),
+            "should have Project Instructions header"
+        );
+        assert!(
+            prompt.contains("# Rules"),
+            "should contain markdown heading"
+        );
+        assert!(
+            prompt.contains("Always use cargo fmt"),
+            "should contain first rule"
+        );
+        assert!(
+            prompt.contains("Run clippy before committing"),
+            "should contain second rule"
+        );
+        assert!(
+            prompt.contains("## Naming"),
+            "should contain second heading"
+        );
+        assert!(
+            prompt.contains("Use snake_case"),
+            "should contain naming convention"
+        );
+    }
+
+    #[test]
+    fn test_section_ordering_skills_before_project_instructions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".zipcode.md"), "# Project rules").unwrap();
+
+        let registry = ToolRegistry::new();
+        let catalog = "deploy: Deploy to production";
+        let (prompt, _) = build_system_prompt(dir.path(), &registry, "full-access", Some(catalog));
+
+        let skills_pos = prompt
+            .find("## Available Skills")
+            .expect("skills section should exist");
+        let project_pos = prompt
+            .find("# Project Instructions")
+            .expect("project instructions should exist");
+
+        assert!(
+            skills_pos < project_pos,
+            "skills section at pos {skills_pos} should appear before project instructions at pos {project_pos}"
+        );
+    }
+
+    #[test]
+    fn test_tool_specs_preserve_parameters() {
+        use zipcode_tools::{bash::BashTool, read_file::ReadFileTool};
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(BashTool));
+        registry.register(Box::new(ReadFileTool));
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let (_, specs) = build_system_prompt(dir.path(), &registry, "full-access", None);
+
+        assert!(!specs.is_empty(), "should have tool specs");
+        for spec in &specs {
+            assert!(
+                spec.parameters.is_object(),
+                "tool spec parameters for '{}' should be a JSON object, got: {:?}",
+                spec.name,
+                spec.parameters
+            );
+            assert!(
+                spec.parameters.get("type").is_some(),
+                "tool spec parameters for '{}' should have a 'type' field",
+                spec.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_empty_vs_nonempty_skill_catalog() {
+        let registry = ToolRegistry::new();
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Empty catalog should NOT produce skill section
+        let (prompt_empty, _) = build_system_prompt(dir.path(), &registry, "full-access", Some(""));
+        assert!(
+            !prompt_empty.contains("## Available Skills"),
+            "empty catalog should not add skill section"
+        );
+
+        // Non-empty catalog should produce skill section
+        let (prompt_nonempty, _) = build_system_prompt(
+            dir.path(),
+            &registry,
+            "full-access",
+            Some("test: A test skill"),
+        );
+        assert!(
+            prompt_nonempty.contains("## Available Skills"),
+            "non-empty catalog should add skill section"
+        );
+        assert!(
+            prompt_nonempty.contains("test: A test skill"),
+            "non-empty catalog should contain the skill entry"
+        );
+    }
+
+    #[test]
+    fn test_tool_specs_match_registered_names() {
+        use zipcode_tools::{
+            bash::BashTool, glob_search::GlobSearchTool, grep_search::GrepSearchTool,
+        };
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(BashTool));
+        registry.register(Box::new(GrepSearchTool));
+        registry.register(Box::new(GlobSearchTool));
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let (_, specs) = build_system_prompt(dir.path(), &registry, "full-access", None);
+
+        let mut names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        names.sort();
+
+        assert_eq!(
+            names,
+            vec!["bash", "glob_search", "grep_search"],
+            "tool spec names should match registered tools exactly"
+        );
+    }
 }
