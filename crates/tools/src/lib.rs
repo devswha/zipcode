@@ -1040,4 +1040,200 @@ mod tests {
         let relative = make_relative_path(&file, dir.path());
         assert_eq!(relative, "README.md");
     }
+
+    // ── ToolRegistry::create_filtered tests ─────────────────────────
+
+    /// Helper: build a registry with N uniquely-named tools for filtering tests.
+    struct NamedTool(&'static str, &'static str);
+
+    impl Tool for NamedTool {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn description(&self) -> &'static str {
+            self.1
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
+            Ok(ToolResult::new(format!("{} executed", self.0)))
+        }
+    }
+
+    fn registry_with_tools() -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(NamedTool("read_file", "Read a file")));
+        reg.register(Box::new(NamedTool("write_file", "Write a file")));
+        reg.register(Box::new(NamedTool("bash", "Run shell command")));
+        reg.register(Box::new(NamedTool(
+            "glob_search",
+            "Search files by pattern",
+        )));
+        reg.register(Box::new(NamedTool("agent", "Delegate to sub-agent")));
+        reg
+    }
+
+    #[test]
+    fn test_create_filtered_empty_allowlist_returns_empty_registry() {
+        let reg = registry_with_tools();
+        let filtered = reg.create_filtered(&[]);
+        assert!(
+            filtered.names().is_empty(),
+            "empty allowlist should produce empty registry"
+        );
+    }
+
+    #[test]
+    fn test_create_filtered_returns_only_allowed_tools() {
+        let reg = registry_with_tools();
+        let allowlist: Vec<String> = vec!["read_file".into(), "bash".into()];
+        let filtered = reg.create_filtered(&allowlist);
+        let names = filtered.names();
+        assert_eq!(names.len(), 2, "should have exactly 2 tools");
+        assert!(names.contains(&"read_file"), "should contain read_file");
+        assert!(names.contains(&"bash"), "should contain bash");
+    }
+
+    #[test]
+    fn test_create_filtered_always_excludes_agent() {
+        let reg = registry_with_tools();
+        let allowlist: Vec<String> = vec!["agent".into(), "read_file".into()];
+        let filtered = reg.create_filtered(&allowlist);
+        let names = filtered.names();
+        assert!(
+            !names.contains(&"agent"),
+            "agent must never appear in filtered registry"
+        );
+        assert!(
+            names.contains(&"read_file"),
+            "non-agent tools should still be included"
+        );
+    }
+
+    #[test]
+    fn test_create_filtered_preserves_tool_identity() {
+        let reg = registry_with_tools();
+        let allowlist: Vec<String> = vec!["write_file".into()];
+        let filtered = reg.create_filtered(&allowlist);
+        let specs = filtered.specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "write_file");
+        assert_eq!(specs[0].description, "Write a file");
+    }
+
+    #[test]
+    fn test_create_filtered_unknown_names_ignored() {
+        let reg = registry_with_tools();
+        let allowlist: Vec<String> = vec![
+            "read_file".into(),
+            "nonexistent_tool".into(),
+            "also_missing".into(),
+        ];
+        let filtered = reg.create_filtered(&allowlist);
+        let names = filtered.names();
+        assert_eq!(names.len(), 1, "only real tool should appear");
+        assert!(names.contains(&"read_file"));
+    }
+
+    #[test]
+    fn test_create_filtered_does_not_modify_original() {
+        let reg = registry_with_tools();
+        let original_count = reg.names().len();
+        let allowlist: Vec<String> = vec!["read_file".into()];
+        let _filtered = reg.create_filtered(&allowlist);
+        assert_eq!(
+            reg.names().len(),
+            original_count,
+            "original registry should be untouched"
+        );
+        assert!(reg.get("bash").is_some(), "original should still have bash");
+    }
+
+    #[test]
+    fn test_create_filtered_all_tools_allowed() {
+        let reg = registry_with_tools();
+        let all_names: Vec<String> = reg.names().into_iter().map(String::from).collect();
+        let filtered = reg.create_filtered(&all_names);
+        // agent is excluded even when in allowlist
+        let expected = all_names.len() - 1; // minus agent
+        assert_eq!(
+            filtered.names().len(),
+            expected,
+            "all tools except agent should be present"
+        );
+        assert!(
+            !filtered.names().contains(&"agent"),
+            "agent must still be excluded"
+        );
+    }
+
+    #[test]
+    fn test_create_filtered_only_agent_in_allowlist() {
+        let reg = registry_with_tools();
+        let allowlist: Vec<String> = vec!["agent".into()];
+        let filtered = reg.create_filtered(&allowlist);
+        assert!(
+            filtered.names().is_empty(),
+            "requesting only agent should yield empty registry"
+        );
+    }
+
+    #[test]
+    fn test_create_filtered_partial_overlap() {
+        let reg = registry_with_tools();
+        let allowlist: Vec<String> = vec![
+            "read_file".into(),
+            "no_such_tool".into(),
+            "bash".into(),
+            "ghost".into(),
+        ];
+        let filtered = reg.create_filtered(&allowlist);
+        let names = filtered.names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"bash"));
+    }
+
+    #[test]
+    fn test_create_filtered_empty_registry_with_allowlist() {
+        let reg = ToolRegistry::new();
+        let allowlist: Vec<String> = vec!["read_file".into(), "bash".into()];
+        let filtered = reg.create_filtered(&allowlist);
+        assert!(
+            filtered.names().is_empty(),
+            "filtering empty registry should yield empty registry"
+        );
+    }
+
+    #[test]
+    fn test_create_filtered_case_sensitive_matching() {
+        let reg = registry_with_tools();
+        let allowlist: Vec<String> = vec!["Read_File".into(), "BASH".into()];
+        let filtered = reg.create_filtered(&allowlist);
+        assert!(
+            filtered.names().is_empty(),
+            "name matching should be case-sensitive"
+        );
+    }
+
+    #[test]
+    fn test_create_filtered_specs_accurate_after_filter() {
+        let reg = registry_with_tools();
+        let allowlist: Vec<String> = vec!["read_file".into(), "glob_search".into()];
+        let filtered = reg.create_filtered(&allowlist);
+        let specs = filtered.specs();
+        assert_eq!(specs.len(), 2);
+        let spec_names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(spec_names.contains(&"read_file"));
+        assert!(spec_names.contains(&"glob_search"));
+        // Verify descriptions survived the filter
+        for spec in &specs {
+            assert!(
+                !spec.description.is_empty(),
+                "description for {} should not be empty",
+                spec.name
+            );
+        }
+    }
 }
