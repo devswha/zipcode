@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use tracing::warn;
 
 use crate::{make_relative_path, wait_with_output_timeout, Tool, ToolContext, ToolResult};
 
@@ -79,7 +80,13 @@ impl Tool for FetchRepoTool {
             .context("failed to start git clone; ensure git is installed")?;
 
         let Some(output) = wait_with_output_timeout(child, timeout)? else {
-            let _ = std::fs::remove_dir_all(&dest);
+            if let Err(e) = std::fs::remove_dir_all(&dest) {
+                warn!(
+                    path = %dest.display(),
+                    error = %e,
+                    "failed to clean up partial clone directory after timeout"
+                );
+            }
             return Ok(ToolResult::error(&format!(
                 "git clone timed out after {}ms",
                 timeout.as_millis()
@@ -87,7 +94,13 @@ impl Tool for FetchRepoTool {
         };
 
         if !output.status.success() {
-            let _ = std::fs::remove_dir_all(&dest);
+            if let Err(e) = std::fs::remove_dir_all(&dest) {
+                warn!(
+                    path = %dest.display(),
+                    error = %e,
+                    "failed to clean up partial clone directory after failed clone"
+                );
+            }
             let mut message = String::from("git clone failed");
             if let Some(code) = output.status.code() {
                 let _ = write!(message, " with exit code {code}");
