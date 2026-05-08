@@ -151,16 +151,16 @@ Notable newer regression guards added since the earlier snapshot include:
 
 | Area | Example tests |
 |------|---------------|
-| Dirty-tree update gating before any fetch | `crates/cli/tests/smoke.rs:632`, `crates/cli/tests/smoke.rs:669` |
-| Missing-model startup guidance for explicit `prompt` / `repl` subcommands | `crates/cli/tests/smoke.rs:739`, `crates/cli/tests/smoke.rs:817` |
-| Stale helper-path fallback discovery | `crates/cli/tests/smoke.rs:1016` |
-| Unrunnable helper GPU-offload config surfaced in `doctor` and bare startup | `crates/cli/tests/smoke.rs:1211`, `crates/cli/tests/smoke.rs:1260` |
-| Project-local config parse errors point to the right file | `crates/cli/tests/smoke.rs:1409` |
-| Root installer remains `Ready` when multiple existing models are available | `crates/cli/tests/smoke.rs:1778` |
+| Dirty-tree update gating before any fetch | `crates/cli/tests/smoke.rs:634`, `crates/cli/tests/smoke.rs:671` |
+| Missing-model startup guidance for explicit `prompt` / `repl` subcommands | `crates/cli/tests/smoke.rs:741`, `crates/cli/tests/smoke.rs:819` |
+| Stale helper-path fallback discovery | `crates/cli/tests/smoke.rs:1018` |
+| Unrunnable helper GPU-offload config surfaced in `doctor` and bare startup | `crates/cli/tests/smoke.rs:1213`, `crates/cli/tests/smoke.rs:1262` |
+| Project-local config parse errors point to the right file | `crates/cli/tests/smoke.rs:1411` |
+| Root installer remains `Ready` when multiple existing models are available | `crates/cli/tests/smoke.rs:1780` |
 | Plain REPL session-load failures stay inline instead of exiting | `crates/cli/tests/smoke.rs:2539` |
 | `/clear` persists the new session immediately | `crates/cli/tests/smoke.rs:2452` |
 | Fullscreen `/compact` reports skipped/no-op honestly | `crates/cli/tests/smoke.rs:2533` |
-| Non-interactive permission-prompt denial for approval-gated tools | `crates/cli/tests/smoke.rs:2938` |
+| Non-interactive permission-prompt denial for approval-gated tools | `crates/cli/tests/smoke.rs:3110` |
 | Interactive plain-REPL approval of `bash` tool call | `crates/cli/tests/smoke.rs:3010` |
 
 All tests use temp `HOME` directories to avoid side effects.
