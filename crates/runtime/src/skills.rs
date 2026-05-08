@@ -427,4 +427,135 @@ mod tests {
         assert_eq!(skill.name, "s");
         assert!(skill.body.contains("Body line"));
     }
+    // ── Edge-case tests for skills.rs ────────────────────────────────
+
+    #[test]
+    fn test_skill_from_str_rejects_unclosed_frontmatter() {
+        let src = "---\nname: s\ndescription: d\n";
+        let err = Skill::parse(src).unwrap_err();
+        assert!(
+            err.to_string().contains("missing frontmatter closing"),
+            "expected 'missing frontmatter closing' error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_skill_from_str_empty_body() {
+        let src = "---\nname: s\ndescription: d\n---\n";
+        let skill = Skill::parse(src).unwrap();
+        assert_eq!(skill.name, "s");
+        assert!(
+            skill.body.trim().is_empty(),
+            "body should be empty after frontmatter with no content, got: {:?}",
+            skill.body
+        );
+    }
+
+    #[test]
+    fn test_skill_render_unclosed_placeholder() {
+        let src = "---\nname: s\ndescription: d\n---\nHello {{ unclosed!\n";
+        let skill = Skill::parse(src).unwrap();
+        let params = HashMap::new();
+        let rendered = skill.render(&params);
+        assert!(
+            rendered.contains("{{ unclosed!"),
+            "unclosed placeholder should be preserved verbatim, got: {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn test_skill_render_placeholder_whitespace_key() {
+        let src = "---\nname: s\ndescription: d\n---\nHello {{   }}!\n";
+        let skill = Skill::parse(src).unwrap();
+        let params = HashMap::new();
+        let rendered = skill.render(&params);
+        // Whitespace-only key trims to "" → no param match → empty string substituted
+        assert!(
+            rendered.contains("Hello !"),
+            "whitespace-only key should substitute empty, got: {:?}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn test_skill_render_same_placeholder_twice() {
+        let src = "---\nname: s\ndescription: d\n---\nHello {{ name }}, dear {{ name }}!\n";
+        let skill = Skill::parse(src).unwrap();
+        let mut params = HashMap::new();
+        params.insert("name".to_owned(), "Alice".to_owned());
+        let rendered = skill.render(&params);
+        assert_eq!(rendered.trim_end(), "Hello Alice, dear Alice!");
+    }
+
+    #[test]
+    fn test_skill_render_adjacent_placeholders() {
+        let src = "---\nname: s\ndescription: d\n---\n{{ a }}{{ b }}\n";
+        let skill = Skill::parse(src).unwrap();
+        let mut params = HashMap::new();
+        params.insert("a".to_owned(), "X".to_owned());
+        params.insert("b".to_owned(), "Y".to_owned());
+        let rendered = skill.render(&params);
+        assert_eq!(rendered.trim_end(), "XY");
+    }
+
+    #[test]
+    fn test_skill_registry_default_trait() {
+        let registry = SkillRegistry::default();
+        assert!(
+            registry.names().is_empty(),
+            "default registry should have no skills"
+        );
+    }
+
+    #[test]
+    fn test_skill_registry_duplicate_skill_name_keeps_one() {
+        let dir = TempDir::new().unwrap();
+        write_skill_file(
+            &dir,
+            "first.md",
+            "---\nname: dup\ndescription: First\n---\nFirst body\n",
+        );
+        write_skill_file(
+            &dir,
+            "second.md",
+            "---\nname: dup\ndescription: Second\n---\nSecond body\n",
+        );
+        let registry = SkillRegistry::load_from(dir.path()).unwrap();
+        assert_eq!(
+            registry.names().len(),
+            1,
+            "duplicate name should result in exactly one entry"
+        );
+        let skill = registry.get("dup").unwrap();
+        // read_dir order is filesystem-dependent, so just verify one of the two was kept
+        assert!(
+            skill.description == "First" || skill.description == "Second",
+            "kept skill should be one of the two, got: {:?}",
+            skill.description
+        );
+    }
+
+    #[test]
+    fn test_skill_registry_empty_catalog() {
+        let registry = SkillRegistry::new();
+        let catalog = registry.catalog_for_prompt();
+        assert!(
+            catalog.is_empty(),
+            "empty registry should produce empty catalog, got: {:?}",
+            catalog
+        );
+    }
+
+    #[test]
+    fn test_skill_from_str_missing_description_field() {
+        let src = "---\nname: only_name\n---\nBody\n";
+        let err = Skill::parse(src).unwrap_err();
+        assert!(
+            err.to_string().contains("malformed YAML") || err.to_string().contains("missing field"),
+            "missing description field should fail parsing, got: {}",
+            err
+        );
+    }
 }
