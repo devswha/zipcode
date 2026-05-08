@@ -1141,8 +1141,15 @@ pub const fn help_text() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
     use std::time::{SystemTime, UNIX_EPOCH};
     use zipcode_runtime::config::GenerationOverrides;
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -1711,6 +1718,7 @@ mod tests {
 
     #[test]
     fn server_options_env_overrides_gpu_layers() {
+        let _guard = env_lock();
         let config = ZipcodeConfig {
             gpu_layers: Some(10),
             ..ZipcodeConfig::default()
@@ -1726,6 +1734,7 @@ mod tests {
 
     #[test]
     fn server_options_env_overrides_flash_attention() {
+        let _guard = env_lock();
         let config = ZipcodeConfig {
             flash_attention: false,
             ..ZipcodeConfig::default()
@@ -1743,6 +1752,7 @@ mod tests {
 
     #[test]
     fn server_options_env_overrides_context_size() {
+        let _guard = env_lock();
         let config = ZipcodeConfig::default();
 
         std::env::set_var("ZIPCODE_LLAMA_SERVER_CTX", "16384");
@@ -1754,6 +1764,7 @@ mod tests {
 
     #[test]
     fn server_options_uses_config_context_size_when_no_env() {
+        let _guard = env_lock();
         std::env::remove_var("ZIPCODE_LLAMA_SERVER_CTX");
         let config = ZipcodeConfig {
             context_size: Some(32768),
@@ -1769,6 +1780,7 @@ mod tests {
 
     #[test]
     fn server_options_env_beats_config_context_size() {
+        let _guard = env_lock();
         let config = ZipcodeConfig {
             context_size: Some(32768),
             ..ZipcodeConfig::default()
@@ -1786,6 +1798,7 @@ mod tests {
 
     #[test]
     fn server_options_config_values_when_no_env() {
+        let _guard = env_lock();
         // Ensure no leftover env vars
         std::env::remove_var("ZIPCODE_GPU_LAYERS");
         std::env::remove_var("ZIPCODE_FLASH_ATTENTION");
@@ -1804,6 +1817,7 @@ mod tests {
 
     #[test]
     fn server_options_env_flash_attention_all_variants() {
+        let _guard = env_lock();
         // Test all true-ish values
         for val in &["1", "true", "True", "TRUE"] {
             std::env::set_var("ZIPCODE_FLASH_ATTENTION", *val);
@@ -1827,6 +1841,7 @@ mod tests {
 
     #[test]
     fn server_options_invalid_env_falls_back_to_config() {
+        let _guard = env_lock();
         std::env::set_var("ZIPCODE_GPU_LAYERS", "not_a_number");
         let config = ZipcodeConfig {
             gpu_layers: Some(7),
