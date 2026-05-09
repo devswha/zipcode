@@ -17,7 +17,7 @@ Ranked by how many other concepts route through them.
 | 3 | `Tool` trait + `ToolRegistry` | `crates/tools/src/lib.rs:432,446` | 11 implementors; `execute_tool()` (`:510`) is the single entry point from `runtime`. |
 | 4 | `ChatMessage` | `crates/inference/src/types.rs:36` | Wire format carried by every component: REPL → conversation loop → inference → chat template → back. |
 | 5 | `PermissionMode` | `crates/tools/src/lib.rs:306` | Referenced by `ToolContext`, `PermissionPolicy`, CLI args, config. Gates every tool call. |
-| 6 | Gemma chat template | `crates/inference/src/chat_template.rs:11` | Every prompt is formatted through `format_conversation()` before reaching any backend. |
+| 6 | Gemma chat template | `crates/inference/src/chat_template.rs:819` | Every prompt is formatted through `format_conversation()` before reaching any backend. |
 | 7 | `resolve_and_validate_path()` | `crates/tools/src/lib.rs:19` | Called by every file-touching tool (read, write, edit, glob, grep). Single path-safety gate. |
 
 See [`pages/`](pages/) for detail on each.
@@ -60,7 +60,7 @@ Drop these into a code search or walk the links — the wiki is pre-wired for th
 
 | # | Gotcha | Location |
 |---|--------|----------|
-| 1 | Chat template is Gemma-only; other models appear tool-blind | `chat_template.rs:11-56` |
+| 1 | Chat template is Gemma-only; other models appear tool-blind | `chat_template.rs:1-60` |
 | 2 | Candle backend uses `quantized_llama` as a Gemma placeholder; compiles but won't load real Gemma | `engine.rs:1-4` |
 | 3 | `llama-cpp-rs` 0.1.141 lacks Gemma 4 arch → zipcode falls back to `llama-server` subprocess | `llama_cpp_backend.rs` + CLAUDE.md |
 | 4 | Tool output silently truncated at 8 KB; model isn't told how much was cut | `tools/lib.rs:503,391-410` |
