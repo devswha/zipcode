@@ -36,7 +36,7 @@ See [`pages/`](pages/) for detail on each.
 
 5. **Permission policy is split across two crates.** `PermissionMode` enum lives in `tools` (`:306`); `PermissionPolicy::check()` lives in `runtime` (`permission.rs:32`). **Why it matters:** adding a new permission tier requires editing both crates.
 
-6. **Session persistence is JSON-per-file, not a database.** `~/.zipcode/sessions/{uuid}.json` (`crates/runtime/src/session.rs:100`). **Why it matters:** `ls ~/.zipcode/sessions/ | wc -l` scales linearly forever; no retention policy.
+6. **Session persistence is JSON-per-file, not a database.** `~/.zipcode/sessions/{uuid}.json` (`crates/runtime/src/session.rs:85`). **Why it matters:** `ls ~/.zipcode/sessions/ | wc -l` scales linearly forever; no retention policy.
 
 7. **The `llama-server` backend is the only fully-functional path today.** `llama-cpp-rs` 0.1.141 lacks Gemma 4 arch support; candle has no `quantized_gemma`. See [`gotchas`](pages/gotchas.md#backend-reality-check).
 
@@ -68,7 +68,7 @@ Drop these into a code search or walk the links — the wiki is pre-wired for th
 | 6 | Agent tool is a stub — returns "not yet implemented" | `agent.rs` |
 | 7 | Path traversal prevention depends on every file tool calling `resolve_and_validate_path()` | `tools/lib.rs:14-78` |
 | 8 | `llama-server` subprocess killed in `Drop`; if the process crashes during health check, no explicit error path | `llama_server_backend.rs:143-148` |
-| 9 | Session files grow unbounded in `~/.zipcode/sessions/` (no rotation) | `session.rs:100` |
+| 9 | Session files grow unbounded in `~/.zipcode/sessions/` (no rotation) | `session.rs:85` |
 | 10 | Env var names for GPU are case-sensitive; typos silently ignored | `config.rs` + CLI env read |
 
 ---

@@ -140,7 +140,7 @@ Algorithm:
 2. Canonicalize (via `canonicalize_even_if_missing()` at `:71-95` for paths that don't exist yet).
 3. Assert `canonical.starts_with(&cwd_canonical)`.
 
-**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Shared path-safety regression coverage lives in `crates/tools/src/lib.rs:628+`, but it still won't catch a brand-new tool that forgets the helper.
+**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Shared path-safety regression coverage lives in `crates/tools/src/lib.rs:485+`, but it still won't catch a brand-new tool that forgets the helper.
 
 ---
 
@@ -171,7 +171,7 @@ The rest of the crate still has broad per-tool coverage for:
 
 | Area | Example coverage anchors |
 |------|---------------------------|
-| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:510`, `crates/tools/src/lib.rs:484`, `crates/tools/src/lib.rs:628` |
+| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:510`, `crates/tools/src/lib.rs:446`, `crates/tools/src/lib.rs:485` |
 | File readers / writers / editor behaviors | `crates/tools/src/read_file.rs`, `crates/tools/src/write_file.rs`, `crates/tools/src/edit_file.rs` |
 | Search behavior and budget limits | `crates/tools/src/glob_search.rs`, `crates/tools/src/grep_search.rs` |
 | Execution tools (`bash`, `repl`) | `crates/tools/src/bash.rs`, `crates/tools/src/repl.rs` |

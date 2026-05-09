@@ -131,7 +131,7 @@ Produced by `chat_template::parse_tool_calls()` — see [chat-template](chat-tem
 
 ## Factory: `create_engine()`
 
-**EXTRACTED** `crates/inference/src/lib.rs:82-200`
+**EXTRACTED** `crates/inference/src/lib.rs:98-200`
 
 Dispatches on `Backend` enum, returns `Box<dyn InferenceProvider>`.
 

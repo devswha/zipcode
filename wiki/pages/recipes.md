@@ -75,8 +75,8 @@ Dev-facing task recipes. Each recipe lists the files you'll touch and the invari
        }
    }
    ```
-3. **Register in the `Backend` enum:** `crates/inference/src/lib.rs:82-89` — add `Mlx` variant.
-4. **Register in the factory:** `crates/inference/src/lib.rs:82-200` — add a dispatch arm, feature-gated with `#[cfg(feature = "mlx")]`.
+3. **Register in the `Backend` enum:** `crates/inference/src/lib.rs:98-107` — add `Mlx` variant.
+4. **Register in the factory:** `crates/inference/src/lib.rs:98-200` — add a dispatch arm, feature-gated with `#[cfg(feature = "mlx")]`.
 5. **Parse from CLI:** `Backend::parse()` (same file) — add the kebab-case name.
 6. **Contract test** using a tiny prompt and `cargo test --features mlx`. Ideally run the same tests against `MockInferenceProvider` as a baseline.
 
