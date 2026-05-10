@@ -80,7 +80,7 @@ Single gate that every file-touching tool routes paths through. Works today beca
 
 ## #6 — llama-server subprocess lifecycle
 
-**Location:** `crates/inference/src/llama_server_backend.rs:143-148`
+**Location:** `crates/inference/src/llama_server_backend.rs:339-360`
 
 - `Drop` kills the child. Fine for normal exit.
 - Health check polls `/health` with a hardcoded timeout. Slow machines loading huge models can time out even though the server will eventually come up.
@@ -122,7 +122,7 @@ Returns "not yet implemented". Included in the registry, listed in `tool_search`
 
 ## #10 — Project root detection is order-sensitive
 
-**Location:** `crates/runtime/src/config.rs:248-260`
+**Location:** `crates/runtime/src/config.rs:248-259`
 
 `find_project_root()` walks ancestors looking for `.zipcode.json`, then `.zipcode.md`, then `.git`. First match wins. If you have a nested git submodule, the nested `.git` will anchor project root at the submodule instead of the outer workspace.
 

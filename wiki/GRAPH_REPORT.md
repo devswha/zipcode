@@ -46,7 +46,7 @@ See [`pages/`](pages/) for detail on each.
 
 Drop these into a code search or walk the links — the wiki is pre-wired for them.
 
-1. **"Where does a tool call actually execute?"** → `crates/tools/src/lib.rs:510` (`execute_tool`) called from `crates/runtime/src/conversation.rs:105-143`. Both pages cross-link.
+1. **"Where does a tool call actually execute?"** → `crates/tools/src/lib.rs:510` (`execute_tool`) called from `crates/runtime/src/conversation.rs:93-244`. Both pages cross-link.
 2. **"What stops the agent from looping forever?"** → Two bounds: 25 tool iterations (`conversation.rs:94`) and 8 KB per tool result (`tools/lib.rs:503`).
 3. **"Why doesn't model X work?"** → Almost always the hardcoded Gemma chat template. See [`chat-template`](pages/chat-template.md).
 4. **"Where is `~/.zipcode/config.json` read?"** → `crates/runtime/src/config.rs:6` (`ZipcodeConfig::load`), merged with `.zipcode.json` from project root.
