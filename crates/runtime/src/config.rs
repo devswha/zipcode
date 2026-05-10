@@ -346,6 +346,7 @@ mod tests {
 
     #[test]
     fn test_load_from_empty_dir() {
+        let (_global_dir, _guard) = with_isolated_global_config();
         let dir = tempfile::TempDir::new().unwrap();
         let config = ZipcodeConfig::load(dir.path()).unwrap();
         assert_eq!(config.permission_mode, "workspace-write");
