@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use tracing::warn;
 
 use crate::{make_relative_path, wait_with_output_timeout, Tool, ToolContext, ToolResult};
 
@@ -79,7 +80,13 @@ impl Tool for FetchRepoTool {
             .context("failed to start git clone; ensure git is installed")?;
 
         let Some(output) = wait_with_output_timeout(child, timeout)? else {
-            let _ = std::fs::remove_dir_all(&dest);
+            if let Err(e) = std::fs::remove_dir_all(&dest) {
+                warn!(
+                    path = %dest.display(),
+                    error = %e,
+                    "failed to clean up partial clone directory after timeout"
+                );
+            }
             return Ok(ToolResult::error(&format!(
                 "git clone timed out after {}ms",
                 timeout.as_millis()
@@ -87,7 +94,13 @@ impl Tool for FetchRepoTool {
         };
 
         if !output.status.success() {
-            let _ = std::fs::remove_dir_all(&dest);
+            if let Err(e) = std::fs::remove_dir_all(&dest) {
+                warn!(
+                    path = %dest.display(),
+                    error = %e,
+                    "failed to clean up partial clone directory after failed clone"
+                );
+            }
             let mut message = String::from("git clone failed");
             if let Some(code) = output.status.code() {
                 let _ = write!(message, " with exit code {code}");
@@ -315,5 +328,215 @@ mod tests {
         );
         let error = result.unwrap_err().to_string();
         assert!(error.contains("not a directory"));
+    }
+
+    // --- New tests added for comprehensive coverage ---
+
+    #[test]
+    fn validate_github_segment_rejects_empty() {
+        assert!(super::validate_github_segment("", "owner").is_err());
+        assert!(super::validate_github_segment("", "repo").is_err());
+    }
+
+    #[test]
+    fn validate_github_segment_rejects_special_chars() {
+        // @, !, space, :, / are not allowed
+        assert!(super::validate_github_segment("user@name", "owner").is_err());
+        assert!(super::validate_github_segment("my repo", "repo").is_err());
+        assert!(super::validate_github_segment("owner!", "owner").is_err());
+        assert!(super::validate_github_segment("na:me", "owner").is_err());
+    }
+
+    #[test]
+    fn validate_github_segment_accepts_valid() {
+        // alphanumeric, hyphens, underscores, dots
+        assert!(super::validate_github_segment("devswha", "owner").is_ok());
+        assert!(super::validate_github_segment("my-repo", "repo").is_ok());
+        assert!(super::validate_github_segment("repo_name", "repo").is_ok());
+        assert!(super::validate_github_segment("repo.name", "repo").is_ok());
+        assert!(super::validate_github_segment("A1-b2.c3_d4", "owner").is_ok());
+    }
+
+    #[test]
+    fn parse_url_trailing_slash() {
+        let repo = parse_github_repo_url("https://github.com/devswha/patina/").unwrap();
+        assert_eq!(repo.owner, "devswha");
+        assert_eq!(repo.name, "patina");
+    }
+
+    #[test]
+    fn primary_files_finds_existing() {
+        let dir = TempDir::new().unwrap();
+        let dest = dir.path().join("repo");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("README.md"), "# readme").unwrap();
+        std::fs::write(dest.join("Cargo.toml"), "[package]").unwrap();
+        // A file that is NOT in the candidates list
+        std::fs::write(dest.join("random.txt"), "ignore").unwrap();
+
+        let files = super::primary_files(&dest, dir.path());
+        assert_eq!(files.len(), 2);
+        assert!(files[0].contains("README.md"));
+        assert!(files[1].contains("Cargo.toml"));
+    }
+
+    #[test]
+    fn primary_files_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let dest = dir.path().join("repo");
+        std::fs::create_dir_all(&dest).unwrap();
+        // No recognized files
+        std::fs::write(dest.join("random.txt"), "ignore").unwrap();
+
+        let files = super::primary_files(&dest, dir.path());
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn primary_files_case_insensitive_readme() {
+        let dir = TempDir::new().unwrap();
+        let dest = dir.path().join("repo");
+        std::fs::create_dir_all(&dest).unwrap();
+        // lowercase readme.md should also be found
+        std::fs::write(dest.join("readme.md"), "# readme").unwrap();
+
+        let files = super::primary_files(&dest, dir.path());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].contains("readme.md"));
+    }
+
+    #[test]
+    fn repo_result_message_fresh() {
+        let dir = TempDir::new().unwrap();
+        let dest = dir.path().join("repo");
+        std::fs::create_dir_all(&dest).unwrap();
+        let repo = GithubRepo {
+            owner: "devswha".to_string(),
+            name: "patina".to_string(),
+        };
+        let msg = super::repo_result_message(&repo, &dest, dir.path(), false);
+        assert!(
+            msg.contains("Fetched"),
+            "fresh message should say 'Fetched', got: {msg}"
+        );
+        assert!(
+            msg.contains("devswha/patina"),
+            "message should contain repo slug, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn repo_result_message_reused() {
+        let dir = TempDir::new().unwrap();
+        let dest = dir.path().join("repo");
+        std::fs::create_dir_all(&dest).unwrap();
+        let repo = GithubRepo {
+            owner: "devswha".to_string(),
+            name: "patina".to_string(),
+        };
+        let msg = super::repo_result_message(&repo, &dest, dir.path(), true);
+        assert!(
+            msg.contains("already available"),
+            "reused message should say 'already available', got: {msg}"
+        );
+        assert!(
+            msg.contains("devswha/patina"),
+            "message should contain repo slug, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn append_output_appends_nonempty() {
+        let mut message = String::from("prefix");
+        super::append_output(&mut message, b"hello world", "STDOUT");
+        assert!(
+            message.contains("STDOUT"),
+            "should contain label STDOUT, got: {message}"
+        );
+        assert!(
+            message.contains("hello world"),
+            "should contain content, got: {message}"
+        );
+    }
+
+    #[test]
+    fn append_output_skips_empty() {
+        let mut message = String::from("prefix");
+        super::append_output(&mut message, b"", "STDOUT");
+        assert_eq!(message, "prefix", "empty bytes should not modify message");
+    }
+
+    #[test]
+    fn append_output_skips_whitespace_only() {
+        let mut message = String::from("prefix");
+        super::append_output(&mut message, b"   \n  \t ", "STDOUT");
+        assert_eq!(
+            message, "prefix",
+            "whitespace-only bytes should not modify message"
+        );
+    }
+
+    #[test]
+    fn execute_missing_url_param() {
+        let dir = TempDir::new().unwrap();
+        let result = FetchRepoTool.execute(serde_json::json!({}), &ctx(&dir));
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing required parameter: url"),
+            "should mention missing url, got: {err}"
+        );
+    }
+
+    #[test]
+    fn destination_with_valid_custom_dest() {
+        let dir = TempDir::new().unwrap();
+        // Create the scratch dir so resolve_and_validate_path works
+        std::fs::create_dir_all(dir.path().join(".zipcode-remote")).unwrap();
+        let repo = parse_github_repo_url("https://github.com/devswha/patina").unwrap();
+        let dest =
+            destination_path(Some(".zipcode-remote/custom-name"), &repo, dir.path()).unwrap();
+        assert_eq!(
+            dest.strip_prefix(dir.path()).unwrap().to_string_lossy(),
+            ".zipcode-remote/custom-name"
+        );
+    }
+
+    #[test]
+    fn parse_url_rejects_query_string() {
+        let err = parse_github_repo_url("https://github.com/devswha/patina?tab=readme")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("query strings"),
+            "should mention query strings, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_url_rejects_fragment() {
+        let err = parse_github_repo_url("https://github.com/devswha/patina#readme")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("query strings or fragments"),
+            "should mention fragments, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_url_rejects_too_many_path_segments() {
+        let err = parse_github_repo_url("https://github.com/devswha/patina/tree/main")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("exactly") || err.contains("must be exactly"),
+            "should reject nested paths, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_url_with_dotgit_suffix() {
+        let repo = parse_github_repo_url("https://github.com/devswha/patina.git").unwrap();
+        assert_eq!(repo.name, "patina", ".git suffix should be stripped");
     }
 }

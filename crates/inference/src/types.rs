@@ -125,7 +125,7 @@ pub struct ToolCallParsed {
 /// Streaming event emitted by inference backends during generation.
 ///
 /// Consumers read these from the `mpsc::Receiver` returned by
-/// [`InferenceProvider::generate_stream`]. The stream always ends with
+/// [`InferenceProvider::generate_stream`](crate::InferenceProvider::generate_stream). The stream always ends with
 /// either `Done` or `Error`.
 #[derive(Debug, Clone)]
 pub enum TokenEvent {

@@ -79,7 +79,7 @@ fn prepend_path(dir: &std::path::Path) -> String {
 fn write_fake_git(path: &std::path::Path) {
     write_executable(
         path,
-        r##"#!/usr/bin/python3
+        r#"#!/usr/bin/python3
 import os
 import pathlib
 import sys
@@ -109,7 +109,7 @@ if args == ["fetch", "origin"]:
 
 print(f"unexpected fake git invocation: {args}", file=sys.stderr)
 sys.exit(99)
-"##,
+"#,
     );
 }
 
@@ -323,6 +323,8 @@ env = os.environ.copy()
 for var in ("ZIPCODE_LLAMA_SERVER_URL", "ZIPCODE_LLAMA_SERVER_ALIAS",
             "ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"):
     env.pop(var, None)
+if env.get("TERM") in (None, "", "dumb"):
+    env["TERM"] = "xterm-256color"
 env["HOME"] = {home:?}
 {env_lines}if {has_automation_script}:
     env["ZIPCODE_TUI_AUTOMATION_SCRIPT"] = {automation_script}
@@ -2473,6 +2475,8 @@ env = os.environ.copy()
 for var in ("ZIPCODE_LLAMA_SERVER_URL", "ZIPCODE_LLAMA_SERVER_ALIAS",
             "ZIPCODE_LLAMA_SERVER_BIN", "LLAMA_SERVER_BIN"):
     env.pop(var, None)
+if env.get("TERM") in (None, "", "dumb"):
+    env["TERM"] = "xterm-256color"
 env["ZIPCODE_LLAMA_SERVER_BIN"] = {helper:?}
 env["ZIPCODE_TUI_AUTOMATION_SCRIPT"] = "/status\n/quit\n"
 env["HOME"] = {home:?}

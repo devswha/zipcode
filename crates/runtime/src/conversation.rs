@@ -603,12 +603,12 @@ fn contains_error_word(line_lower: &str) -> bool {
     false
 }
 
-/// Returns true if the lowered line contains the word "fix" as a standalone
-/// token (word boundary check). Prevents false benign matches on "prefix",
-/// "suffix", "affix", "fixture", etc.
-fn contains_fix_word(line_lower: &str) -> bool {
+/// Returns true if the lowered line contains `word` as a standalone token
+/// (word boundary check on both sides). Prevents false substring matches
+/// (e.g. "fixed" matching inside "prefixed", "resolved" inside "unresolved").
+fn contains_word(line_lower: &str, word: &str) -> bool {
     let bytes = line_lower.as_bytes();
-    let pattern = b"fix";
+    let pattern = word.as_bytes();
     let pat_len = pattern.len();
 
     if bytes.len() < pat_len {
@@ -632,8 +632,60 @@ fn contains_fix_word(line_lower: &str) -> bool {
     false
 }
 
+/// Returns true if the lowered line contains the word "fix" as a standalone
+/// token (word boundary check). Prevents false benign matches on "prefix",
+/// "suffix", "affix", "fixture", etc.
+fn contains_fix_word(line_lower: &str) -> bool {
+    contains_word(line_lower, "fix")
+}
+
+/// Returns true if the lowered line contains a negation that should cancel
+/// a benign classification. Matches patterns like "not", "could not",
+/// "unsuccessfully", "wasn't", "cannot", "failed to", etc.
+fn contains_negation(line_lower: &str) -> bool {
+    // "not " before a keyword (e.g. "not fixed", "not resolved", "not cleared")
+    if line_lower.contains(" not ") || line_lower.starts_with("not ") {
+        return true;
+    }
+    // "could not"
+    if line_lower.contains("could not") {
+        return true;
+    }
+    // "unsuccessfully"
+    if line_lower.contains("unsuccessfully") {
+        return true;
+    }
+    // "wasn't" / "was not"
+    if line_lower.contains("wasn't") || line_lower.contains("was not") {
+        return true;
+    }
+    // "cannot" / "can't"
+    if line_lower.contains("cannot") || line_lower.contains("can't") {
+        return true;
+    }
+    // "failed to"
+    if line_lower.contains("failed to") {
+        return true;
+    }
+    // "did not" / "didn't"
+    if line_lower.contains("did not") || line_lower.contains("didn't") {
+        return true;
+    }
+    // "has not" / "hasn't"
+    if line_lower.contains("has not") || line_lower.contains("hasn't") {
+        return true;
+    }
+    false
+}
+
 /// Benign patterns that mention "error" but do NOT indicate a failure.
 fn is_benign_error_line(line_lower: &str) -> bool {
+    // If the line contains a negation, it's not benign — a real error is being
+    // described (e.g. "could not be fixed, error persists", "error was not resolved").
+    if contains_negation(line_lower) {
+        return false;
+    }
+
     // Order matters: check more specific patterns first.
 
     // "no error", "no errors"
@@ -649,7 +701,8 @@ fn is_benign_error_line(line_lower: &str) -> bool {
         return true;
     }
     // "fixed ... error", "fix ... error" (resolved errors)
-    if line_lower.contains("fixed") && line_lower.contains("error") {
+    // Use word-boundary check to avoid matching "prefixed", "unfixed", "suffixed".
+    if contains_word(line_lower, "fixed") && line_lower.contains("error") {
         return true;
     }
     // Use word-boundary matching for "fix" to avoid false matches with
@@ -667,11 +720,13 @@ fn is_benign_error_line(line_lower: &str) -> bool {
         return true;
     }
     // "resolved ... error", "error ... resolved"
-    if line_lower.contains("resolved") && line_lower.contains("error") {
+    // Use word-boundary check to avoid matching "unresolved".
+    if contains_word(line_lower, "resolved") && line_lower.contains("error") {
         return true;
     }
     // "cleared ... error", "error ... cleared"
-    if line_lower.contains("cleared") && line_lower.contains("error") {
+    // Use word-boundary check to avoid matching "uncleared".
+    if contains_word(line_lower, "cleared") && line_lower.contains("error") {
         return true;
     }
     // "successfully ... error" (e.g. "successfully fixed the error")
@@ -1015,6 +1070,80 @@ mod tests {
         assert!(
             recent_tool_results_contain_errors(&messages),
             "'fixture error' should be detected as a real error, not benign"
+        );
+    }
+
+    // ── False-negative edge cases (negation should cancel benign) ────
+
+    #[test]
+    fn negation_not_fixed_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("build"),
+            ChatMessage::tool_result("c1", "could not be fixed, error persists"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'could not be fixed, error persists' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_unsuccessfully_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("deploy"),
+            ChatMessage::tool_result("c1", "unsuccessfully resolved the error"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'unsuccessfully resolved the error' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_not_resolved_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("debug"),
+            ChatMessage::tool_result("c1", "error was not resolved after retry"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'error was not resolved' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_not_cleared_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("fix"),
+            ChatMessage::tool_result("c1", "error was not cleared, still present"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'error was not cleared' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_could_not_fix_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("compile"),
+            ChatMessage::tool_result("c1", "could not fix the error in main.rs"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'could not fix the error' should be detected as a real error"
+        );
+    }
+
+    #[test]
+    fn negation_failed_to_resolve_error_is_real_error() {
+        let messages = vec![
+            ChatMessage::user("debug"),
+            ChatMessage::tool_result("c1", "failed to resolve error in module"),
+        ];
+        assert!(
+            recent_tool_results_contain_errors(&messages),
+            "'failed to resolve error' should be detected as a real error"
         );
     }
 
@@ -1457,6 +1586,147 @@ mod tests {
     // `recent_tool_results_contain_errors` above, but direct unit tests
     // provide faster failure localisation and regression isolation.
 
+    // ── content_contains_error ────────────────────────────────────
+
+    #[test]
+    fn content_contains_error_detects_failed_keyword() {
+        assert!(content_contains_error("test FAILED at line 42"));
+    }
+
+    #[test]
+    fn content_contains_error_detects_panicked_keyword() {
+        assert!(content_contains_error(
+            "thread 'main' panicked at 'assertion failed'"
+        ));
+    }
+
+    #[test]
+    fn content_contains_error_detects_error_prefix_with_nonzero_count() {
+        assert!(content_contains_error("error: 3 issues found"));
+    }
+
+    #[test]
+    fn content_contains_error_detects_error_prefix_with_message() {
+        assert!(content_contains_error("error: expected `;`"));
+    }
+
+    #[test]
+    fn content_contains_error_detects_error_bracket_code() {
+        // Rust compiler-style error: error[E0308]: mismatched types
+        assert!(content_contains_error("error[E0308]: mismatched types"));
+    }
+
+    #[test]
+    fn content_contains_error_error_prefix_zero_is_benign() {
+        assert!(!content_contains_error("error: 0 issues detected"));
+    }
+
+    #[test]
+    fn content_contains_error_error_prefix_zero_with_dot_zero() {
+        // "error: 0" is benign; "error: 0.5" should also be treated as zero-ish
+        assert!(!content_contains_error("error: 0 issues"));
+    }
+
+    #[test]
+    fn content_contains_error_no_errors_is_benign() {
+        assert!(!content_contains_error("no errors found"));
+    }
+
+    #[test]
+    fn content_contains_error_zero_errors_is_benign() {
+        assert!(!content_contains_error("0 errors, 0 warnings"));
+    }
+
+    #[test]
+    fn content_contains_error_fixed_is_benign() {
+        assert!(!content_contains_error("fixed the error in main.rs"));
+    }
+
+    #[test]
+    fn content_contains_error_fix_word_is_benign() {
+        assert!(!content_contains_error("I will fix the error"));
+    }
+
+    #[test]
+    fn content_contains_error_error_handling_is_benign() {
+        assert!(!content_contains_error("error handling improved"));
+    }
+
+    #[test]
+    fn content_contains_error_error_recovery_is_benign() {
+        assert!(!content_contains_error("error recovery completed"));
+    }
+
+    #[test]
+    fn content_contains_error_empty_string_is_false() {
+        assert!(!content_contains_error(""));
+    }
+
+    #[test]
+    fn content_contains_error_plain_text_is_false() {
+        assert!(!content_contains_error("all systems nominal"));
+    }
+
+    #[test]
+    fn content_contains_error_multiline_with_error_on_second_line() {
+        assert!(content_contains_error(
+            "build started...
+compilation error in main.rs
+build failed"
+        ));
+    }
+
+    #[test]
+    fn content_contains_error_multiline_all_benign() {
+        assert!(!content_contains_error(
+            "no errors found
+0 errors, 0 warnings
+ran without error"
+        ));
+    }
+
+    #[test]
+    fn content_contains_error_without_error_is_benign() {
+        assert!(!content_contains_error("ran without error"));
+    }
+
+    #[test]
+    fn content_contains_error_successfully_fixed_is_benign() {
+        assert!(!content_contains_error("successfully fixed the error"));
+    }
+
+    #[test]
+    fn content_contains_error_resolved_is_benign() {
+        assert!(!content_contains_error("resolved the error"));
+    }
+
+    #[test]
+    fn content_contains_error_cleared_is_benign() {
+        assert!(!content_contains_error("cleared the error"));
+    }
+
+    #[test]
+    fn content_contains_error_failed_on_its_own() {
+        assert!(content_contains_error("FAILED"));
+    }
+
+    #[test]
+    fn content_contains_error_lowercase_failed_not_detected() {
+        // "FAILED" is case-sensitive — lowercase "failed" should NOT be detected
+        // by the first check (it relies on the word-boundary scan for "error")
+        assert!(!content_contains_error("failed to compile")); // no "error" word
+    }
+
+    #[test]
+    fn content_contains_error_uppercase_error_prefix() {
+        assert!(content_contains_error("Error: something went wrong"));
+    }
+
+    #[test]
+    fn content_contains_error_uppercase_error_prefix_zero_benign() {
+        assert!(!content_contains_error("Error: 0 problems detected"));
+    }
+
     // ── contains_error_word ──────────────────────────────────────
 
     #[test]
@@ -1652,5 +1922,180 @@ mod tests {
     #[test]
     fn not_benign_plain_string_without_error() {
         assert!(!is_benign_error_line("all systems nominal"));
+    }
+
+    // ── contains_word (generic) ────────────────────────────────────
+
+    #[test]
+    fn contains_word_fix_standalone() {
+        assert!(contains_word("fix the bug", "fix"));
+    }
+
+    #[test]
+    fn contains_word_fix_rejects_prefix() {
+        assert!(!contains_word("prefix", "fix"));
+    }
+
+    #[test]
+    fn contains_word_fixed_standalone() {
+        assert!(contains_word("fixed the error", "fixed"));
+    }
+
+    #[test]
+    fn contains_word_fixed_rejects_prefixed() {
+        assert!(!contains_word("prefixed error messages", "fixed"));
+    }
+
+    #[test]
+    fn contains_word_fixed_rejects_unfixed() {
+        assert!(!contains_word("unfixed error persists", "fixed"));
+    }
+
+    #[test]
+    fn contains_word_fixed_rejects_suffixed() {
+        assert!(!contains_word("suffixed error output", "fixed"));
+    }
+
+    #[test]
+    fn contains_word_resolved_standalone() {
+        assert!(contains_word("resolved the error", "resolved"));
+    }
+
+    #[test]
+    fn contains_word_resolved_rejects_unresolved() {
+        assert!(!contains_word("unresolved error", "resolved"));
+    }
+
+    #[test]
+    fn contains_word_cleared_standalone() {
+        assert!(contains_word("cleared the error", "cleared"));
+    }
+
+    #[test]
+    fn contains_word_cleared_rejects_uncleared() {
+        assert!(!contains_word("uncleared error flag", "cleared"));
+    }
+
+    #[test]
+    fn contains_word_empty_haystack() {
+        assert!(!contains_word("", "fix"));
+    }
+
+    #[test]
+    fn contains_word_exact_match() {
+        assert!(contains_word("fix", "fix"));
+    }
+
+    #[test]
+    fn contains_word_before_punctuation() {
+        assert!(contains_word("fixed: error gone", "fixed"));
+    }
+
+    // ── is_benign regression: substring false positives ───────────
+
+    #[test]
+    fn not_benign_prefixed_error() {
+        // "prefixed" should NOT match "fixed" — real error being reported
+        assert!(!is_benign_error_line(
+            "the output was prefixed, error occurred"
+        ));
+    }
+
+    #[test]
+    fn not_benign_unfixed_error() {
+        // "unfixed" should NOT match "fixed" — error still present
+        assert!(!is_benign_error_line("unfixed error persists"));
+    }
+
+    #[test]
+    fn not_benign_suffixed_error() {
+        // "suffixed" should NOT match "fixed"
+        assert!(!is_benign_error_line("suffixed error in output"));
+    }
+
+    #[test]
+    fn not_benign_unresolved_error() {
+        // "unresolved" should NOT match "resolved"
+        assert!(!is_benign_error_line("unresolved error in module"));
+    }
+
+    #[test]
+    fn not_benign_uncleared_error() {
+        // "uncleared" should NOT match "cleared"
+        assert!(!is_benign_error_line("uncleared error flag"));
+    }
+
+    #[test]
+    fn benign_fixed_error_still_works() {
+        // Genuine "fixed ... error" must still be benign
+        assert!(is_benign_error_line("fixed the error in main.rs"));
+    }
+
+    #[test]
+    fn benign_resolved_error_still_works() {
+        assert!(is_benign_error_line("resolved the error"));
+    }
+
+    #[test]
+    fn benign_cleared_error_still_works() {
+        assert!(is_benign_error_line("cleared error state"));
+    }
+
+    // ── compute_child_budget ──────────────────────────────────────
+
+    #[test]
+    fn compute_child_budget_typical_value() {
+        // 10_000 / 2 = 5_000, within [4096, 32768]
+        assert_eq!(compute_child_budget(10_000), 5_000);
+    }
+
+    #[test]
+    fn compute_child_budget_clamps_to_minimum() {
+        // Very small parent budget → floor at 4096
+        assert_eq!(compute_child_budget(0), 4096);
+        assert_eq!(compute_child_budget(1), 4096);
+        assert_eq!(compute_child_budget(100), 4096);
+        assert_eq!(compute_child_budget(4095), 4096);
+        assert_eq!(compute_child_budget(8191), 4096);
+        assert_eq!(compute_child_budget(8192), 4096);
+    }
+
+    #[test]
+    fn compute_child_budget_exactly_at_minimum_boundary() {
+        // (8193 / 2) = 4096 (integer division rounds down), still clamped to 4096
+        assert_eq!(compute_child_budget(8193), 4096);
+        // (8194 / 2) = 4097 → just above minimum, not clamped
+        assert_eq!(compute_child_budget(8194), 4097);
+    }
+
+    #[test]
+    fn compute_child_budget_clamps_to_maximum() {
+        // 65536 / 2 = 32768, exactly at max
+        assert_eq!(compute_child_budget(65_536), 32_768);
+        // 65534 / 2 = 32767, below max
+        assert_eq!(compute_child_budget(65_534), 32_767);
+        // 100_000 / 2 = 50_000, clamped to 32768
+        assert_eq!(compute_child_budget(100_000), 32_768);
+        // Very large value
+        assert_eq!(compute_child_budget(1_000_000), 32_768);
+    }
+
+    #[test]
+    fn compute_child_budget_unclamped_range() {
+        // Values where half falls within (4096, 32768)
+        assert_eq!(compute_child_budget(12_000), 6_000);
+        assert_eq!(compute_child_budget(20_000), 10_000);
+        assert_eq!(compute_child_budget(40_000), 20_000);
+        assert_eq!(compute_child_budget(65_534), 32_767);
+    }
+
+    #[test]
+    fn compute_child_budget_maximum_boundary() {
+        // 65536 / 2 = 32768 (exactly max, not clamped)
+        assert_eq!(compute_child_budget(65_536), 32_768);
+        // 65537 / 2 = 32768 (integer division), exactly max
+        assert_eq!(compute_child_budget(65_537), 32_768);
+        // 65538 / 2 = 32769 → just above max, clamped to 32768
+        assert_eq!(compute_child_budget(65_538), 32_768);
     }
 }

@@ -118,7 +118,7 @@ Used by `install.sh` to bootstrap a fresh machine.
 6. Call `create_engine(backend, model_path, tokenizer_path, config, server_options)` — returns `Box<dyn InferenceProvider>`.
 7. Build `ToolRegistry` with all 11 tools from `zipcode-tools`.
 8. Build system prompt via `prompt::build(...)` — see [conversation-loop › run_turn](conversation-loop.md#run_turn-flow) for how it's consumed.
-9. Create `Session::new()` — the session is NOT persisted to disk at startup. It is saved after the first model turn completes, or immediately when `/clear` is run (`crates/cli/src/repl.rs:1069-1071`).
+9. Create `Session::new()` — the session is NOT persisted to disk at startup. It is saved after the first model turn completes, or immediately when `/clear` is run (`crates/cli/src/repl.rs:1071-1073`).
 10. Construct [`ConversationLoop`](conversation-loop.md).
 11. Enter TUI (`tui.rs`) or plain REPL depending on `--ui`.
 
@@ -145,22 +145,22 @@ Used by `install.sh` to bootstrap a fresh machine.
 
 ## Tests
 
-**EXTRACTED** — `crates/cli/tests/smoke.rs` currently exposes 47 smoke tests (`cargo test -p zipcode --test smoke -- --list` on 2026-05-03).
+**EXTRACTED** — `crates/cli/tests/smoke.rs` currently exposes smoke tests as part of 352 total tests in `zipcode` (cli) (`cargo test -p zipcode --test smoke -- --list` on 2026-05-06).
 
 Notable newer regression guards added since the earlier snapshot include:
 
 | Area | Example tests |
 |------|---------------|
-| Dirty-tree update gating before any fetch | `crates/cli/tests/smoke.rs:533`, `crates/cli/tests/smoke.rs:550` |
-| Missing-model startup guidance for explicit `prompt` / `repl` subcommands | `crates/cli/tests/smoke.rs:657`, `crates/cli/tests/smoke.rs:735` |
-| Stale helper-path fallback discovery | `crates/cli/tests/smoke.rs:934` |
-| Unrunnable helper GPU-offload config surfaced in `doctor` and bare startup | `crates/cli/tests/smoke.rs:1129`, `crates/cli/tests/smoke.rs:1178` |
-| Project-local config parse errors point to the right file | `crates/cli/tests/smoke.rs:1472` |
-| Root installer remains `Ready` when multiple existing models are available | `crates/cli/tests/smoke.rs:1842` |
-| Plain REPL session-load failures stay inline instead of exiting | `crates/cli/tests/smoke.rs:2371` |
+| Dirty-tree update gating before any fetch | `crates/cli/tests/smoke.rs:634`, `crates/cli/tests/smoke.rs:671` |
+| Missing-model startup guidance for explicit `prompt` / `repl` subcommands | `crates/cli/tests/smoke.rs:741`, `crates/cli/tests/smoke.rs:819` |
+| Stale helper-path fallback discovery | `crates/cli/tests/smoke.rs:1018` |
+| Unrunnable helper GPU-offload config surfaced in `doctor` and bare startup | `crates/cli/tests/smoke.rs:1213`, `crates/cli/tests/smoke.rs:1262` |
+| Project-local config parse errors point to the right file | `crates/cli/tests/smoke.rs:1411` |
+| Root installer remains `Ready` when multiple existing models are available | `crates/cli/tests/smoke.rs:1780` |
+| Plain REPL session-load failures stay inline instead of exiting | `crates/cli/tests/smoke.rs:2539` |
 | `/clear` persists the new session immediately | `crates/cli/tests/smoke.rs:2452` |
 | Fullscreen `/compact` reports skipped/no-op honestly | `crates/cli/tests/smoke.rs:2533` |
-| Non-interactive permission-prompt denial for approval-gated tools | `crates/cli/tests/smoke.rs:2938` |
+| Non-interactive permission-prompt denial for approval-gated tools | `crates/cli/tests/smoke.rs:3110` |
 | Interactive plain-REPL approval of `bash` tool call | `crates/cli/tests/smoke.rs:3010` |
 
 All tests use temp `HOME` directories to avoid side effects.

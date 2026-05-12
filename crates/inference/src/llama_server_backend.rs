@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::chat_template::{ChatTemplate, GemmaTemplate, ToolSpec};
 use crate::types::{
@@ -212,7 +212,13 @@ impl LlamaServerProvider {
         let cache_dir = std::env::var_os("HOME")
             .map_or_else(|| PathBuf::from("."), PathBuf::from)
             .join(".zipcode/cache");
-        std::fs::create_dir_all(&cache_dir).ok();
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            warn!(
+                path = %cache_dir.display(),
+                error = %e,
+                "failed to create llama-server slot cache directory; KV cache persistence disabled"
+            );
+        }
         command.arg("--slot-save-path").arg(&cache_dir);
 
         command
@@ -279,8 +285,8 @@ impl LlamaServerProvider {
     /// Override the chat template associated with this provider.
     ///
     /// By default the template is auto-selected from the model path via
-    /// [`TemplateRegistry::for_model_path`] (local mode) or set to
-    /// [`GemmaTemplate`] (remote mode). Call this after [`Self::load`] to
+    /// [`crate::template_registry::TemplateRegistry::template_for_model`] (local mode) or set to
+    /// [`crate::chat_template::GemmaTemplate`] (remote mode). Call this after [`Self::load`] to
     /// force a specific template, for example in tests or when auto-detection
     /// is wrong for a non-standard filename.
     ///
@@ -337,9 +343,76 @@ impl Drop for LlamaServerProvider {
             return;
         };
         if matches!(child.try_wait(), Ok(None)) {
+            // Use process-tree-aware termination to release GPU resources
+            // held by any worker threads/subprocesses spawned by llama-server.
+            let root_pid = child.id();
+            let pids = collect_process_tree_pids(root_pid);
+            for signal in ["-TERM", "-KILL"] {
+                send_signal_to_pids(&pids, signal);
+                if quick_wait_for_exit(&mut child) {
+                    return;
+                }
+            }
             let _ = child.kill();
         }
         let _ = child.wait();
+    }
+}
+
+/// Collect the full process tree starting from `root_pid` using
+/// `/proc/{pid}/task/{pid}/children` (Linux-specific).
+fn collect_process_tree_pids(root_pid: u32) -> Vec<u32> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![root_pid];
+    let mut ordered = Vec::new();
+
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        ordered.push(pid);
+        let path = format!("/proc/{pid}/task/{pid}/children");
+        if let Ok(children) = std::fs::read_to_string(&path) {
+            stack.extend(
+                children
+                    .split_whitespace()
+                    .filter_map(|v| v.parse::<u32>().ok()),
+            );
+        }
+    }
+
+    ordered.reverse();
+    ordered
+}
+
+/// Send a signal to a list of PIDs using the system `kill` binary.
+fn send_signal_to_pids(pids: &[u32], signal: &str) {
+    if pids.is_empty() {
+        return;
+    }
+    let kill_bin = ["/bin/kill", "/usr/bin/kill"]
+        .into_iter()
+        .map(std::path::Path::new)
+        .find(|p| p.is_file());
+    if let Some(kill_bin) = kill_bin {
+        let mut args = Vec::with_capacity(pids.len() + 1);
+        args.push(signal.to_string());
+        args.extend(pids.iter().map(u32::to_string));
+        let _ = std::process::Command::new(kill_bin).args(&args).status();
+    }
+}
+
+/// Busy-poll `try_wait()` for up to 250 ms.
+fn quick_wait_for_exit(child: &mut std::process::Child) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => return false,
+        }
     }
 }
 
@@ -989,16 +1062,23 @@ fn stream_sse_events(
                         }
                     )
                 })?;
-            let _ = tx.send(TokenEvent::ToolCall(ToolCallParsed {
-                id: acc.id,
-                name: acc.name,
-                arguments,
-            }));
+            if tx
+                .send(TokenEvent::ToolCall(ToolCallParsed {
+                    id: acc.id,
+                    name: acc.name,
+                    arguments,
+                }))
+                .is_err()
+            {
+                return Ok(());
+            }
         }
         finish_reason = FinishReason::ToolUse;
     }
 
-    let _ = tx.send(TokenEvent::Done(finish_reason));
+    if tx.send(TokenEvent::Done(finish_reason)).is_err() {
+        return Ok(());
+    }
     Ok(())
 }
 

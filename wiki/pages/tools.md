@@ -30,7 +30,7 @@ The `zipcode-tools` crate. Home of the `Tool` + `ToolRegistry` god node.
 
 ## `Tool` trait
 
-**EXTRACTED** `crates/tools/src/lib.rs:431-442`
+**EXTRACTED** `crates/tools/src/lib.rs:432-443`
 
 ```rust
 pub trait Tool: Send + Sync {
@@ -43,7 +43,7 @@ pub trait Tool: Send + Sync {
 
 ### `ToolRegistry`
 
-**EXTRACTED** `lib.rs:445-497`
+**EXTRACTED** `lib.rs:446-498`
 
 ```rust
 pub struct ToolRegistry {
@@ -57,7 +57,7 @@ The registry is populated once by the CLI at REPL startup ([`crates/cli/src/repl
 
 ### `execute_tool()` — the single entry point
 
-**EXTRACTED** `lib.rs:509-519`
+**EXTRACTED** `lib.rs:510-520`
 
 ```rust
 pub fn execute_tool(
@@ -90,7 +90,7 @@ Passed to every `execute()`. Tools that touch the filesystem rebase paths onto `
 
 ## `ToolResult`
 
-**EXTRACTED** `lib.rs:368-420`
+**EXTRACTED** `lib.rs:369-421`
 
 ```rust
 pub struct ToolResult {
@@ -131,22 +131,22 @@ Method `truncate(max_bytes)` (`lib.rs:391-418`) finds a safe UTF-8 char boundary
 
 ## Path safety: `resolve_and_validate_path()`
 
-**EXTRACTED** `lib.rs:15-93`
+**EXTRACTED** `lib.rs:19-97`
 
 Single gate that every file-touching tool routes through.
 
 Algorithm:
 1. Rebase relative paths onto `ctx.cwd`.
-2. Canonicalize (via `canonicalize_even_if_missing()` at `:71-95` for paths that don't exist yet).
+2. Canonicalize (via `canonicalize_even_if_missing()` at `:96-120` for paths that don't exist yet).
 3. Assert `canonical.starts_with(&cwd_canonical)`.
 
-**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Shared path-safety regression coverage lives in `crates/tools/src/lib.rs:627+`, but it still won't catch a brand-new tool that forgets the helper.
+**GOTCHA:** Only works because every file tool remembers to call it. `glob_search` now also rejects absolute/parent-directory escape patterns before globbing and re-validates resolved matches, but a new file-touching tool that skips `resolve_and_validate_path()` can still bypass the boundary. Shared path-safety regression coverage lives in `crates/tools/src/lib.rs:628+`, but it still won't catch a brand-new tool that forgets the helper.
 
 ---
 
 ## Output truncation
 
-**EXTRACTED** `lib.rs:502` → `MAX_TOOL_OUTPUT_BYTES = 8192` — applied in `execute_tool()` at `:509-519`.
+**EXTRACTED** `lib.rs:503` → `MAX_TOOL_OUTPUT_BYTES = 8192` — applied in `execute_tool()` at `:510-520`.
 
 **Why 8 KB?** Fits comfortably into Gemma's 8192-token default context without crowding the conversation. Overridable would require a config field (not present today).
 
@@ -154,7 +154,7 @@ Algorithm:
 
 ## Tests
 
-**EXTRACTED** — 248 tests total in `zipcode-tools` (186 unit + 62 integration; `cargo test -p zipcode-tools` on 2026-05-02).
+**EXTRACTED** — 285 tests total in `zipcode-tools` (`cargo test -p zipcode-tools` on 2026-05-06).
 
 Recent regression coverage that materially changed the crate since the previous wiki snapshot includes:
 
@@ -171,7 +171,7 @@ The rest of the crate still has broad per-tool coverage for:
 
 | Area | Example coverage anchors |
 |------|---------------------------|
-| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:509`, `crates/tools/src/lib.rs:484`, `crates/tools/src/lib.rs:627` |
+| Registry / truncation / shared path safety | `crates/tools/src/lib.rs:510`, `crates/tools/src/lib.rs:446`, `crates/tools/src/lib.rs:628` |
 | File readers / writers / editor behaviors | `crates/tools/src/read_file.rs`, `crates/tools/src/write_file.rs`, `crates/tools/src/edit_file.rs` |
 | Search behavior and budget limits | `crates/tools/src/glob_search.rs`, `crates/tools/src/grep_search.rs` |
 | Execution tools (`bash`, `repl`) | `crates/tools/src/bash.rs`, `crates/tools/src/repl.rs` |

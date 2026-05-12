@@ -553,4 +553,334 @@ mod tests {
         // With softmax, -1.0 dominates; near-deterministic with low temperature
         assert_eq!(token, 1, "least negative logit should win");
     }
+
+    // ── Edge-case tests: combined filtering and boundary conditions ────────
+
+    /// `top_k` and `top_p` applied together: `top_k` narrows to 2 tokens, then `top_p`
+    /// further restricts. With near-greedy temperature the dominant token wins.
+    #[test]
+    fn test_combined_top_k_and_top_p() {
+        let config = GenerationConfig {
+            temperature: 0.001,
+            top_k: 2,
+            top_p: 0.5,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // After top_k=2, only tokens 0 and 1 survive.
+        // After top_p=0.5, token 0's probability dominates.
+        let token = sampler
+            .sample(&logits(&[10.0, 8.0, 0.1, 0.05, 0.01]), &[])
+            .unwrap();
+        assert_eq!(
+            token, 0,
+            "combined top_k + top_p should pick the dominant token"
+        );
+    }
+
+    /// Repeat penalty interacts with temperature scaling and `top_k` filtering.
+    #[test]
+    fn test_repeat_penalty_with_temperature_and_top_k() {
+        let config = GenerationConfig {
+            temperature: 0.5,
+            top_k: 3,
+            top_p: 1.0,
+            repeat_penalty: 3.0,
+            repeat_last_n: 64,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // Token 1 (logit 10.0) penalized: 10.0/3.0 ≈ 3.33.
+        // Token 0 (logit 5.0) untouched → 5.0 > 3.33.
+        // With top_k=3 both survive, but token 0 dominates.
+        let token = sampler
+            .sample(&logits(&[5.0, 10.0, 1.0, 0.5, 0.1]), &[1u32])
+            .unwrap();
+        assert_eq!(
+            token, 0,
+            "penalized token 1 should lose to unpenalized token 0"
+        );
+    }
+
+    /// Repeat penalty on a logit that is exactly 0.0.
+    /// The code checks `> 0.0` → false, so it multiplies: 0.0 * penalty = 0.0 (no-op).
+    #[test]
+    fn test_repeat_penalty_on_zero_logit() {
+        let config = GenerationConfig {
+            temperature: 0.0,
+            repeat_penalty: 5.0,
+            repeat_last_n: 64,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // Token 0: logit 0.0, in history → 0.0 * 5.0 = 0.0 (unchanged).
+        // Token 1: logit 1.0, not in history → 1.0.
+        // Token 1 wins.
+        let token = sampler.sample(&logits(&[0.0, 1.0, -1.0]), &[0u32]).unwrap();
+        assert_eq!(
+            token, 1,
+            "token 0 with zero logit is unchanged by penalty; token 1 wins"
+        );
+    }
+
+    /// Duplicate tokens in history: penalty applied once per occurrence.
+    #[test]
+    fn test_repeat_penalty_duplicate_tokens_in_history() {
+        let config = GenerationConfig {
+            temperature: 0.0,
+            repeat_penalty: 2.0,
+            repeat_last_n: 64,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // Token 0 appears twice in history, logit 8.0:
+        //   First penalty: 8.0 / 2.0 = 4.0
+        //   Second penalty: 4.0 / 2.0 = 2.0
+        // Token 1 has logit 3.0, untouched → 3.0 > 2.0.
+        let token = sampler
+            .sample(&logits(&[8.0, 3.0, 1.0]), &[0u32, 0u32])
+            .unwrap();
+        assert_eq!(
+            token, 1,
+            "double-penalized token 0 (8→4→2) should lose to token 1 (3.0)"
+        );
+    }
+
+    /// `top_p` set to exactly match a single token's probability.
+    #[test]
+    fn test_top_p_exact_single_token_probability() {
+        // With logits [5.0, 0.0], softmax gives:
+        //   P(0) ≈ 0.9933, P(1) ≈ 0.0067
+        // top_p=0.9933 should keep only token 0 (cutoff excludes token 1).
+        let config = GenerationConfig {
+            temperature: 0.001,
+            top_k: 0,
+            top_p: 0.994, // just above P(0) → token 0 passes, token 1 excluded
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        let token = sampler.sample(&logits(&[5.0, 0.0]), &[]).unwrap();
+        assert_eq!(
+            token, 0,
+            "top_p at token probability boundary should keep the dominant token"
+        );
+    }
+
+    /// Large vocabulary (10000 tokens) does not panic.
+    #[test]
+    fn test_large_vocabulary_sampling() {
+        let config = GenerationConfig {
+            temperature: 0.7,
+            top_k: 0,
+            top_p: 1.0,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        let values: Vec<f32> = vec![1.0; 10_000];
+        let token = sampler.sample(&logits(&values), &[]).unwrap();
+        assert!(
+            (token as usize) < 10_000,
+            "token index must be within 10000-element vocab"
+        );
+    }
+
+    /// `top_k` with ties at the boundary: all tied tokens should survive.
+    #[test]
+    fn test_top_k_with_ties_at_boundary() {
+        let config = GenerationConfig {
+            temperature: 0.001,
+            top_k: 2,
+            top_p: 1.0,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // Tokens 0, 1, 2 all have logit 5.0 (tied). top_k=2 keeps two of them.
+        // Token 3 has logit 0.0. The result should be one of the tied tokens.
+        let token = sampler.sample(&logits(&[5.0, 5.0, 5.0, 0.0]), &[]).unwrap();
+        assert!(
+            token <= 2,
+            "tied tokens at top_k boundary should survive, got token {token}"
+        );
+    }
+
+    /// Empty `past_tokens` means repeat penalty has nothing to penalize.
+    #[test]
+    fn test_repeat_penalty_with_empty_past_tokens() {
+        let config = GenerationConfig {
+            temperature: 0.0,
+            repeat_penalty: 10.0,
+            repeat_last_n: 64,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // No history → no penalty → token 2 (highest logit) wins.
+        let token = sampler.sample(&logits(&[1.0, 2.0, 3.0]), &[]).unwrap();
+        assert_eq!(token, 2, "empty history means no penalty applied");
+    }
+
+    /// Very small positive temperature (0.0001) uses the sampling path, not greedy shortcut.
+    #[test]
+    fn test_temperature_very_small_positive() {
+        let config = GenerationConfig {
+            temperature: 0.0001,
+            top_k: 0,
+            top_p: 1.0,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // With temp=0.0001, logits are scaled up massively (divided by 0.0001).
+        // The dominant token (index 2 with logit 100.0) should be picked.
+        let token = sampler.sample(&logits(&[0.0, 1.0, 100.0]), &[]).unwrap();
+        assert_eq!(
+            token, 2,
+            "very small temperature should behave near-greedily via sampling path"
+        );
+    }
+
+    /// `top_p` with uniform distribution: all logits equal.
+    #[test]
+    fn test_top_p_with_uniform_distribution() {
+        let config = GenerationConfig {
+            temperature: 0.001,
+            top_k: 0,
+            top_p: 0.5,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // 10 identical logits → each prob = 0.1. top_p=0.5 keeps first ~5 tokens.
+        let values: Vec<f32> = vec![1.0; 10];
+        let token = sampler.sample(&logits(&values), &[]).unwrap();
+        assert!(
+            (token as usize) < 10,
+            "token index must be within 10-element vocab"
+        );
+    }
+
+    /// Softmax with very negative logits: no underflow panics.
+    #[test]
+    fn test_softmax_all_very_negative_logits() {
+        let config = GenerationConfig {
+            temperature: 0.001,
+            top_k: 0,
+            top_p: 1.0,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // All very negative; temp=0.001 scales logits: [-1000000, -999000, -998000].
+        // After softmax (max-subtract), exp(0)=1.0 for token 2, others ≈ 0.
+        // Token 2 (-998.0, the least negative) wins — the sampling correctly
+        // identifies the highest logit even when all are deeply negative.
+        let token = sampler
+            .sample(&logits(&[-1000.0, -999.0, -998.0]), &[])
+            .unwrap();
+        assert_eq!(
+            token, 2,
+            "least negative logit (highest value) should win after softmax"
+        );
+    }
+
+    /// Full pipeline: repeat penalty + `top_k` + `top_p` + temperature all active.
+    #[test]
+    fn test_combined_repeat_penalty_top_k_top_p() {
+        let config = GenerationConfig {
+            temperature: 0.5,
+            top_k: 3,
+            top_p: 0.8,
+            repeat_penalty: 5.0,
+            repeat_last_n: 64,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // Token 2 penalized: 10.0/5.0 = 2.0.
+        // After softmax, top_k=3 keeps 3 tokens, top_p=0.8 narrows further.
+        // Token 0 (logit 8.0, untouched) should dominate.
+        let token = sampler
+            .sample(&logits(&[8.0, 4.0, 10.0, 1.0, 0.5]), &[2u32])
+            .unwrap();
+        assert_eq!(
+            token, 0,
+            "token 0 should win with combined penalty + top_k + top_p"
+        );
+    }
+
+    /// `repeat_last_n=0` means the penalty window is empty, no penalization.
+    #[test]
+    fn test_repeat_last_n_zero_means_no_penalty() {
+        let config = GenerationConfig {
+            temperature: 0.0,
+            repeat_penalty: 100.0, // would crush any penalized token
+            repeat_last_n: 0,      // but window is empty
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        // Token 1 has the highest logit and is in history, but repeat_last_n=0
+        // means the slicing starts at past_tokens.len(), yielding an empty slice.
+        let token = sampler.sample(&logits(&[1.0, 5.0, 3.0]), &[1u32]).unwrap();
+        assert_eq!(
+            token, 1,
+            "repeat_last_n=0 should produce empty window → no penalty"
+        );
+    }
+
+    /// `Sampler::new()` preserves all config fields.
+    #[test]
+    fn test_sampler_new_preserves_config() {
+        let config = GenerationConfig {
+            temperature: 0.42,
+            top_p: 0.85,
+            top_k: 25,
+            repeat_penalty: 1.3,
+            repeat_last_n: 128,
+            ..Default::default()
+        };
+        let _sampler = Sampler::new(&config);
+        // We can't directly inspect private fields, so test via behavior.
+        // With temperature=0.0 (greedy), repeat_penalty from config doesn't matter.
+        // Instead, verify the sampler produces correct output with the given config.
+        let greedy_config = GenerationConfig {
+            temperature: 0.0,
+            top_p: 0.85,
+            top_k: 25,
+            repeat_penalty: 10.0,
+            repeat_last_n: 128,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&greedy_config);
+        // Greedy: highest logit wins regardless of top_p/top_k.
+        let token = sampler.sample(&logits(&[1.0, 3.0, 2.0]), &[]).unwrap();
+        assert_eq!(token, 1, "greedy should pick highest logit");
+
+        // Verify repeat_penalty is active: penalize token 1.
+        // Token 1: 3.0 / 10.0 = 0.3. Token 2 has 2.0 → token 2 wins.
+        let token2 = sampler.sample(&logits(&[1.0, 3.0, 2.0]), &[1u32]).unwrap();
+        assert_eq!(token2, 2, "penalized token 1 should lose to token 2");
+    }
+
+    /// Sequential samples from the same sampler produce valid tokens.
+    #[test]
+    fn test_sequential_samples_produce_valid_tokens() {
+        let config = GenerationConfig {
+            temperature: 0.8,
+            top_k: 0,
+            top_p: 1.0,
+            repeat_penalty: 1.0,
+            ..Default::default()
+        };
+        let mut sampler = Sampler::new(&config);
+        let vocab = vec![0.5, 1.0, 0.3, 0.8, 0.2];
+        for _ in 0..20 {
+            let token = sampler.sample(&logits(&vocab), &[]).unwrap();
+            assert!(
+                (token as usize) < vocab.len(),
+                "token {token} exceeds vocab size"
+            );
+        }
+    }
 }

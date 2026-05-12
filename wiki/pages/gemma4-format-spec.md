@@ -366,7 +366,7 @@ Question from the first draft of this page: *does zipcode actually use `chat_tem
 
 ### The real contract
 
-1. **zipcode sends plain OpenAI `/v1/chat/completions` JSON** (`crates/inference/src/llama_server_backend.rs:296-319`). Roles: `system` / `user` / `assistant` / `tool`. Content is always a flat string (or `null` for tool-call-only assistant turns). Tools are passed as `{type:"function", function:{name, description, parameters}}`.
+1. **zipcode sends plain OpenAI `/v1/chat/completions` JSON** (`crates/inference/src/llama_server_backend.rs:594-645`). Roles: `system` / `user` / `assistant` / `tool`. Content is always a flat string (or `null` for tool-call-only assistant turns). Tools are passed as `{type:"function", function:{name, description, parameters}}`.
 2. **zipcode sets `tool_choice: "auto"` and `parse_tool_calls: true`** — the latter is a llama-server extension that asks the server to parse the model's raw Gemma 4 tool-call output back into OpenAI-shape JSON.
 3. **llama-server applies the GGUF's embedded Jinja template** because `LlamaServerProvider::load` passes `--jinja` (line 107). The Gemma 4 mini-language serialization shown earlier in this spec happens **inside llama-server**, not in `chat_template.rs`.
 4. **llama-server's Gemma 4 tool-call parser works correctly.** Both non-streaming and streaming responses carry `tool_calls` in the OpenAI shape with JSON-string `arguments`. The Gemma 4 `<|tool_call>call:FUNC{key:<|"|>val<|"|>}<tool_call|>` output is transparently converted.

@@ -114,8 +114,8 @@ impl ZipcodeConfig {
     }
 
     /// Validate config field values, returning an error for out-of-range or
-    /// unsupported settings. Called automatically at the end of [`load`] and
-    /// [`load_from_path`].
+    /// unsupported settings. Called automatically at the end of [`Self::load`] and
+    /// the internal `load_from_path` helper.
     ///
     /// # Errors
     ///
@@ -346,6 +346,7 @@ mod tests {
 
     #[test]
     fn test_load_from_empty_dir() {
+        let (_global_dir, _guard) = with_isolated_global_config();
         let dir = tempfile::TempDir::new().unwrap();
         let config = ZipcodeConfig::load(dir.path()).unwrap();
         assert_eq!(config.permission_mode, "workspace-write");
