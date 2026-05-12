@@ -280,6 +280,7 @@ pub fn doctor(model_path: Option<&Path>, backend_override: Option<&str>) -> Resu
     let readiness = classify_user_readiness(&report, config_load.warning.as_deref());
 
     println!("zipcode doctor\n");
+    println!("Version: {}", crate::version::build_label());
     println!("Status: {}", readiness.headline());
     println!("Engine: {}", friendly_engine_name(report.backend));
     println!();

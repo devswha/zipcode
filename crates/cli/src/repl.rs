@@ -955,8 +955,8 @@ pub fn run_interactive(
 ) -> Result<()> {
     let launch = prepare_loop(model_path, permission_mode, backend_override, session_id)?;
     println!(
-        "zipcode v{} — type /help for commands, Ctrl+D to exit",
-        env!("CARGO_PKG_VERSION")
+        "zipcode {} — type /help for commands, Ctrl+D to exit",
+        crate::version::build_label()
     );
     for notice in &launch.startup_notices {
         println!("\x1b[33m[notice]\x1b[0m {notice}");

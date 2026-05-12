@@ -7,16 +7,13 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use termimad::crossterm::cursor::{Hide, MoveTo, Show};
 use termimad::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-    MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use termimad::crossterm::execute;
 use termimad::crossterm::style::{
     Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor,
 };
-use termimad::crossterm::terminal::{
-    self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use termimad::crossterm::terminal::{self, Clear, ClearType};
 use zipcode_inference::Role;
 use zipcode_runtime::{ConversationLoop, Session, StreamCallback};
 use zipcode_tools::PermissionMode;
@@ -217,35 +214,34 @@ struct FullscreenUi {
     /// sees live progress without the reasoning itself polluting the
     /// transcript. Reset to 0 at the start of each `run_turn`.
     thinking_bytes: usize,
+    /// True when the scrollback mirror has an unterminated assistant line.
+    /// The fullscreen UI renders on the main screen instead of alternate-screen
+    /// so users can mouse-scroll and copy logs from terminal scrollback.
+    scrollback_line_open: bool,
 }
 
 impl FullscreenUi {
     fn new(conv: &ConversationLoop, backend: String, startup_notices: &[String]) -> Result<Self> {
         // Install a panic hook that restores the terminal before printing the
-        // panic message.  Without this, a panic leaves the terminal in raw mode
-        // + alternate screen and the user sees a garbled shell.
+        // panic message. Without this, a panic leaves the terminal in raw mode
+        // and the user sees a garbled shell.
         if !TUI_PANIC_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
             let prev_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 // Best-effort terminal restoration — ignore errors.
                 let _ = terminal::disable_raw_mode();
-                let _ = execute!(
-                    io::stdout(),
-                    Show,
-                    DisableMouseCapture,
-                    LeaveAlternateScreen
-                );
+                let _ = execute!(io::stdout(), Show);
                 prev_hook(info);
             }));
         }
 
         let mut stdout = io::stdout();
-        if let Err(e) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide) {
+        if let Err(e) = execute!(stdout, Hide) {
             clear_panic_hook_flag();
             return Err(e.into());
         }
         if let Err(e) = terminal::enable_raw_mode() {
-            let _ = execute!(stdout, Show, DisableMouseCapture, LeaveAlternateScreen);
+            let _ = execute!(stdout, Show);
             clear_panic_hook_flag();
             return Err(e.into());
         }
@@ -266,6 +262,7 @@ impl FullscreenUi {
             draw_drops: 0,
             esc_armed: false,
             thinking_bytes: 0,
+            scrollback_line_open: false,
         };
         if let Some(first_notice) = startup_notices.first() {
             ui.status = if startup_notices.len() == 1 {
@@ -286,7 +283,11 @@ impl FullscreenUi {
             terminal::disable_raw_mode()?;
             self.raw_enabled = false;
         }
-        execute!(self.stdout, Show, DisableMouseCapture, LeaveAlternateScreen)?;
+        if self.scrollback_line_open {
+            let _ = self.stdout.write_all(b"\r\n");
+            self.scrollback_line_open = false;
+        }
+        execute!(self.stdout, Show)?;
         self.stdout.flush()?;
         Ok(())
     }
@@ -823,6 +824,7 @@ impl FullscreenUi {
                         kind: EntryKind::Separator,
                         content: String::new(),
                     };
+                    self.mirror_entry_to_scrollback(&sep);
                     self.transcript_cache.append_entry(&sep);
                     self.transcript.push(sep);
                 }
@@ -833,7 +835,14 @@ impl FullscreenUi {
         let Some(entry) = self.transcript.last() else {
             return;
         };
-        self.transcript_cache.append_entry(entry);
+        let cached_entry = TranscriptEntry {
+            kind: entry.kind,
+            content: entry.content.clone(),
+        };
+        if !matches!(cached_entry.kind, EntryKind::Assistant) {
+            self.mirror_entry_to_scrollback(&cached_entry);
+        }
+        self.transcript_cache.append_entry(&cached_entry);
     }
 
     fn append_assistant_token(&mut self, token: &str) {
@@ -841,8 +850,14 @@ impl FullscreenUi {
             Some(TranscriptEntry {
                 kind: EntryKind::Assistant,
                 content,
-            }) => content.push_str(token),
-            _ => self.push_entry(EntryKind::Assistant, token.to_string()),
+            }) => {
+                content.push_str(token);
+                self.mirror_assistant_token_to_scrollback(token);
+            }
+            _ => {
+                self.push_entry(EntryKind::Assistant, token.to_string());
+                self.mirror_assistant_token_to_scrollback(token);
+            }
         }
         self.refresh_last_transcript_cache_entry();
     }
@@ -919,6 +934,33 @@ impl FullscreenUi {
         self.transcript = initial_transcript_entries(session);
         self.transcript_cache = TranscriptCache::default();
         self.transcript_scroll = 0;
+    }
+
+    fn mirror_entry_to_scrollback(&mut self, entry: &TranscriptEntry) {
+        if self.scrollback_line_open {
+            let _ = self.stdout.write_all(b"\r\n");
+            self.scrollback_line_open = false;
+        }
+
+        let width = terminal::size()
+            .map(|(width, _)| width.saturating_sub(2) as usize)
+            .unwrap_or(100)
+            .max(80);
+        for line in format_entry(entry, width) {
+            let _ = self.stdout.write_all(line.text.as_bytes());
+            let _ = self.stdout.write_all(b"\r\n");
+        }
+        let _ = self.stdout.flush();
+    }
+
+    fn mirror_assistant_token_to_scrollback(&mut self, token: &str) {
+        if !self.scrollback_line_open {
+            let _ = self.stdout.write_all(b"Zip: ");
+            self.scrollback_line_open = true;
+        }
+        let normalized = token.replace('\n', "\r\n     ");
+        let _ = self.stdout.write_all(normalized.as_bytes());
+        let _ = self.stdout.flush();
     }
 
     fn prompt_for_permission(&mut self, message: &str) -> Result<bool> {
@@ -1020,8 +1062,8 @@ impl FullscreenUi {
             SetAttribute(Attribute::Bold),
             Print(truncate_to_width(
                 &format!(
-                    " ◆ zipcode v{}  {}  session:{}  tools:{} ",
-                    env!("CARGO_PKG_VERSION"),
+                    " ◆ zipcode {}  {}  session:{}  tools:{} ",
+                    crate::version::git_label(),
                     self.backend,
                     truncate_to_width(&self.session_id, 8),
                     self.tool_count
@@ -1121,7 +1163,7 @@ impl FullscreenUi {
             MoveTo(0, layout.hint_y),
             SetForegroundColor(Color::DarkGrey),
             Print(truncate_to_width(
-                " /help /status /clear /quit · PgUp/PgDn scroll · Shift+Tab permissions ",
+                " /help /status /clear /quit · PgUp/PgDn scroll · mouse select copies logs ",
                 width as usize,
             )),
             ResetColor,
@@ -2010,8 +2052,7 @@ mod tests {
 
         assert!(lines
             .iter()
-            .any(|line| line.text.contains("zipcode")
-                && line.text.contains(env!("CARGO_PKG_VERSION"))));
+            .any(|line| line.text.contains(crate::version::VERSION)));
         assert!(lines.iter().all(|line| !line.text.starts_with("Info:")));
         assert!(lines.iter().any(|line| line.text.contains("███████")));
         assert!(lines
@@ -2269,7 +2310,7 @@ fn format_entry(entry: &TranscriptEntry, width: usize) -> Vec<StyledLine> {
 fn format_brand_entry(width: usize) -> Vec<StyledLine> {
     let card_width = width.clamp(36, 76);
     let inner_width = card_width.saturating_sub(2);
-    let title = format!(" zipcode v{} ", env!("CARGO_PKG_VERSION"));
+    let title = format!(" zipcode {} ", crate::version::build_label());
     let top = if title.len() + 1 >= inner_width {
         format!("╭{}╮", truncate_to_width(&title, inner_width))
     } else {

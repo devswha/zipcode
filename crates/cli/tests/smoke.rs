@@ -488,6 +488,11 @@ fn doctor_runs() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Version:") && stdout.contains("build "),
+        "doctor should show build identity, got: {stdout}"
+    );
 }
 
 #[test]
@@ -730,8 +735,16 @@ fn version_flag() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("0.1.0") || stdout.contains("zipcode"),
-        "version should show version number or name, got: {stdout}"
+        stdout.contains("zipcode"),
+        "version should show name, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("0.1.0"),
+        "version should show package version, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("build "),
+        "version should show build identity, got: {stdout}"
     );
 }
 

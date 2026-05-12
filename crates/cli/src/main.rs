@@ -8,6 +8,7 @@ mod render;
 mod repl;
 mod tui;
 mod tui_composer;
+mod version;
 mod width;
 
 /// CLI-validated permission mode.
@@ -41,7 +42,12 @@ impl std::fmt::Display for CliPermissionMode {
 }
 
 #[derive(Parser)]
-#[command(name = "zipcode", version, about = "Local AI coding assistant")]
+#[command(
+    name = "zipcode",
+    version = version::VERSION,
+    long_version = version::LONG_VERSION,
+    about = "Local AI coding assistant"
+)]
 struct Cli {
     /// Path to the model directory or .gguf file
     #[arg(long, value_name = "PATH", global = true)]

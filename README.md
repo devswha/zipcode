@@ -36,7 +36,7 @@ Ship it on a USB stick. Run it in a SCIF. It just works.
 
 ```
 $ zipcode
-zipcode v0.1.0 -- local AI coding agent
+zipcode 0.1.0 (abc1234+dirty, build 1770000000) — local AI coding agent
 Type /help for commands, Ctrl+D to exit
 
 > read main.rs and add error handling to the database connection
@@ -125,6 +125,18 @@ zipcode doctor
 `zipcode` is the default entrypoint. Use `setup` when you want zipcode to discover the model,
 write or refresh the global config, and optionally run a smoke prompt. Use `doctor` when you
 want the repair summary without entering the agent.
+
+
+### Version visibility
+
+Every local build embeds a build label: package version, Git commit, dirty marker for tracked local changes, and a Unix build timestamp. Use it to confirm which binary you are testing:
+
+```bash
+zipcode --version
+zipcode doctor
+```
+
+The fullscreen TUI header shows the Git label as well, so stale binaries are easier to spot during manual QA.
 
 ### 4. Power-user flows
 
@@ -369,13 +381,14 @@ The fullscreen terminal UI MVP includes:
 - multiline composer editing
 - input history recall
 - exact slash-command handling (`/help`, `/status`, `/clear`, `/quit`)
-- alternate-screen rendering for a more app-like experience
+- fullscreen rendering on the main terminal screen so scrollback remains copyable
 
 Key bindings:
 - `Enter` — submit
 - `Ctrl+J` — newline
 - `Arrow keys` — move cursor / recall input history
-- `PgUp` / `PgDn` — scroll transcript
+- `PgUp` / `PgDn` — scroll transcript inside the TUI
+- Mouse wheel / drag — use terminal scrollback and selection to copy logs
 - `F1` — help overlay
 - `Esc` — clear input or close overlay
 - `Ctrl+D` — exit
