@@ -603,12 +603,12 @@ fn contains_error_word(line_lower: &str) -> bool {
     false
 }
 
-/// Returns true if the lowered line contains the word "fix" as a standalone
-/// token (word boundary check). Prevents false benign matches on "prefix",
-/// "suffix", "affix", "fixture", etc.
-fn contains_fix_word(line_lower: &str) -> bool {
+/// Returns true if the lowered line contains `word` as a standalone token
+/// (word boundary check on both sides). Prevents false substring matches
+/// (e.g. "fixed" matching inside "prefixed", "resolved" inside "unresolved").
+fn contains_word(line_lower: &str, word: &str) -> bool {
     let bytes = line_lower.as_bytes();
-    let pattern = b"fix";
+    let pattern = word.as_bytes();
     let pat_len = pattern.len();
 
     if bytes.len() < pat_len {
@@ -630,6 +630,13 @@ fn contains_fix_word(line_lower: &str) -> bool {
         }
     }
     false
+}
+
+/// Returns true if the lowered line contains the word "fix" as a standalone
+/// token (word boundary check). Prevents false benign matches on "prefix",
+/// "suffix", "affix", "fixture", etc.
+fn contains_fix_word(line_lower: &str) -> bool {
+    contains_word(line_lower, "fix")
 }
 
 /// Returns true if the lowered line contains a negation that should cancel
@@ -694,7 +701,8 @@ fn is_benign_error_line(line_lower: &str) -> bool {
         return true;
     }
     // "fixed ... error", "fix ... error" (resolved errors)
-    if line_lower.contains("fixed") && line_lower.contains("error") {
+    // Use word-boundary check to avoid matching "prefixed", "unfixed", "suffixed".
+    if contains_word(line_lower, "fixed") && line_lower.contains("error") {
         return true;
     }
     // Use word-boundary matching for "fix" to avoid false matches with
@@ -712,11 +720,13 @@ fn is_benign_error_line(line_lower: &str) -> bool {
         return true;
     }
     // "resolved ... error", "error ... resolved"
-    if line_lower.contains("resolved") && line_lower.contains("error") {
+    // Use word-boundary check to avoid matching "unresolved".
+    if contains_word(line_lower, "resolved") && line_lower.contains("error") {
         return true;
     }
     // "cleared ... error", "error ... cleared"
-    if line_lower.contains("cleared") && line_lower.contains("error") {
+    // Use word-boundary check to avoid matching "uncleared".
+    if contains_word(line_lower, "cleared") && line_lower.contains("error") {
         return true;
     }
     // "successfully ... error" (e.g. "successfully fixed the error")
@@ -1912,6 +1922,123 @@ ran without error"
     #[test]
     fn not_benign_plain_string_without_error() {
         assert!(!is_benign_error_line("all systems nominal"));
+    }
+
+    // ── contains_word (generic) ────────────────────────────────────
+
+    #[test]
+    fn contains_word_fix_standalone() {
+        assert!(contains_word("fix the bug", "fix"));
+    }
+
+    #[test]
+    fn contains_word_fix_rejects_prefix() {
+        assert!(!contains_word("prefix", "fix"));
+    }
+
+    #[test]
+    fn contains_word_fixed_standalone() {
+        assert!(contains_word("fixed the error", "fixed"));
+    }
+
+    #[test]
+    fn contains_word_fixed_rejects_prefixed() {
+        assert!(!contains_word("prefixed error messages", "fixed"));
+    }
+
+    #[test]
+    fn contains_word_fixed_rejects_unfixed() {
+        assert!(!contains_word("unfixed error persists", "fixed"));
+    }
+
+    #[test]
+    fn contains_word_fixed_rejects_suffixed() {
+        assert!(!contains_word("suffixed error output", "fixed"));
+    }
+
+    #[test]
+    fn contains_word_resolved_standalone() {
+        assert!(contains_word("resolved the error", "resolved"));
+    }
+
+    #[test]
+    fn contains_word_resolved_rejects_unresolved() {
+        assert!(!contains_word("unresolved error", "resolved"));
+    }
+
+    #[test]
+    fn contains_word_cleared_standalone() {
+        assert!(contains_word("cleared the error", "cleared"));
+    }
+
+    #[test]
+    fn contains_word_cleared_rejects_uncleared() {
+        assert!(!contains_word("uncleared error flag", "cleared"));
+    }
+
+    #[test]
+    fn contains_word_empty_haystack() {
+        assert!(!contains_word("", "fix"));
+    }
+
+    #[test]
+    fn contains_word_exact_match() {
+        assert!(contains_word("fix", "fix"));
+    }
+
+    #[test]
+    fn contains_word_before_punctuation() {
+        assert!(contains_word("fixed: error gone", "fixed"));
+    }
+
+    // ── is_benign regression: substring false positives ───────────
+
+    #[test]
+    fn not_benign_prefixed_error() {
+        // "prefixed" should NOT match "fixed" — real error being reported
+        assert!(!is_benign_error_line(
+            "the output was prefixed, error occurred"
+        ));
+    }
+
+    #[test]
+    fn not_benign_unfixed_error() {
+        // "unfixed" should NOT match "fixed" — error still present
+        assert!(!is_benign_error_line("unfixed error persists"));
+    }
+
+    #[test]
+    fn not_benign_suffixed_error() {
+        // "suffixed" should NOT match "fixed"
+        assert!(!is_benign_error_line("suffixed error in output"));
+    }
+
+    #[test]
+    fn not_benign_unresolved_error() {
+        // "unresolved" should NOT match "resolved"
+        assert!(!is_benign_error_line("unresolved error in module"));
+    }
+
+    #[test]
+    fn not_benign_uncleared_error() {
+        // "uncleared" should NOT match "cleared"
+        assert!(!is_benign_error_line("uncleared error flag"));
+    }
+
+    #[test]
+    fn benign_fixed_error_still_works() {
+        // Genuine "fixed ... error" must still be benign
+        assert!(is_benign_error_line("fixed the error in main.rs"));
+    }
+
+    #[test]
+    fn benign_resolved_error_still_works() {
+        assert!(is_benign_error_line("resolved the error"));
+    }
+
+    #[test]
+    fn benign_cleared_error_still_works() {
+        assert!(is_benign_error_line("cleared error state"));
     }
 
     // ── compute_child_budget ──────────────────────────────────────
