@@ -556,7 +556,7 @@ mod tests {
 
     // ── Edge-case tests: combined filtering and boundary conditions ────────
 
-    /// top_k and top_p applied together: top_k narrows to 2 tokens, then top_p
+    /// `top_k` and `top_p` applied together: `top_k` narrows to 2 tokens, then `top_p`
     /// further restricts. With near-greedy temperature the dominant token wins.
     #[test]
     fn test_combined_top_k_and_top_p() {
@@ -579,7 +579,7 @@ mod tests {
         );
     }
 
-    /// Repeat penalty interacts with temperature scaling and top_k filtering.
+    /// Repeat penalty interacts with temperature scaling and `top_k` filtering.
     #[test]
     fn test_repeat_penalty_with_temperature_and_top_k() {
         let config = GenerationConfig {
@@ -647,7 +647,7 @@ mod tests {
         );
     }
 
-    /// top_p set to exactly match a single token's probability.
+    /// `top_p` set to exactly match a single token's probability.
     #[test]
     fn test_top_p_exact_single_token_probability() {
         // With logits [5.0, 0.0], softmax gives:
@@ -687,7 +687,7 @@ mod tests {
         );
     }
 
-    /// top_k with ties at the boundary: all tied tokens should survive.
+    /// `top_k` with ties at the boundary: all tied tokens should survive.
     #[test]
     fn test_top_k_with_ties_at_boundary() {
         let config = GenerationConfig {
@@ -707,7 +707,7 @@ mod tests {
         );
     }
 
-    /// Empty past_tokens means repeat penalty has nothing to penalize.
+    /// Empty `past_tokens` means repeat penalty has nothing to penalize.
     #[test]
     fn test_repeat_penalty_with_empty_past_tokens() {
         let config = GenerationConfig {
@@ -742,7 +742,7 @@ mod tests {
         );
     }
 
-    /// top_p with uniform distribution: all logits equal.
+    /// `top_p` with uniform distribution: all logits equal.
     #[test]
     fn test_top_p_with_uniform_distribution() {
         let config = GenerationConfig {
@@ -786,7 +786,7 @@ mod tests {
         );
     }
 
-    /// Full pipeline: repeat penalty + top_k + top_p + temperature all active.
+    /// Full pipeline: repeat penalty + `top_k` + `top_p` + temperature all active.
     #[test]
     fn test_combined_repeat_penalty_top_k_top_p() {
         let config = GenerationConfig {
@@ -810,7 +810,7 @@ mod tests {
         );
     }
 
-    /// repeat_last_n=0 means the penalty window is empty, no penalization.
+    /// `repeat_last_n=0` means the penalty window is empty, no penalization.
     #[test]
     fn test_repeat_last_n_zero_means_no_penalty() {
         let config = GenerationConfig {
@@ -829,7 +829,7 @@ mod tests {
         );
     }
 
-    /// Sampler::new() preserves all config fields.
+    /// `Sampler::new()` preserves all config fields.
     #[test]
     fn test_sampler_new_preserves_config() {
         let config = GenerationConfig {

@@ -435,8 +435,7 @@ mod tests {
         let err = Skill::parse(src).unwrap_err();
         assert!(
             err.to_string().contains("missing frontmatter closing"),
-            "expected 'missing frontmatter closing' error, got: {}",
-            err
+            "expected 'missing frontmatter closing' error, got: {err}"
         );
     }
 
@@ -460,8 +459,7 @@ mod tests {
         let rendered = skill.render(&params);
         assert!(
             rendered.contains("{{ unclosed!"),
-            "unclosed placeholder should be preserved verbatim, got: {:?}",
-            rendered
+            "unclosed placeholder should be preserved verbatim, got: {rendered:?}"
         );
     }
 
@@ -474,8 +472,7 @@ mod tests {
         // Whitespace-only key trims to "" → no param match → empty string substituted
         assert!(
             rendered.contains("Hello !"),
-            "whitespace-only key should substitute empty, got: {:?}",
-            rendered
+            "whitespace-only key should substitute empty, got: {rendered:?}"
         );
     }
 
@@ -543,8 +540,7 @@ mod tests {
         let catalog = registry.catalog_for_prompt();
         assert!(
             catalog.is_empty(),
-            "empty registry should produce empty catalog, got: {:?}",
-            catalog
+            "empty registry should produce empty catalog, got: {catalog:?}"
         );
     }
 
@@ -554,8 +550,7 @@ mod tests {
         let err = Skill::parse(src).unwrap_err();
         assert!(
             err.to_string().contains("malformed YAML") || err.to_string().contains("missing field"),
-            "missing description field should fail parsing, got: {}",
-            err
+            "missing description field should fail parsing, got: {err}"
         );
     }
 }

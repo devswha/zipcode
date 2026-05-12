@@ -533,7 +533,7 @@ Use snake_case";
         let (_, specs) = build_system_prompt(dir.path(), &registry, "full-access", None);
 
         let mut names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-        names.sort();
+        names.sort_unstable();
 
         assert_eq!(
             names,
