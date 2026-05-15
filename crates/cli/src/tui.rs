@@ -220,6 +220,15 @@ struct FullscreenUi {
     scrollback_line_open: bool,
 }
 
+/// Normalize a streamed assistant token for scrollback mirror output.
+///
+/// Each `\n` is replaced with `\r\n` followed by 5 spaces so that
+/// continuation lines in terminal scrollback align with the "Zip: " prefix
+/// (4 chars + 1 space).
+fn normalize_scrollback_token(token: &str) -> String {
+    token.replace('\n', "\r\n     ")
+}
+
 impl FullscreenUi {
     fn new(conv: &ConversationLoop, backend: String, startup_notices: &[String]) -> Result<Self> {
         // Install a panic hook that restores the terminal before printing the
@@ -958,7 +967,7 @@ impl FullscreenUi {
             let _ = self.stdout.write_all(b"Zip: ");
             self.scrollback_line_open = true;
         }
-        let normalized = token.replace('\n', "\r\n     ");
+        let normalized = normalize_scrollback_token(token);
         let _ = self.stdout.write_all(normalized.as_bytes());
         let _ = self.stdout.flush();
     }
@@ -2217,6 +2226,52 @@ mod tests {
         assert_eq!(geometry.box_left, 4);
         assert_eq!(geometry.box_top, 7);
         assert_eq!(geometry.available_body, 7);
+    }
+
+    // ── normalize_scrollback_token tests ──────────────────────────────
+
+    #[test]
+    fn normalize_scrollback_token_no_newlines() {
+        assert_eq!(normalize_scrollback_token("hello"), "hello");
+    }
+
+    #[test]
+    fn normalize_scrollback_token_single_newline() {
+        assert_eq!(
+            normalize_scrollback_token("line1\nline2"),
+            "line1\r\n     line2"
+        );
+    }
+
+    #[test]
+    fn normalize_scrollback_token_multiple_newlines() {
+        assert_eq!(
+            normalize_scrollback_token("a\nb\nc"),
+            "a\r\n     b\r\n     c"
+        );
+    }
+
+    #[test]
+    fn normalize_scrollback_token_empty_string() {
+        assert_eq!(normalize_scrollback_token(""), "");
+    }
+
+    #[test]
+    fn normalize_scrollback_token_only_newline() {
+        assert_eq!(normalize_scrollback_token("\n"), "\r\n     ");
+    }
+
+    #[test]
+    fn normalize_scrollback_token_trailing_newline() {
+        assert_eq!(normalize_scrollback_token("text\n"), "text\r\n     ");
+    }
+
+    #[test]
+    fn normalize_scrollback_token_korean_multiline() {
+        assert_eq!(
+            normalize_scrollback_token("안녕하세요\n반갑습니다"),
+            "안녕하세요\r\n     반갑습니다"
+        );
     }
 }
 
