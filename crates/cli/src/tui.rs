@@ -861,11 +861,10 @@ impl FullscreenUi {
         }) = self.transcript.last_mut()
         {
             content.push_str(token);
-            self.mirror_assistant_token_to_scrollback(token);
         } else {
             self.push_entry(EntryKind::Assistant, token.to_string());
-            self.mirror_assistant_token_to_scrollback(token);
         }
+        self.mirror_assistant_token_to_scrollback(token);
         self.refresh_last_transcript_cache_entry();
     }
 
