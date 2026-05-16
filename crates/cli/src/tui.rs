@@ -855,18 +855,16 @@ impl FullscreenUi {
     }
 
     fn append_assistant_token(&mut self, token: &str) {
-        match self.transcript.last_mut() {
-            Some(TranscriptEntry {
-                kind: EntryKind::Assistant,
-                content,
-            }) => {
-                content.push_str(token);
-                self.mirror_assistant_token_to_scrollback(token);
-            }
-            _ => {
-                self.push_entry(EntryKind::Assistant, token.to_string());
-                self.mirror_assistant_token_to_scrollback(token);
-            }
+        if let Some(TranscriptEntry {
+            kind: EntryKind::Assistant,
+            content,
+        }) = self.transcript.last_mut()
+        {
+            content.push_str(token);
+            self.mirror_assistant_token_to_scrollback(token);
+        } else {
+            self.push_entry(EntryKind::Assistant, token.to_string());
+            self.mirror_assistant_token_to_scrollback(token);
         }
         self.refresh_last_transcript_cache_entry();
     }

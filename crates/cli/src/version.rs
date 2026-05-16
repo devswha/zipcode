@@ -11,12 +11,12 @@ pub const LONG_VERSION: &str = concat!(
 );
 
 #[must_use]
-pub fn build_label() -> &'static str {
+pub const fn build_label() -> &'static str {
     LONG_VERSION
 }
 
 #[must_use]
-pub fn git_label() -> &'static str {
+pub const fn git_label() -> &'static str {
     concat!(env!("ZIPCODE_BUILD_GIT"), env!("ZIPCODE_BUILD_DIRTY"))
 }
 

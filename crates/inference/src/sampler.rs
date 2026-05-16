@@ -581,7 +581,7 @@ mod tests {
 
     /// Repeat penalty interacts with temperature scaling and `top_k` filtering.
     /// Uses near-zero temperature for deterministic sampling while still
-    /// exercising the temperature scaling + top_k path (not the greedy shortcut).
+    /// exercising the temperature scaling + `top_k` path (not the greedy shortcut).
     #[test]
     fn test_repeat_penalty_with_temperature_and_top_k() {
         let config = GenerationConfig {
