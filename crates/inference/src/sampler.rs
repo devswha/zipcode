@@ -580,10 +580,12 @@ mod tests {
     }
 
     /// Repeat penalty interacts with temperature scaling and `top_k` filtering.
+    /// Uses near-zero temperature for deterministic sampling while still
+    /// exercising the temperature scaling + top_k path (not the greedy shortcut).
     #[test]
     fn test_repeat_penalty_with_temperature_and_top_k() {
         let config = GenerationConfig {
-            temperature: 0.5,
+            temperature: 0.001,
             top_k: 3,
             top_p: 1.0,
             repeat_penalty: 3.0,
@@ -593,7 +595,7 @@ mod tests {
         let mut sampler = Sampler::new(&config);
         // Token 1 (logit 10.0) penalized: 10.0/3.0 ≈ 3.33.
         // Token 0 (logit 5.0) untouched → 5.0 > 3.33.
-        // With top_k=3 both survive, but token 0 dominates.
+        // With top_k=3 both survive, and near-greedy temp makes token 0 win deterministically.
         let token = sampler
             .sample(&logits(&[5.0, 10.0, 1.0, 0.5, 0.1]), &[1u32])
             .unwrap();
