@@ -52,7 +52,7 @@ Drop these into a code search or walk the links — the wiki is pre-wired for th
 4. **"Where is `~/.zipcode/config.json` read?"** → `crates/runtime/src/config.rs:6` (`ZipcodeConfig::load`), merged with `.zipcode.json` from project root.
 5. **"Which tools are blocked in read-only mode?"** → Everything except `read_file`, `glob_search`, `grep_search`, `tool_search`. `crates/runtime/src/permission.rs:32-49`.
 6. **"How does llama-server get its GPU flags?"** → `ZIPCODE_GPU_LAYERS` / `ZIPCODE_FLASH_ATTENTION` env vars override `config.gpu_layers` / `config.flash_attention`, passed to subprocess as `-ngl` and `--flash-attn`. See [`llama-server`](pages/llama-server.md).
-7. **"How is the system prompt built?"** → `crates/runtime/src/prompt.rs:28-60`: base prompt + permission line + cwd + `.zipcode.md` content.
+7. **"How is the system prompt built?"** → `crates/runtime/src/prompt.rs:30-81`: base prompt + permission line + cwd + `.zipcode.md` content.
 
 ---
 

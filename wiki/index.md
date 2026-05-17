@@ -73,7 +73,7 @@ The highest-degree concepts — almost every code path touches one of these. Rea
 | Tune GPU offload | [llama-server › GPU offload](pages/llama-server.md#gpu-offload) — env vars or config |
 | Understand the intended backend roadmap | [project-direction](pages/project-direction.md) |
 | Change permission tiers | [permissions](permissions.md) → `crates/runtime/src/permission.rs:5` |
-|| Change what's injected into the system prompt | `crates/runtime/src/prompt.rs:28-60` (`build_system_prompt`, including `.zipcode.md` injection at `:49-55`) |
+|| Change what's injected into the system prompt | `crates/runtime/src/prompt.rs:30-81` (`build_system_prompt`, including `.zipcode.md` injection at `:51-63`) |
 
 ---
 
